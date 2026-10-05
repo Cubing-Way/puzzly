@@ -1,0 +1,6 @@
+# Installed dependencies (recreated by npm install)
+node_modules/
+# Build output (recreated by npm run build)
+dist/
+# Local archive of node_modules
+node_modules.7z
