@@ -128,25 +128,73 @@
                 <button id="solve-button" type="submit" class="primary">Solve</button>
             </form>
 
-            <!-- 3D viewer and the latest result -->
-            <section class="panel viewer">
-                <div id="player-slot" class="player-slot"></div>
-                <div class="result">
-                    <span class="label">Solution</span>
-                    <p id="solution" class="solution">—</p>
-                    <!-- Numbers for the shown solve -->
-                    <dl class="stats">
-                        <div><dt>Moves</dt><dd id="moves-stat">—</dd></div>
-                        <div><dt>Time</dt><dd id="time-stat">—</dd></div>
-                        <div><dt>Check</dt><dd id="check-stat">—</dd></div>
-                        <div><dt>Offset</dt><dd id="offset-stat">—</dd></div>
-                    </dl>
-                    <div class="row">
-                        <button id="continue-button" type="button" disabled>Continue from here</button>
-                        <button id="copy-button" type="button" class="quiet" disabled>Copy</button>
+            <!-- Right column: viewer on top, method editor under it -->
+            <div class="side">
+                <!-- 3D viewer and the latest result -->
+                <section class="panel viewer">
+                    <div id="player-slot" class="player-slot"></div>
+                    <div class="result">
+                        <span class="label">Solution</span>
+                        <p id="solution" class="solution">—</p>
+                        <!-- Numbers for the shown solve -->
+                        <dl class="stats">
+                            <div><dt>Moves</dt><dd id="moves-stat">—</dd></div>
+                            <div><dt>Time</dt><dd id="time-stat">—</dd></div>
+                            <div><dt>Check</dt><dd id="check-stat">—</dd></div>
+                            <div><dt>Offset</dt><dd id="offset-stat">—</dd></div>
+                        </dl>
+                        <div class="row">
+                            <button id="continue-button" type="button" disabled>Continue from here</button>
+                            <button id="copy-button" type="button" class="quiet" disabled>Copy</button>
+                        </div>
                     </div>
-                </div>
-            </section>
+                </section>
+
+                <!-- Method: steps run in order, each from where the last one left the cube -->
+                <section class="panel method">
+                    <h2>Method</h2>
+                    <!-- Editing controls (locked while a solve runs) -->
+                    <fieldset id="method-editor" class="method-editor">
+                        <!-- Load an example or saved method, and its name -->
+                        <div class="row grow">
+                            <select id="method-select" aria-label="Load a method"></select>
+                            <input id="method-name" type="text" spellcheck="false" autocomplete="off" placeholder="Method name" aria-label="Method name" />
+                        </div>
+                        <!-- Save in this browser, or share as a .json file -->
+                        <div class="row">
+                            <button id="save-method" type="button">Save</button>
+                            <button id="delete-method" type="button" class="quiet" disabled>Delete</button>
+                            <button id="export-method" type="button" class="quiet">Export file</button>
+                            <button id="import-method" type="button" class="quiet">Import file</button>
+                            <input id="method-file" type="file" accept=".json,application/json" hidden />
+                        </div>
+                        <!-- Steps in order (Edit loads one into the form on the left) -->
+                        <ol id="step-list" class="step-list"></ol>
+                        <p id="steps-empty" class="empty">No steps yet: set one up in the form, then Add form as step.</p>
+                        <!-- Step name and keep go with the form's goal, grips, offsets and moves -->
+                        <span class="label">Step <small>the form on the left is the step editor</small></span>
+                        <div class="row grow">
+                            <input id="step-name" type="text" spellcheck="false" autocomplete="off" placeholder="Step name" aria-label="Step name" />
+                            <label class="check-label"><input id="step-keep" type="checkbox" /> keep earlier steps' pieces</label>
+                        </div>
+                        <div class="row">
+                            <button id="add-step" type="button">Add form as step</button>
+                            <button id="update-step" type="button" disabled>Update step</button>
+                        </div>
+                        <button id="run-method" type="button" class="primary">Run method</button>
+                    </fieldset>
+                    <!-- Results: one row per step, then the total (click a row to see it on the cube) -->
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr><th>Step</th><th>Moves</th><th>Offset</th><th>Check</th><th>Time</th><th>Solution</th></tr>
+                            </thead>
+                            <tbody id="method-body"></tbody>
+                        </table>
+                    </div>
+                    <p id="method-empty" class="empty">Run the method to see each step here.</p>
+                </section>
+            </div>
 
             <!-- Every solve in this session (click a row to see it again) -->
             <section class="panel runs">

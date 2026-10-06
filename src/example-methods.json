@@ -1,0 +1,31 @@
+[
+  {
+    "name": "CFOP (cross + 4 pairs)",
+    "steps": [
+      { "name": "Cross", "pieces": "DF DR DB DL", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 1", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 2", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 3", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 4", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false }
+    ]
+  },
+  {
+    "name": "ZZ (EOLine + blocks)",
+    "steps": [
+      { "name": "EOLine", "pieces": "UF:o UR:o UB:o UL:o DF DR:o DB DL:o FR:o FL:o BR:o BL:o", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Left block", "pieces": "DL FL BL DFL DBL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["U", "R", "L"], "maxDepth": null, "firstFound": false },
+      { "name": "Right block", "pieces": "DR FR BR DFR DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["U", "R", "L"], "maxDepth": null, "firstFound": false }
+    ]
+  },
+  {
+    "name": "Pseudo-slotting (CFOP up to ADF)",
+    "steps": [
+      { "name": "Pseudo cross", "pieces": "DF DR DB DL", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pseudo pair 1", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pseudo pair 2", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pseudo pair 3", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pseudo pair 4", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "ADF", "pieces": "", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["D"], "maxDepth": 1, "firstFound": false }
+    ]
+  }
+]

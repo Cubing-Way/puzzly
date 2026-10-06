@@ -19,9 +19,14 @@ import {
   solveFull,
   reachesGoal,
   countMoves,
+  runMethod,
   type GoalPiece,
   type Role,
+  type Method,
+  type StepConfig,
 } from "./engine";
+// Example, saved and file methods
+import { exampleMethods, savedMethods, saveMethod, deleteSavedMethod, downloadMethod, readMethodFile } from "./method-store";
 // 3D cube viewer (importing it also registers <twisty-player>)
 import { TwistyPlayer } from "cubing/twisty";
 
@@ -29,8 +34,8 @@ import { TwistyPlayer } from "cubing/twisty";
 interface Run {
   scramble: string; // start position
   done: string; // moves earlier steps did after the scramble
-  mode: "step" | "full";
-  pieces: string; // goal pieces ("" for full solves)
+  mode: "step" | "full" | "method"; // one step, the whole cube, or every step of a method
+  pieces: string; // goal pieces ("" for full solves; every step's pieces for a method)
   offsets: string[]; // offsets the goal counted up to ([""] = none)
   goal: string; // label shown in the runs table
   solution: string; // grip rotation (if any), then the moves
@@ -75,6 +80,23 @@ const continueButton = $<HTMLButtonElement>("continue-button");
 const copyButton = $<HTMLButtonElement>("copy-button");
 const runsBody = $("runs-body");
 const runsEmpty = $("runs-empty");
+const methodEditor = $<HTMLFieldSetElement>("method-editor");
+const methodSelect = $<HTMLSelectElement>("method-select");
+const methodNameInput = $<HTMLInputElement>("method-name");
+const saveMethodButton = $<HTMLButtonElement>("save-method");
+const deleteMethodButton = $<HTMLButtonElement>("delete-method");
+const exportMethodButton = $<HTMLButtonElement>("export-method");
+const importMethodButton = $<HTMLButtonElement>("import-method");
+const methodFileInput = $<HTMLInputElement>("method-file");
+const stepList = $("step-list");
+const stepsEmpty = $("steps-empty");
+const stepNameInput = $<HTMLInputElement>("step-name");
+const keepBox = $<HTMLInputElement>("step-keep");
+const addStepButton = $<HTMLButtonElement>("add-step");
+const updateStepButton = $<HTMLButtonElement>("update-step");
+const runMethodButton = $<HTMLButtonElement>("run-method");
+const methodBody = $("method-body");
+const methodEmpty = $("method-empty");
 
 // 3D viewer: shows the start position, then plays the solution
 const player = new TwistyPlayer({
@@ -91,6 +113,16 @@ const runs: Run[] = [];
 let shown: Run | null = null;
 // True while the solver or scrambler is working
 let busy = false;
+// Example methods (filled in once the engine is loaded)
+let examples: Method[] = [];
+// Method being edited: steps run in order
+let method: Method = { name: "", steps: [] };
+// Step loaded into the form for editing (-1 = none)
+let editing = -1;
+// True when the method has changes that aren't saved
+let dirty = false;
+// Rows of the last method run: one per step, then the total
+let methodRows: { label: string; run: Run }[] = [];
 
 // Show a message in the status line (kind sets its color)
 function setStatus(text: string, kind: "info" | "ok" | "error" = "info"): void {
@@ -103,6 +135,8 @@ function setBusy(on: boolean): void {
   busy = on;
   solveButton.disabled = on;
   randomButton.disabled = on;
+  // The method can't change while something runs
+  methodEditor.disabled = on;
 }
 
 // Time as "850 ms" or "1.42 s"
@@ -132,11 +166,11 @@ function readMoves(input: HTMLTextAreaElement | HTMLInputElement, error: HTMLEle
   }
 }
 
-// Check the goal pieces; returns false and shows why on a typo or an empty list
+// Check the goal pieces; returns false and shows why on a typo or an empty list (empty is fine for a step that keeps earlier pieces)
 function readPieces(): boolean {
   try {
     goalFromText(piecesInput.value);
-    piecesError.textContent = rolesIn(piecesInput.value).size ? "" : "Pick at least one piece.";
+    piecesError.textContent = rolesIn(piecesInput.value).size || keepBox.checked ? "" : "Pick at least one piece.";
   } catch (error) {
     piecesError.textContent = (error as Error).message;
   }
@@ -317,7 +351,7 @@ function showResult(run: Run | null): void {
   player.alg = run?.solution ?? "";
   player.timestamp = "start";
   // Mask the goal pieces of the grip the solution ends in (it may start with a rotation)
-  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "step" ? run.pieces : null, run.scramble, joinMoves(run.done, run.solution));
+  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "full" ? null : run.pieces, run.scramble, joinMoves(run.done, run.solution));
   // Text and stats
   solutionText.textContent = run ? run.solution || "(already solved)" : "—";
   movesStat.textContent = run ? String(run.moves) : "—";
@@ -329,6 +363,32 @@ function showResult(run: Run | null): void {
   // Actions need a non-empty solution
   continueButton.disabled = copyButton.disabled = !run?.solution;
   renderRuns();
+  renderMethodRows();
+}
+
+// One table row for a run: label, moves, offset, time, check and solution cells (pick and order them with `cells`)
+function runRow(run: Run, label: string, cells: string[], onClick: () => void): HTMLTableRowElement {
+  const row = document.createElement("tr");
+  // Text for each kind of cell
+  const texts: Record<string, string> = {
+    label,
+    moves: String(run.moves),
+    offset: run.offset || "—",
+    time: formatMs(run.ms),
+    check: run.ok ? "✓" : "✗",
+    solution: run.solution || "(already solved)",
+  };
+  for (const kind of cells) {
+    const cell = document.createElement("td");
+    cell.textContent = texts[kind];
+    cell.dataset.col = kind;
+    row.append(cell);
+  }
+  // Highlight the shown run and failed checks
+  row.classList.toggle("selected", run === shown);
+  row.classList.toggle("bad", !run.ok);
+  row.addEventListener("click", onClick);
+  return row;
 }
 
 // Redraw the runs table; clicking a row shows that run again
@@ -336,25 +396,23 @@ function renderRuns(): void {
   runsEmpty.hidden = runs.length > 0;
   runsBody.replaceChildren(
     ...runs.map((run, index) => {
-      const row = document.createElement("tr");
-      // One cell per column
-      for (const text of [
-        String(runs.length - index),
-        run.goal,
-        String(run.moves),
-        run.offset || "—",
-        formatMs(run.ms),
-        run.ok ? "✓" : "✗",
-        run.solution || "(already solved)",
-      ]) {
-        const cell = document.createElement("td");
-        cell.textContent = text;
-        row.append(cell);
-      }
-      // Highlight the shown run and failed checks
-      row.classList.toggle("selected", run === shown);
-      row.classList.toggle("bad", !run.ok);
-      row.addEventListener("click", () => loadRun(run));
+      // Number column first, then the goal as the label
+      const row = runRow(run, run.goal, ["label", "moves", "offset", "time", "check", "solution"], () => loadRun(run));
+      const number = document.createElement("td");
+      number.textContent = String(runs.length - index);
+      row.prepend(number);
+      return row;
+    }),
+  );
+}
+
+// Redraw the method results: one row per step, then the total; clicking a row shows it on the cube
+function renderMethodRows(): void {
+  methodEmpty.hidden = methodRows.length > 0;
+  methodBody.replaceChildren(
+    ...methodRows.map(({ label, run }) => {
+      const row = runRow(run, label, ["label", "moves", "offset", "check", "time", "solution"], () => showResult(run));
+      row.classList.toggle("total", run.mode === "method");
       return row;
     }),
   );
@@ -365,7 +423,8 @@ function loadRun(run: Run): void {
   if (busy) return;
   scrambleInput.value = run.scramble;
   doneInput.value = run.done;
-  (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
+  // Method runs only bring back the start position (their steps stay in the method panel)
+  if (run.mode !== "method") (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
   // Step runs bring back their pieces and offsets too
   if (run.mode === "step") {
     piecesInput.value = run.pieces;
@@ -464,6 +523,282 @@ async function solve(): Promise<void> {
   }
 }
 
+// Read the step form into a method step (named `Step N` when the name is blank); returns null and shows why when a field can't be read
+function stepFromForm(number: number): StepConfig | null {
+  if (currentMode() !== "step") {
+    setStatus("Switch Goal to Step to set up a method step.", "error");
+    return null;
+  }
+  // Pieces and offsets, checked like a step solve
+  const piecesOk = readPieces();
+  const offsets = readOffsets();
+  const moves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
+  const bottom = [...form.querySelectorAll<HTMLInputElement>('input[name="bottom"]:checked')].map((box) => box.value);
+  if (!piecesOk || !offsets) setStatus("Fix the marked field first.", "error");
+  else if (!moves.length) setStatus("Pick at least one allowed move.", "error");
+  else if (!bottom.length) setStatus("Pick at least one bottom face.", "error");
+  else {
+    return {
+      name: stepNameInput.value.trim() || `Step ${number}`,
+      pieces: piecesInput.value.trim(),
+      keep: keepBox.checked,
+      grips: { bottom, anyFront: anyFrontBox.checked },
+      offsets: offsetsText(offsets),
+      moves,
+      maxDepth: maxDepthInput.value ? Number(maxDepthInput.value) : null,
+      firstFound: firstFoundBox.checked,
+    };
+  }
+  return null;
+}
+
+// Put a method step into the form (and the step name / keep fields) for editing
+function stepToForm(step: StepConfig): void {
+  (form.elements.namedItem("mode") as RadioNodeList).value = "step";
+  piecesInput.value = step.pieces;
+  offsetsInput.value = step.offsets;
+  // Grips and allowed moves as checkboxes
+  for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) box.checked = step.grips.bottom.includes(box.value);
+  anyFrontBox.checked = step.grips.anyFront;
+  for (const box of form.querySelectorAll<HTMLInputElement>('input[name="move"]')) box.checked = step.moves.includes(box.value);
+  maxDepthInput.value = step.maxDepth == null ? "" : String(step.maxDepth);
+  firstFoundBox.checked = Boolean(step.firstFound);
+  stepNameInput.value = step.name;
+  keepBox.checked = Boolean(step.keep);
+  onInputChange();
+}
+
+// One-line summary of a step's settings for the step list
+function stepSummary(step: StepConfig): string {
+  return [
+    step.pieces || "no new pieces",
+    step.keep ? "+ earlier pieces" : "",
+    `bottom ${step.grips.bottom.join("/")}${step.grips.anyFront ? " any front" : ""}`,
+    step.offsets ? `offsets ${step.offsets}` : "",
+    `moves ${step.moves.join(" ")}`,
+    step.maxDepth == null ? "" : `max ${step.maxDepth}`,
+    step.firstFound ? "first answer" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// Small button for a step's row
+function stepButton(text: string, label: string, disabled: boolean, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+// Redraw the step list (the step loaded in the form is highlighted) and the Update button
+function renderSteps(): void {
+  stepsEmpty.hidden = method.steps.length > 0;
+  stepList.replaceChildren(
+    ...method.steps.map((step, index) => {
+      const item = document.createElement("li");
+      item.classList.toggle("editing", index === editing);
+      // Name, then the summary underneath
+      const text = document.createElement("div");
+      text.className = "step-text";
+      const name = document.createElement("strong");
+      name.textContent = step.name;
+      const summary = document.createElement("small");
+      summary.textContent = stepSummary(step);
+      text.append(name, summary);
+      // Edit, move up, move down, remove
+      const actions = document.createElement("div");
+      actions.className = "step-actions";
+      actions.append(
+        stepButton("Edit", `Edit ${step.name} in the form`, false, () => editStep(index)),
+        stepButton("↑", `Move ${step.name} up`, index === 0, () => moveStep(index, -1)),
+        stepButton("↓", `Move ${step.name} down`, index === method.steps.length - 1, () => moveStep(index, 1)),
+        stepButton("✕", `Remove ${step.name}`, false, () => removeStep(index)),
+      );
+      item.append(text, actions);
+      return item;
+    }),
+  );
+  updateStepButton.disabled = editing === -1;
+  updateStepButton.textContent = editing === -1 ? "Update step" : `Update step ${editing + 1}`;
+}
+
+// Steps changed: redraw them, drop the outdated method results, remember there's something to save
+function methodChanged(): void {
+  dirty = true;
+  renderSteps();
+  methodRows = [];
+  renderMethodRows();
+}
+
+// Load a step into the form for editing
+function editStep(index: number): void {
+  editing = index;
+  stepToForm(method.steps[index]);
+  renderSteps();
+  setStatus(`Editing step ${index + 1}: change the form, then Update step ${index + 1}.`);
+}
+
+// Move a step one place up (-1) or down (+1); the step being edited stays selected
+function moveStep(index: number, by: number): void {
+  const other = index + by;
+  [method.steps[index], method.steps[other]] = [method.steps[other], method.steps[index]];
+  if (editing === index) editing = other;
+  else if (editing === other) editing = index;
+  methodChanged();
+}
+
+// Remove a step (stops editing it if it was in the form)
+function removeStep(index: number): void {
+  method.steps.splice(index, 1);
+  if (editing === index) editing = -1;
+  else if (editing > index) editing--;
+  methodChanged();
+}
+
+// Add the form as a new last step, and keep editing it
+function addStep(): void {
+  const step = stepFromForm(method.steps.length + 1);
+  if (!step) return;
+  method.steps.push(step);
+  editing = method.steps.length - 1;
+  stepNameInput.value = step.name;
+  methodChanged();
+  setStatus(`Added step ${editing + 1} (${step.name}).`, "ok");
+}
+
+// Save the form into the step being edited
+function updateStep(): void {
+  if (editing === -1) return;
+  const step = stepFromForm(editing + 1);
+  if (!step) return;
+  method.steps[editing] = step;
+  stepNameInput.value = step.name;
+  methodChanged();
+  setStatus(`Updated step ${editing + 1} (${step.name}).`, "ok");
+}
+
+// Fill the method picker: a placeholder, a new empty method, the examples, then the methods saved in this browser
+function fillMethodSelect(): void {
+  const examplesGroup = document.createElement("optgroup");
+  examplesGroup.label = "Examples";
+  examplesGroup.append(...examples.map((example, index) => new Option(example.name, `example:${index}`)));
+  const saved = savedMethods();
+  const savedGroup = document.createElement("optgroup");
+  savedGroup.label = "Saved in this browser";
+  savedGroup.append(...saved.map((entry) => new Option(entry.name, `saved:${entry.name}`)));
+  methodSelect.replaceChildren(new Option("Load a method…", ""), new Option("New (empty)", "new"), examplesGroup, ...(saved.length ? [savedGroup] : []));
+  methodSelect.value = "";
+}
+
+// Delete only works when a method with this name is saved
+function syncDeleteButton(): void {
+  const name = methodNameInput.value.trim();
+  deleteMethodButton.disabled = !savedMethods().some((entry) => entry.name === name);
+}
+
+// Put a method in the editor (a copy, so edits don't change the original) and clear the old results
+function loadMethod(next: Method): void {
+  method = structuredClone(next);
+  methodNameInput.value = method.name;
+  editing = -1;
+  stepNameInput.value = "";
+  keepBox.checked = false;
+  methodChanged();
+  dirty = false;
+  syncDeleteButton();
+}
+
+// The method as it stands, with the name from its field
+function currentMethod(): Method {
+  return { ...method, name: methodNameInput.value.trim() || "Untitled method" };
+}
+
+// Run every step of the method from the start position (scramble, then Done so far), showing each step as it finishes
+async function runWholeMethod(): Promise<void> {
+  if (busy) return;
+  const scramble = readMoves(scrambleInput, scrambleError);
+  const done = readMoves(doneInput, doneError);
+  if (scramble === null || done === null) {
+    setStatus("Fix the marked field first.", "error");
+    return;
+  }
+  if (!method.steps.length) {
+    setStatus("Add at least one step first.", "error");
+    return;
+  }
+  // Run a copy, so the steps can't change mid-run
+  const running = structuredClone(currentMethod());
+  setBusy(true);
+  showResult(null);
+  methodRows = [];
+  renderMethodRows();
+  // Live status: which step is searching, and the time so far
+  const started = performance.now();
+  const tick = () => {
+    const index = methodRows.length;
+    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})… ${formatMs(performance.now() - started)}`);
+  };
+  tick();
+  const timer = setInterval(tick, 100);
+  try {
+    const result = await runMethod(scramble, running, {
+      done,
+      // Add each step's row as soon as it finishes
+      onStep: (step, index) => {
+        const run: Run = {
+          scramble,
+          done: step.done,
+          mode: "step",
+          pieces: step.pieces,
+          offsets: step.offsets,
+          goal: `${running.name}: ${step.name}`,
+          solution: step.solution.toString(),
+          offset: step.offset,
+          moves: step.moves,
+          ms: step.ms,
+          ok: step.ok,
+        };
+        methodRows.push({ label: `${index + 1}. ${step.name}`, run });
+        renderMethodRows();
+      },
+    });
+    clearInterval(timer);
+    // The whole solve as one run: every step's moves, with every step's pieces shown on the cube
+    const total: Run = {
+      scramble,
+      done,
+      mode: "method",
+      pieces: result.pieces,
+      offsets: result.steps.at(-1)?.offsets ?? [""],
+      goal: running.name,
+      solution: result.solution,
+      offset: result.offset,
+      moves: result.moves,
+      ms: performance.now() - started,
+      ok: result.ok,
+    };
+    methodRows.push({ label: "Total", run: total });
+    runs.unshift(total);
+    showResult(total);
+    setStatus(
+      result.ok
+        ? `${running.name} done in ${plural(result.moves, "move")} over ${plural(result.steps.length, "step")} (${formatMs(total.ms)}).`
+        : `${running.name}: a step's solution doesn't reach its goal!`,
+      result.ok ? "ok" : "error",
+    );
+  } catch (error) {
+    setStatus(`Method error: ${(error as Error).message}`, "error");
+  } finally {
+    clearInterval(timer);
+    setBusy(false);
+  }
+}
+
 // Solve on submit (Solve button, or Enter in a field)
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -539,11 +874,101 @@ copyButton.addEventListener("click", async () => {
   setStatus("Solution copied.", "ok");
 });
 
-// Start: load the engine, build the chips, show the default goal, get a first scramble
+// Ticking "keep earlier steps' pieces" decides whether an empty pieces box is allowed
+keepBox.addEventListener("change", () => syncViewer());
+
+// Step list buttons under it
+addStepButton.addEventListener("click", addStep);
+updateStepButton.addEventListener("click", updateStep);
+runMethodButton.addEventListener("click", runWholeMethod);
+
+// Renaming counts as a change, and decides whether Delete has a saved method to remove
+methodNameInput.addEventListener("input", () => {
+  dirty = true;
+  syncDeleteButton();
+});
+
+// Picking a method loads it (after asking if unsaved changes would be lost), then the picker goes back to its placeholder
+methodSelect.addEventListener("change", () => {
+  const [kind, ...rest] = methodSelect.value.split(":");
+  const key = rest.join(":");
+  const next =
+    kind === "new" ? { name: "", steps: [] } : kind === "example" ? examples[Number(key)] : savedMethods().find((entry) => entry.name === key);
+  methodSelect.value = "";
+  if (!next || (dirty && !confirm("Drop the unsaved changes to this method?"))) return;
+  loadMethod(next);
+  setStatus(kind === "new" ? "New method: set up a step in the form, then Add form as step." : `Loaded ${next.name}.`);
+});
+
+// Save the method in this browser under its name
+saveMethodButton.addEventListener("click", () => {
+  const name = methodNameInput.value.trim();
+  if (!name) {
+    setStatus("Name the method first.", "error");
+    methodNameInput.focus();
+    return;
+  }
+  if (!method.steps.length) {
+    setStatus("Add at least one step first.", "error");
+    return;
+  }
+  method.name = name;
+  try {
+    saveMethod(method);
+  } catch (error) {
+    setStatus(`Couldn't save in this browser: ${(error as Error).message}`, "error");
+    return;
+  }
+  dirty = false;
+  fillMethodSelect();
+  syncDeleteButton();
+  setStatus(`Saved ${name} in this browser.`, "ok");
+});
+
+// Delete the saved method with this name (the editor keeps it, now unsaved)
+deleteMethodButton.addEventListener("click", () => {
+  const name = methodNameInput.value.trim();
+  if (!confirm(`Delete the saved method "${name}" from this browser?`)) return;
+  deleteSavedMethod(name);
+  dirty = true;
+  fillMethodSelect();
+  syncDeleteButton();
+  setStatus(`Deleted ${name} from this browser (it's still in the editor).`);
+});
+
+// Download the method as a .json file
+exportMethodButton.addEventListener("click", () => {
+  downloadMethod(currentMethod());
+  setStatus("Method file downloaded.", "ok");
+});
+
+// Import a .json method file (after asking if unsaved changes would be lost)
+importMethodButton.addEventListener("click", () => {
+  if (dirty && !confirm("Drop the unsaved changes to this method?")) return;
+  methodFileInput.click();
+});
+methodFileInput.addEventListener("change", async () => {
+  const file = methodFileInput.files?.[0];
+  // Clear the picker so choosing the same file again still fires
+  methodFileInput.value = "";
+  if (!file) return;
+  try {
+    loadMethod(await readMethodFile(file));
+    dirty = true;
+    setStatus(`Imported ${method.name} from ${file.name} (not saved in this browser yet).`, "ok");
+  } catch (error) {
+    setStatus(`Couldn't import ${file.name}: ${(error as Error).message}`, "error");
+  }
+});
+
+// Start: load the engine, build the chips, show the default goal and the first example method, get a first scramble
 async function start(): Promise<void> {
   await loadEngine();
   buildChips();
   piecesInput.value = presetSelect.value;
+  examples = exampleMethods();
+  fillMethodSelect();
+  loadMethod(examples[0]);
   syncViewer();
   await newScramble();
 }

@@ -389,10 +389,115 @@ tbody tr:hover {
 tbody tr.selected {
   background: var(--accent-soft);
 }
-tbody tr.bad td:nth-child(5) {
+tbody tr.bad td[data-col="check"] {
   color: var(--bad);
 }
 .empty {
   margin: 0.5rem 0 0;
   color: var(--muted);
+}
+
+
+/* Right column: viewer and method panels stacked */
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* Method panel: editor on top, results under it */
+.method {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.method h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.method-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Rows whose fields share the width (they wrap on narrow screens) */
+.row.grow > select,
+.row.grow > input[type="text"] {
+  flex: 1 1 10rem;
+  width: auto;
+  min-width: 0;
+}
+
+/* Checkbox with its text */
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+/* Numbered step list */
+.step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.step-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  counter-increment: step;
+}
+.step-list li::before {
+  content: counter(step);
+  min-width: 1.2em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.step-list li.editing {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Step name over its settings */
+.step-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.step-text small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+/* Edit / up / down / remove buttons */
+.step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+.step-actions button {
+  padding: 0.2rem 0.5rem;
+}
+
+/* Total row of the method results */
+tbody tr.total td {
+  font-weight: 600;
 }

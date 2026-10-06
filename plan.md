@@ -6,7 +6,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 
 - [x] Part 1 — Groups + centers
 - [x] Part 2 — Offsets
-- [ ] Part 3 — Methods (step list) + keep previous
+- [x] Part 3 — Methods (step list) + keep previous
 - [ ] Part 4 — Alternatives
 - [ ] Part 5 — Named whole-state checks (later, one check per chat)
 
@@ -56,6 +56,14 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   A combo is skipped when it repeats (same grip + same masked target) or (same `goalOnCube` + allowed moves + offset as cube turns via `movesKey(rotation, [offset])`), so y grips × `D D2 D'` = 4 searches.
   `StepResult.offset` = winner (solution excludes it; `invertMoves(offset)` undoes it). `reachesGoal(scramble, done, pieces, offsets)` accepts any offset. Page `Run` stores `offsets` + `offset`.
   Part 3: `runMethod` must pass each step's offsets to `reachesGoal`; a next step needs the same offsets or the undo moves first.
+- Methods (Part 3): `Method` / `StepConfig` types as in Part 3 below (`offsets` is text like the field, `moves` / `grips.bottom` are arrays, `maxDepth: null` = no limit, plus optional `firstFound`).
+  `readMethod(data)` checks and fills every field in a fixed key order, so `JSON.stringify(readMethod(x), null, 2)` round-trips identically.
+  `StepOptions.keep` is a `Goal` named in the grip the step starts in; `solveStep` renames it per grip with `rotateGoal(goal, rotation)` (piece on spot `turned.pieces[to]` moves to `to`) and merges `mergeGoals(kept, own)` (own wins).
+  With `keep`, the step's own centers count only when typed (`goalFromText(text, false)`); no centers at all after the merge = all six.
+  Only the grips where the kept pieces cover the fewest own pieces are searched (`covers(kept, role)`: same role, kept solve, or kept place over a swap role), so `DFR FR` + any front = "easiest unsolved pair", an OLL step can't win with x2 or a sideways grip (that put solved pieces under its names), and a `pieces: ""` + keep step (ADF fix) still runs.
+  `StepResult.pieces` = goal text actually solved, named in the end grip. `runMethod(scramble, method, { done, onStep })` passes earlier solutions as `done`, keeps `earlier` (every step's pieces, renamed through each winning rotation), and checks each step with `reachesGoal(scramble, after, result.pieces, offsets)`.
+  Page: `src/method-store.ts` (examples from `src/example-methods.json`, localStorage key `puzzly.methods`, file export/import). Example timings: CFOP ~2 s, ZZ ~0.5 s, pseudo-slotting ~10 s (16 searches per pseudo pair).
+  Part 4: alternatives with keep need the same covered-count filter, or an alternative already covered by kept pieces wins with 0 moves.
 ---
 
 ## Part 1 — Groups + centers

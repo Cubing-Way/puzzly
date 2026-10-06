@@ -39,6 +39,10 @@ export interface StepOptions {
   offsets?: string[];
    // Stop at the first grip × offset that finds an answer (within maxDepth) instead of comparing them all for the shortest
   firstFound?: boolean;
+  // Earlier steps' pieces to keep solved too, named in the grip the step starts in (this step's roles win on conflicts)
+  keep?: Goal;
+  // Pieces earlier steps already did, named in the grip the step starts in (with or without keep), so no grip turn can pass them off as this step's pieces (default: keep)
+  earlier?: Goal;
 }
 
 // Best answer of a step search
@@ -46,7 +50,53 @@ export interface StepResult {
   solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
+  pieces: string; // goal text it solved (this step's pieces plus kept ones), named in the grip it ends in
   searches: number; // searches actually run (grip × offset pairs asking for the same thing are skipped)
+}
+
+// One step of a method, as plain data (what users edit and save as JSON)
+export interface StepConfig {
+  name: string;
+  pieces: string; // goal text, e.g. "DFR FR" or "UF:o UR:o…"
+  keep?: boolean; // also keep every earlier step's pieces solved
+  grips: { bottom: string[]; anyFront: boolean }; // faces that may go on the bottom, and whether y turns pick the front too
+  offsets: string; // offsets text, e.g. "D D2 D'" ("" = none)
+  moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
+  maxDepth?: number | null; // longest solution to look for (null = no limit)
+  firstFound?: boolean; // stop at the first grip × offset with an answer
+}
+
+// A whole method: steps run in order, each from where the last one left the cube
+export interface Method {
+  name: string;
+  steps: StepConfig[];
+}
+
+// One finished step of a method run
+export interface MethodStepResult extends StepResult {
+  name: string; // step name
+  done: string; // moves before this step (after the scramble)
+  offsets: string[]; // offsets the step's goal counted up to
+  moves: number; // move count of the solution
+  ms: number; // search time
+  ok: boolean; // scramble + done + solution really reaches the step's goal
+}
+
+// A whole method run
+export interface MethodResult {
+  steps: MethodStepResult[];
+  solution: string; // every step's solution in order
+  pieces: string; // every step's pieces, named in the grip the run ends in
+  offset: string; // offset the last step left in ("" = none)
+  moves: number;
+  ms: number;
+  ok: boolean; // every step reached its goal
+}
+
+// Options for a method run
+export interface MethodOptions {
+  done?: string; // moves already done after the scramble, before the first step
+  onStep?: (step: MethodStepResult, index: number) => void; // hears about each step as it finishes
 }
 
 // Face turns used when a step search isn't given its own moves
@@ -77,6 +127,10 @@ const ALL_GRIPS = Object.values(BOTTOM_TURNS).flatMap((bottom) => FRONT_TURNS.ma
 // Message when a step keeps centers its moves can't bring home (twips would search forever)
 const CENTERS_OUT =
   "The goal's centers are out of place and the allowed moves can't bring them home: list only the centers the step needs, or allow M, E or S.";
+  
+// Message when every allowed grip only names pieces earlier steps already did (the answer would be a bare grip turn)
+const NOTHING_NEW =
+  "In every allowed grip, this step's pieces are ones earlier steps already did, so a grip turn alone would count: allow other bottom faces, or check the step's pieces.";
 
 // Sort a name's letters so "UR", "RU" and "ur" all mean the same piece
 export function normalizeName(name: string): string {
@@ -134,14 +188,42 @@ export function parseGoalText(text: string): GoalPiece[] {
     });
 }
 
-// Turn goal text into the per-piece roles that maskPattern expects
-export function goalFromText(text: string): Goal {
+// All six centers kept solved (a goal's centers when its text names none)
+function allCenters(): Record<number, Role> {
+  return Object.fromEntries(PIECE_NAMES.CENTERS.map((_, index) => [index, "solve" as Role]));
+}
+
+// Turn goal text into the per-piece roles that maskPattern expects (defaultCenters = false leaves centers out when none is typed)
+export function goalFromText(text: string, defaultCenters = true): Goal {
   const goal: Goal = {};
   // Add each typed piece with its role (a piece typed twice keeps its last role)
   for (const { orbit, index, role } of parseGoalText(text)) (goal[orbit] ??= {})[index] = role;
   // No center typed: keep all six, so slice moves can't move them
-  goal.CENTERS ??= Object.fromEntries(PIECE_NAMES.CENTERS.map((_, index) => [index, "solve" as Role]));
+  if (defaultCenters) goal.CENTERS ??= allCenters();
   return goal;
+}
+
+// Write a goal back as goal text in piece-list order (all six solved centers are left out, since that's what no center means)
+export function goalToText(goal: Goal): string {
+  const centers = Object.values(goal.CENTERS ?? {});
+  const allSix = centers.length === PIECE_NAMES.CENTERS.length && centers.every((role) => role === "solve");
+  return Object.entries(PIECE_NAMES)
+    .filter(([orbit]) => !(orbit === "CENTERS" && allSix))
+    .flatMap(([orbit, names]) => names.flatMap((name, index) => (goal[orbit]?.[index] ? [name + roleSuffix(goal[orbit][index])] : [])))
+    .join(" ");
+}
+
+// True when a kept role already asks at least as much as a step's role (solved covers every role, in place covers swap groups)
+function covers(kept: Role | undefined, role: Role): boolean {
+  return kept === role || kept === "solve" || (kept === "place" && role.startsWith("swap"));
+}
+
+
+// Combine two goals into a new one; `over`'s role wins for a piece in both
+export function mergeGoals(base: Goal, over: Goal): Goal {
+  const merged: Goal = {};
+  for (const goal of [base, over]) for (const [orbit, roles] of Object.entries(goal)) Object.assign((merged[orbit] ??= {}), roles);
+  return merged;
 }
 
 // Hide what the goal doesn't check: each group (and the ignored pieces) shares one id, place / swap / ignored pieces may be turned any way
@@ -223,17 +305,31 @@ function heldPattern(scramble: string, done = ""): KPattern {
   return kpuzzle.defaultPattern().applyAlg(new Alg(gripAfter(scramble, done)).invert()).applyAlg(joinMoves(scramble, done));
 }
 
-// Goal renumbered to the actual pieces that fill its spots in the grip after `scramble` then `done` (e.g. for the viewer's mask)
-export function goalOnCube(text: string, scramble: string, done = ""): Goal {
+// Goal (text or roles) renumbered to the actual pieces that fill its spots in the grip after `scramble` then `done` (e.g. for the viewer's mask)
+export function goalOnCube(goal: string | Goal, scramble: string, done = ""): Goal {
   // Solved cube held in that grip: the piece at each spot is the one that belongs there
   const homes = kpuzzle.defaultPattern().applyAlg(gripAfter(scramble, done)).patternData;
   const onCube: Goal = {};
   // Move each role from its spot number to the number of the piece that belongs there
-  for (const [orbit, roles] of Object.entries(goalFromText(text))) {
+  for (const [orbit, roles] of Object.entries(typeof goal === "string" ? goalFromText(goal) : goal)) {
     const renumbered: Record<number, Role> = (onCube[orbit] = {});
     for (const [spot, role] of Object.entries(roles)) renumbered[homes[orbit].pieces[Number(spot)]] = role;
   }
   return onCube;
+}
+
+// Rename a goal's spots for the grip after a whole-cube rotation, so it still means the same pieces (e.g. "FR" becomes "FL" after y)
+export function rotateGoal(goal: Goal, rotation: string): Goal {
+  const turned = kpuzzle.defaultPattern().applyAlg(rotation).patternData;
+  const renamed: Goal = {};
+  for (const [orbit, roles] of Object.entries(goal)) {
+    const moved: Record<number, Role> = (renamed[orbit] = {});
+    // The rotation brings whatever was on spot `from` to spot `to`
+    turned[orbit].pieces.forEach((from, to) => {
+      if (roles[from]) moved[to] = roles[from];
+    });
+  }
+  return renamed;
 }
 
 // Read move text; throws a clear error on moves the 3x3x3 doesn't have, returns the cleaned-up moves
@@ -381,12 +477,25 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
 
 // Solve only the goal pieces (a step like the cross), trying each grip × offset and keeping the shortest answer
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
-  const goal = goalFromText(pieces);
+  const keep = options.keep;
+  // This step's pieces (with kept pieces, its centers only count when typed, so the kept ones stand)
+  const own = goalFromText(pieces, !keep);
+  // Goal in one grip: the kept pieces renamed for that grip, with this step's pieces on top (no centers left at all = all six, like goal text)
+  const goalFor = (rotation: string): Goal => {
+    if (!keep) return own;
+    const goal = mergeGoals(rotateGoal(keep, rotation), own);
+    goal.CENTERS ??= allCenters();
+    return goal;
+  };
+  // This step's pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
+  const ownPieces = Object.entries(own)
+    .filter(([orbit]) => orbit !== "CENTERS")
+    .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Offsets the goal may be reached up to (an empty list means no offset)
   const offsets = options.offsets?.length ? options.offsets : [""];
   // Orientation is judged from the grip, so orient-group goals can't be shared between grips
-  const gripMatters = Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient")));
+  const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
   // Best answer so far, and the last search error (shown if no grip × offset finds anything)
   let best: StepResult | null = null;
   let bestLength = Infinity;
@@ -396,27 +505,35 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   let searches = 0;
   // How each piece moves under the allowed moves, for the easy-looking scores
   const tables = pieceMoves(generatorMoves);
-  // Every grip with every offset, easiest-looking first (ties keep grip order, no offset first)
-  const combos = (options.rotations ?? [""])
-    .flatMap((rotation) => {
-      // Earlier steps, then this grip's rotation; start = cube held in this grip, with the goal's hidden pieces masked
-      const done = joinMoves(options.done ?? "", rotation);
-      const held = heldPattern(scramble, done);
-      const start = maskPattern(held, goal);
-      // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
-      return offsets.map((offset) => {
-        const target = maskedTarget(goal, offset);
-        return { rotation, offset, done, start, target, ...estimate(held, start, target, goal, tables) };
-      });
-    })
-    .sort((a, b) => a.total - b.total || a.bound - b.bound);
-  for (const { rotation, offset, done, start, target, bound } of combos) {
+  // Every grip with every offset
+  const combos = (options.rotations ?? [""]).flatMap((rotation) => {
+    // Earlier steps, then this grip's rotation; start = cube held in this grip, with the goal's hidden pieces masked
+    const done = joinMoves(options.done ?? "", rotation);
+    const held = heldPattern(scramble, done);
+    const goal = goalFor(rotation);
+    const start = maskPattern(held, goal);
+    // How many of this step's pieces earlier steps already cover in this grip (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
+    const before = rotateGoal(options.earlier ?? keep ?? {}, rotation);
+    const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
+    // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
+    return offsets.map((offset) => {
+      const target = maskedTarget(goal, offset);
+      return { rotation, offset, done, goal, covered, start, target, ...estimate(held, start, target, goal, tables) };
+    });
+  });
+  // Only the grips where earlier steps cover the fewest of this step's pieces (a grip turn can't trade the step's pieces for ones already done),
+  // then easiest-looking first (ties keep grip order, no offset first)
+  const least = Math.min(...combos.map((combo) => combo.covered));
+  // Every grip only names pieces earlier steps already did: stop rather than answer with a bare grip turn
+  if (ownPieces.length && least === ownPieces.length) throw new Error(NOTHING_NEW);
+  const queue = combos.filter((combo) => combo.covered === least).sort((a, b) => a.total - b.total || a.bound - b.bound);
+  for (const { rotation, offset, done, goal, start, target, bound } of queue) {
     // Same grip and same hidden target (an offset the goal can't see), or the same pieces, turns and offset as the cube itself turns them
     const keys = [
       `target/${rotation}/${JSON.stringify(target.patternData)}`,
       [
         "cube",
-        JSON.stringify(goalOnCube(pieces, scramble, done)),
+        JSON.stringify(goalOnCube(goal, scramble, done)),
         movesKey(rotation, generatorMoves),
         gripMatters ? rotation : "",
         movesKey(rotation, [offset]),
@@ -448,7 +565,7 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
       const length = countMoves(moves.toString());
       if (length < bestLength) {
         bestLength = length;
-        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, searches };
+        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, pieces: goalToText(goal), searches };
       }
       // First-answer mode: any answer within the limit will do, so skip the remaining grips and offsets
       if (options.firstFound) break;
@@ -483,4 +600,100 @@ export function reachesGoal(scramble: string, done: string, pieces: string | nul
 // Number of moves in an alg (R2 counts as one, whole-cube rotations don't count)
 export function countMoves(alg: string): number {
   return Array.from(new Alg(alg).experimentalLeafMoves()).filter((move) => !ROTATIONS.includes(move.family)).length;
+}
+
+// Read method data (e.g. parsed JSON) into a Method with every field filled in, in a fixed order; throws a clear error on a bad field
+export function readMethod(data: unknown): Method {
+  const method = (data ?? {}) as Partial<Method>;
+  if (!Array.isArray(method.steps)) throw new Error("A method needs a list of steps.");
+  return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
+}
+
+// Read one step's data, filling defaults (D bottom, face turns, no offsets, no limit) and checking pieces, grips, offsets and moves
+function readStep(data: unknown, index: number): StepConfig {
+  const step = (data ?? {}) as Partial<StepConfig>;
+  const typed = String(step.name ?? "").trim();
+  const name = typed || `Step ${index + 1}`;
+  try {
+    // Goal pieces: no typos, and at least one piece unless the step keeps earlier ones
+    const pieces = String(step.pieces ?? "").trim();
+    const keep = Boolean(step.keep);
+    if (!parseGoalText(pieces).length && !keep) throw new Error("Pick at least one piece, or keep earlier steps' pieces.");
+    // Grips: faces that may go on the bottom
+    const bottom = (step.grips?.bottom ?? ["D"]).map((face) => String(face).toUpperCase());
+    if (!bottom.length || !bottom.every((face) => Object.hasOwn(BOTTOM_TURNS, face))) throw new Error("Bottom faces must be some of U D F B R L.");
+    // Offsets text (checked by reading it)
+    const offsets = String(step.offsets ?? "").trim();
+    offsetsFromText(offsets);
+    // Allowed moves: one real move per entry, no whole-cube turns
+    const moves = (step.moves ?? FACE_MOVES).map((move) => parseMoves(String(move)));
+    if (!moves.length || moves.some((move) => !move || /\s/.test(move) || rotationsIn(move))) {
+      throw new Error("Allowed moves must be a list of single moves without x, y, z.");
+    }
+    // Depth limit: a whole number, or null for none
+    const maxDepth = step.maxDepth == null ? null : Number(step.maxDepth);
+    if (maxDepth !== null && !(Number.isInteger(maxDepth) && maxDepth >= 0)) throw new Error("Max depth must be a whole number (or null for no limit).");
+    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, moves, maxDepth, firstFound: Boolean(step.firstFound) };
+  } catch (error) {
+    // Say which step is wrong (by number, plus its name when it has one)
+    throw new Error(`Step ${index + 1}${typed ? ` (${typed})` : ""}: ${(error as Error).message}`);
+  }
+}
+
+// Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done)
+export async function runMethod(scramble: string, method: Method, options: MethodOptions = {}): Promise<MethodResult> {
+  const steps: MethodStepResult[] = [];
+  // Moves after the scramble so far, always passed as done (never folded into the scramble), so only their x, y, z change the grip
+  let done = options.done ?? "";
+  // Every earlier step's pieces, named in the grip the next step starts in
+  let earlier: Goal = {};
+  for (const [index, step] of method.steps.entries()) {
+    const offsets = offsetsFromText(step.offsets);
+    const started = performance.now();
+    let result: StepResult;
+    try {
+      // Search this step from where the last one ended, keeping the earlier pieces if it asks to
+      result = await solveStep(scramble, step.pieces, {
+        generatorMoves: step.moves,
+        maxDepth: step.maxDepth ?? undefined,
+        rotations: gripRotations(step.grips.bottom, step.grips.anyFront),
+        done,
+        offsets,
+        firstFound: step.firstFound,
+        keep: step.keep ? earlier : undefined,
+        earlier,
+      });
+    } catch (error) {
+      // Say which step found nothing
+      throw new Error(`${step.name}: ${(error as Error).message}`);
+    }
+    const ms = performance.now() - started;
+    const solution = result.solution.toString();
+    // Earlier pieces follow the step's grip turn, then this step's pieces join them (later roles win)
+    earlier = mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.pieces));
+    // Record the step, checked on its own goal and offsets
+    const after = joinMoves(done, solution);
+    const finished: MethodStepResult = {
+      ...result,
+      name: step.name,
+      done,
+      offsets,
+      moves: countMoves(solution),
+      ms,
+      ok: reachesGoal(scramble, after, result.pieces, offsets),
+    };
+    steps.push(finished);
+    options.onStep?.(finished, index);
+    done = after;
+  }
+  // Totals over all steps
+  return {
+    steps,
+    solution: joinMoves(...steps.map((step) => step.solution.toString())),
+    pieces: goalToText(earlier),
+    offset: steps.at(-1)?.offset ?? "",
+    moves: steps.reduce((sum, step) => sum + step.moves, 0),
+    ms: steps.reduce((sum, step) => sum + step.ms, 0),
+    ok: steps.every((step) => step.ok),
+  };
 }
