@@ -63,6 +63,7 @@ const offsetsInput = $<HTMLInputElement>("offsets-input");
 const offsetsError = $("offsets-error");
 const searchCount = $("search-count");
 const maxDepthInput = $<HTMLInputElement>("max-depth");
+const firstFoundBox = $<HTMLInputElement>("first-found");
 const solveButton = $<HTMLButtonElement>("solve-button");
 const statusText = $("status");
 const solutionText = $("solution");
@@ -406,6 +407,8 @@ async function solve(): Promise<void> {
   const goal = mode === "full" ? "Full cube" : presetSelect.value ? presetSelect.selectedOptions[0].text : pieces;
   const generatorMoves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
   const maxDepth = maxDepthInput.value ? Number(maxDepthInput.value) : undefined;
+  // First-answer mode only applies to steps
+  const firstFound = mode === "step" && firstFoundBox.checked;
   const rotations = chosenGrips();
   // Offsets only apply to steps (syncViewer already checked the field)
   const offsets = mode === "step" ? (readOffsets() ?? [""]) : [""];
@@ -433,7 +436,7 @@ async function solve(): Promise<void> {
     let searches = 1;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets });
+      const result = await solveStep(scramble, pieces,{ generatorMoves, maxDepth, rotations, done, offsets, firstFound });
       solution = result.solution.toString();
       offset = result.offset;
       searches = result.searches;
@@ -446,8 +449,8 @@ async function solve(): Promise<void> {
     const run: Run = { scramble, done, mode, pieces, offsets, goal, solution, offset, moves: countMoves(solution), ms, ok };
     runs.unshift(run);
     showResult(run);
-    // Mention how many searches were compared when there was more than one, and the offset left in
-    const compared = searches > 1 ? `, best of ${searches} searches` : "";
+    // Mention how many searches ran (all compared, or up to the first answer), and the offset left in
+    const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
     const offsetNote = offset ? `, offset ${offset}` : "";
     setStatus(
       ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${offsetNote}).` : `${goal}: the solution doesn't reach the goal!`,

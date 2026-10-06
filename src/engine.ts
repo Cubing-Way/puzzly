@@ -37,6 +37,8 @@ export interface StepOptions {
   done?: string;
   // Goal also counts when the cube is off by one of these moves, e.g. ["", "D", "D2", "D'"] for a pseudo-cross (default: [""], no offset)
   offsets?: string[];
+   // Stop at the first grip × offset that finds an answer (within maxDepth) instead of comparing them all for the shortest
+  firstFound?: boolean;
 }
 
 // Best answer of a step search
@@ -299,6 +301,84 @@ function maskedTarget(goal: Goal, offset = ""): KPattern {
   return maskPattern(kpuzzle.defaultPattern().applyAlg(offset), goal);
 }
 
+
+// How one piece type moves on its own: a piece state is spot × twists + twist, and each allowed move (R, R2, R' count apart) maps every state to the next
+interface PieceMoves {
+  twists: number; // twist values a piece of this type can have
+  next: number[][]; // one lookup per allowed move: state before → state after
+}
+
+// Lookups for each piece type under the allowed moves, so a single piece's distance can be found without touching the rest of the cube
+function pieceMoves(moves: string[]): Record<string, PieceMoves> {
+  const solved = kpuzzle.defaultPattern();
+  const tables: Record<string, PieceMoves> = {};
+  for (const orbit of kpuzzle.definition.orbits) tables[orbit.orbitName] = { twists: orbit.numOrientations, next: [] };
+  for (const move of moves) {
+    // Every power of the move (R, R2, R'), until it comes back to solved
+    for (let turned = solved.applyMove(move); !turned.isIdentical(solved); turned = turned.applyMove(move)) {
+      for (const [orbitName, table] of Object.entries(tables)) {
+        const { pieces, orientation } = turned.patternData[orbitName];
+        const next: number[] = [];
+        // The piece that was on spot `from` lands on spot `to`, twisted by that spot's change
+        pieces.forEach((from, to) => {
+          for (let twist = 0; twist < table.twists; twist++) {
+            next[from * table.twists + twist] = to * table.twists + ((twist + orientation[to]) % table.twists);
+          }
+        });
+        table.next.push(next);
+      }
+    }
+  }
+  return tables;
+}
+
+// Fewest allowed moves that take one piece from `state` to a state the goal accepts (Infinity if the moves can't get it there)
+function pieceDistance(table: PieceMoves, state: number, accepts: (state: number) => boolean): number {
+  const seen = new Set([state]);
+  // Breadth-first: every state reachable in `depth` moves, one layer at a time (a piece has only ~24 states)
+  for (let layer = [state], depth = 0; layer.length; depth++) {
+    if (layer.some(accepts)) return depth;
+    const nextLayer: number[] = [];
+    for (const from of layer) {
+      for (const move of table.next) {
+        if (seen.has(move[from])) continue;
+        seen.add(move[from]);
+        nextLayer.push(move[from]);
+      }
+    }
+    layer = nextLayer;
+  }
+  return Infinity;
+}
+
+// How easy a grip × offset looks: each goal piece's own fewest moves to a spot the goal accepts.
+// The largest is a sure lower bound on the answer (bound); the sum ranks how far off the goal looks overall (total)
+function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal, tables: Record<string, PieceMoves>): { bound: number; total: number } {
+  let bound = 0;
+  let total = 0;
+  for (const [orbitName, table] of Object.entries(tables)) {
+    const roles = goal[orbitName] ?? {};
+    const now = held.patternData[orbitName];
+    const masked = start.patternData[orbitName];
+    const want = target.patternData[orbitName];
+    now.pieces.forEach((piece, spot) => {
+      // Pieces the goal ignores don't count
+      if (!roles[piece]) return;
+      // A state is accepted when its spot wants this piece's (shared) id, with the right twist unless the twist is ignored there
+      const id = masked.pieces[spot];
+      const accepts = (state: number) => {
+        const at = Math.floor(state / table.twists);
+        const mod = want.orientationMod?.[at] || table.twists;
+        return want.pieces[at] === id && (state % table.twists) % mod === want.orientation[at] % mod;
+      };
+      const moves = pieceDistance(table, spot * table.twists + now.orientation[spot], accepts);
+      bound = Math.max(bound, moves);
+      total += moves;
+    });
+  }
+  return { bound, total };
+}
+
 // Solve only the goal pieces (a step like the cross), trying each grip × offset and keeping the shortest answer
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const goal = goalFromText(pieces);
@@ -314,13 +394,23 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   // What each searched grip × offset asked for: two pairs asking for the same thing give the same length
   const asked = new Set<string>();
   let searches = 0;
-  // Every grip with every offset, grip by grip (offsets are named in the grip, like the goal's spots)
-  const combos = (options.rotations ?? [""]).flatMap((rotation) => offsets.map((offset) => ({ rotation, offset })));
-  for (const { rotation, offset } of combos) {
-    // Earlier steps, then this grip's rotation
-    const done = joinMoves(options.done ?? "", rotation);
-    // Target = solved cube turned by the offset, with the same pieces hidden (spots are named in the grip)
-    const target = maskedTarget(goal, offset);
+  // How each piece moves under the allowed moves, for the easy-looking scores
+  const tables = pieceMoves(generatorMoves);
+  // Every grip with every offset, easiest-looking first (ties keep grip order, no offset first)
+  const combos = (options.rotations ?? [""])
+    .flatMap((rotation) => {
+      // Earlier steps, then this grip's rotation; start = cube held in this grip, with the goal's hidden pieces masked
+      const done = joinMoves(options.done ?? "", rotation);
+      const held = heldPattern(scramble, done);
+      const start = maskPattern(held, goal);
+      // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
+      return offsets.map((offset) => {
+        const target = maskedTarget(goal, offset);
+        return { rotation, offset, done, start, target, ...estimate(held, start, target, goal, tables) };
+      });
+    })
+    .sort((a, b) => a.total - b.total || a.bound - b.bound);
+  for (const { rotation, offset, done, start, target, bound } of combos) {
     // Same grip and same hidden target (an offset the goal can't see), or the same pieces, turns and offset as the cube itself turns them
     const keys = [
       `target/${rotation}/${JSON.stringify(target.patternData)}`,
@@ -339,8 +429,8 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
     // Only look for answers shorter than the best so far (and within the user's limit)
     const maxDepth = Math.min(options.maxDepth ?? Infinity, bestLength - 1);
     if (maxDepth < 0) break;
-    // Start = cube held in this grip, with the same pieces hidden
-    const start = maskPattern(heldPattern(scramble, done), goal);
+    // Skip a pair whose hardest piece alone needs more moves than allowed: no search there can beat the best so far
+    if (bound > maxDepth) continue;
     // Skip a grip whose goal centers the allowed moves can't bring home (that search would never end)
     if (!centersReachable(start, target, generatorMoves)) {
       lastError ??= new Error(CENTERS_OUT);
@@ -360,6 +450,8 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
         bestLength = length;
         best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, searches };
       }
+      // First-answer mode: any answer within the limit will do, so skip the remaining grips and offsets
+      if (options.firstFound) break;
     } catch (error) {
       // No answer within the limit for this pair: remember why (twips throws a plain string) and try the next one
       lastError = error instanceof Error ? error : new Error(String(error));

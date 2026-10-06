@@ -119,6 +119,10 @@
                     <!-- Optional search limit -->
                     <label for="max-depth" class="label">Max depth <small>empty = no limit</small></label>
                     <input id="max-depth" type="number" min="1" max="30" placeholder="no limit" />
+                    <!-- Faster mode: stop at the first grip × offset with an answer (within max depth) instead of comparing them all -->
+                    <div class="moves">
+                        <label><input id="first-found" type="checkbox" />stop at first answer (any within max depth)</label>
+                    </div>
                 </fieldset>
 
                 <button id="solve-button" type="submit" class="primary">Solve</button>
