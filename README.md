@@ -24,11 +24,12 @@ The site lands in `dist/web` as plain static files you can host anywhere.
 - **Start position**: a random scramble, or any moves you type (Ctrl+Enter solves).
 - **Goal**: *Step* solves only the chosen pieces (presets or the piece chips); *Full cube* solves everything.
 - **Result**: the solution plays on the 3D cube, with move count, time and a check that it really reaches the goal.
-- **Continue from here**: makes the solved position the new start, so steps can be chained (cross, then XCross…).
+- **Done so far**: moves earlier steps did after the scramble; *Continue from here* adds the shown solution here, so steps can be chained (cross, then XCross…). The scramble is judged by its centers; after it only x/y/z change the grip, so M/E/S in a step don't make the next step think the cube was turned.
 - **Runs**: every solve this session; click a row to see it again.
 
-- **Goal**: *Step* solves only the chosen pieces (presets or the piece chips). `UF` must be fully solved, `UF:o` only oriented (it may swap with other `:o` pieces, e.g. EO, OLL), `UF:p` only in place (e.g. CP). *Full cube* solves everything.
+- **Goal**: *Step* solves only the chosen pieces (presets, or the chips with *Chip click sets*). `UF` = solved, `UF:p` = in place with any twist, `UF:o` = oriented and may swap with the other `:o` pieces of its type (`:o2`, `:o3`… are separate groups, e.g. DR: U/D edges `:o`, E-slice edges `:o2`), `UF:s` / `:s2`… = anywhere in its group with any twist. Centers `U L F R B D`: none listed = all six kept, otherwise only the listed ones (e.g. Roux first block `L DL FL BL DFL DBL` with M allowed). *Full cube* solves everything.
 - **Bottom face**: which faces may go on the bottom (plus *any front* for y turns). Every grip is searched and the shortest answer wins; it starts with the rotation to do first (e.g. `x2 L D R D`).
+- **Moves allowed**: face turns plus M, E, S. If a step keeps centers that are out of place and its moves can't bring them home, it stops with a message instead of searching forever.
 
 ## Folder layout
 

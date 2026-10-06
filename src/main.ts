@@ -3,7 +3,6 @@
 // Cube engine (no page code in there)
 import {
   PIECE_NAMES,
-  ROLE_SUFFIX,
   loadEngine,
   parseMoves,
   parseGoalText,
@@ -11,6 +10,8 @@ import {
   goalOnCube,
   gripRotations,
   joinMoves,
+  roleFromSuffix,
+  roleSuffix,
   randomScramble,
   solveStep,
   solveFull,
@@ -25,13 +26,14 @@ import { TwistyPlayer } from "cubing/twisty";
 // One finished solve
 interface Run {
   scramble: string; // start position
+  done: string; // moves earlier steps did after the scramble
   mode: "step" | "full";
   pieces: string; // goal pieces ("" for full solves)
   goal: string; // label shown in the runs table
   solution: string; // grip rotation (if any), then the moves
   moves: number;
   ms: number;
-  ok: boolean; // scramble + solution really reaches the goal
+  ok: boolean; // scramble + done + solution really reaches the goal
 }
 
 // Find a page element by id
@@ -43,12 +45,15 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 const form = $<HTMLFormElement>("solve-form");
 const scrambleInput = $<HTMLTextAreaElement>("scramble-input");
 const scrambleError = $("scramble-error");
+const doneInput = $<HTMLInputElement>("done-input");
+const doneError = $("done-error");
 const randomButton = $<HTMLButtonElement>("random-button");
 const clearButton = $<HTMLButtonElement>("clear-button");
 const stepOptions = $<HTMLFieldSetElement>("step-options");
 const presetSelect = $<HTMLSelectElement>("preset-select");
 const piecesInput = $<HTMLInputElement>("pieces-input");
 const piecesError = $("pieces-error");
+const roleSelect = $<HTMLSelectElement>("role-select");
 const anyFrontBox = $<HTMLInputElement>("any-front");
 const maxDepthInput = $<HTMLInputElement>("max-depth");
 const solveButton = $<HTMLButtonElement>("solve-button");
@@ -70,11 +75,6 @@ const player = new TwistyPlayer({
   colorScheme: "auto",
 });
 $("player-slot").append(player);
-
-// Viewer mask letter per role: full color, only the orientation sticker, orientation sticker dimmed
-const MASK_CHAR: Record<Role, string> = { solve: "-", orient: "O", place: "P" };
-// What a chip click does next: solve → orientation only → position only → off
-const NEXT_ROLE: Record<Role | "off", Role | "off"> = { off: "solve", solve: "orient", orient: "place", place: "off" };
 
 // Every solve so far, newest first
 const runs: Run[] = [];
@@ -106,14 +106,14 @@ function currentMode(): "step" | "full" {
   return (form.elements.namedItem("mode") as RadioNodeList).value as "step" | "full";
 }
 
-// Read the start position; returns it cleaned up, or null and shows why
-function readScramble(): string | null {
+// Read a moves field; returns the moves cleaned up, or null and shows why under the field
+function readMoves(input: HTMLTextAreaElement | HTMLInputElement, error: HTMLElement): string | null {
   try {
-    const moves = parseMoves(scrambleInput.value);
-    scrambleError.textContent = "";
+    const moves = parseMoves(input.value);
+    error.textContent = "";
     return moves;
-  } catch (error) {
-    scrambleError.textContent = (error as Error).message;
+  } catch (problem) {
+    error.textContent = (problem as Error).message;
     return null;
   }
 }
@@ -153,60 +153,75 @@ function goalKey(text: string): string {
   return [...rolesIn(text)].map(([piece, role]) => `${piece}=${role}`).sort().join(" ");
 }
 
-// Viewer mask for the grip after `moves`: goal pieces drawn by role, the rest grey (null = whole cube)
-function maskFor(pieces: string | null, moves: string): string {
-  const goal = pieces === null ? null : goalOnCube(pieces, moves);
+// Viewer mask letter for a role: full color, only the orientation sticker, orientation sticker dimmed, or dimmed for swap groups
+function maskChar(role: Role): string {
+  if (role === "solve") return "-";
+  if (role === "place") return "P";
+  return role.startsWith("orient") ? "O" : "D";
+}
+
+// Viewer mask for the grip after scramble + done: goal pieces drawn by role, the rest grey (null = whole cube)
+function maskFor(pieces: string | null, scramble: string, done: string): string {
+  const goal = pieces === null ? null : goalOnCube(pieces, scramble, done);
   return Object.entries(PIECE_NAMES)
     .map(([orbit, names]) => {
       // One letter per piece: its role's letter, or "I" when the goal ignores it
       const letters = names.map((_, i) => {
         const role = goal ? goal[orbit]?.[i] : "solve";
-        return role ? MASK_CHAR[role] : "I";
+        return role ? maskChar(role) : "I";
       });
       return `${orbit}:${letters.join("")}`;
     })
     .join(",");
 }
 
-// Make one chip per edge and corner; clicking steps it through the roles
+// Make one chip per edge, corner and center; clicking gives it the picked role
 function buildChips(): void {
-  for (const [orbit, box] of [["EDGES", $("edge-chips")], ["CORNERS", $("corner-chips")]] as const) {
+  for (const [orbit, box] of [
+    ["EDGES", $("edge-chips")],
+    ["CORNERS", $("corner-chips")],
+    ["CENTERS", $("center-chips")],
+  ] as const) {
     PIECE_NAMES[orbit].forEach((name, index) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip";
       chip.textContent = name;
       chip.dataset.piece = `${orbit}:${index}`;
-      chip.addEventListener("click", () => cyclePiece(orbit, index, name));
+      chip.addEventListener("click", () => togglePiece(orbit, index, name));
       box.append(chip);
     });
   }
 }
 
-// Show each chip's role from the pieces box (pressed = in the goal, data-role = how)
+// Show each chip's role from the pieces box (pressed = in the goal, data-tag = its role suffix)
 function renderChips(): void {
   const roles = rolesIn(piecesInput.value);
+  // No center typed means all six are kept
+  const allCenters = ![...roles.keys()].some((piece) => piece.startsWith("CENTERS:"));
   for (const chip of document.querySelectorAll<HTMLButtonElement>(".chip")) {
-    const role = roles.get(chip.dataset.piece ?? "");
+    const piece = chip.dataset.piece ?? "";
+    const role = roles.get(piece);
     chip.setAttribute("aria-pressed", String(Boolean(role)));
-    chip.dataset.role = role ?? "";
+    chip.dataset.tag = role ? roleSuffix(role) : "";
+    chip.dataset.auto = String(allCenters && piece.startsWith("CENTERS:"));
   }
 }
 
-// Step one piece to its next role in the pieces box (solve → orientation only → position only → off)
-function cyclePiece(orbit: string, index: number, name: string): void {
+// Give one piece the role picked in "Chip click sets", or remove it when it already has that role
+function togglePiece(orbit: string, index: number, name: string): void {
   const words = piecesInput.value.split(/[\s,]+/).filter(Boolean);
   // Find this piece's word, if it's already there
   const at = words.findIndex((word) => {
     const piece = pieceOf(word);
     return piece?.orbit === orbit && piece.index === index;
   });
-  // Work out the next role from the current one
-  const next = NEXT_ROLE[at === -1 ? "off" : pieceOf(words[at])!.role];
-  // Write it back: remove the word when off, otherwise name + role suffix
-  if (next === "off") words.splice(at, 1);
-  else if (at === -1) words.push(name + ROLE_SUFFIX[next]);
-  else words[at] = name + ROLE_SUFFIX[next];
+  // Role a click gives (the picker only holds valid suffixes)
+  const role = roleFromSuffix(roleSelect.value) ?? "solve";
+  // Same role again removes the word; otherwise write name + role suffix
+  if (at !== -1 && pieceOf(words[at])?.role === role) words.splice(at, 1);
+  else if (at === -1) words.push(name + roleSuffix(role));
+  else words[at] = name + roleSuffix(role);
   piecesInput.value = words.join(" ");
   onInputChange();
 }
@@ -231,14 +246,15 @@ function syncViewer(): boolean {
   stepOptions.disabled = !step;
   renderChips();
   syncPreset();
-  // Validate both inputs (step pieces only in step mode)
-  const scramble = readScramble();
+  // Validate the inputs (step pieces only in step mode)
+  const scramble = readMoves(scrambleInput, scrambleError);
+  const done = readMoves(doneInput, doneError);
   const piecesOk = step ? readPieces() : true;
   if (!step) piecesError.textContent = "";
-  // Update the cube for whatever parsed (mask the goal in the grip the start position is held in)
-  if (scramble !== null) player.experimentalSetupAlg = scramble;
-  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? piecesInput.value : null, scramble ?? "");
-  return scramble !== null && piecesOk;
+  // Update the cube for whatever parsed (mask the goal in the grip the cube is held in now)
+  if (scramble !== null && done !== null) player.experimentalSetupAlg = joinMoves(scramble, done);
+  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? piecesInput.value : null, scramble ?? "", done ?? "");
+  return scramble !== null && done !== null && piecesOk;
 }
 
 // Form edited by hand: refresh the viewer and drop the outdated result
@@ -254,7 +270,7 @@ function showResult(run: Run | null): void {
   player.alg = run?.solution ?? "";
   player.timestamp = "start";
   // Mask the goal pieces of the grip the solution ends in (it may start with a rotation)
-  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "step" ? run.pieces : null, joinMoves(run.scramble, run.solution));
+  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "step" ? run.pieces : null, run.scramble, joinMoves(run.done, run.solution));
   // Text and stats
   solutionText.textContent = run ? run.solution || "(already solved)" : "—";
   movesStat.textContent = run ? String(run.moves) : "—";
@@ -298,18 +314,20 @@ function renderRuns(): void {
 function loadRun(run: Run): void {
   if (busy) return;
   scrambleInput.value = run.scramble;
+  doneInput.value = run.done;
   (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
   if (run.mode === "step") piecesInput.value = run.pieces;
   syncViewer();
   showResult(run);
 }
 
-// Put a new random-state scramble in the start position
+// Put a new random-state scramble in the start position (a new attempt, so nothing is done yet)
 async function newScramble(): Promise<void> {
   setBusy(true);
   setStatus("Generating scramble…");
   try {
     scrambleInput.value = await randomScramble();
+    doneInput.value = "";
     onInputChange();
     setStatus("Ready.");
   } catch (error) {
@@ -328,7 +346,8 @@ async function solve(): Promise<void> {
     return;
   }
   // Gather the inputs
-  const scramble = readScramble() ?? "";
+  const scramble = readMoves(scrambleInput, scrambleError) ?? "";
+  const done = readMoves(doneInput, doneError) ?? "";
   const mode = currentMode();
   const pieces = mode === "step" ? piecesInput.value.trim() : "";
   const goal = mode === "full" ? "Full cube" : presetSelect.value ? presetSelect.selectedOptions[0].text : pieces;
@@ -353,21 +372,21 @@ async function solve(): Promise<void> {
   tick();
   const timer = setInterval(tick, 100);
   try {
-    // Solve (a step tries every chosen grip and keeps the shortest answer)
+    // Solve from scramble + done (a step tries every chosen grip and keeps the shortest answer)
     let solution: string;
     let searches = 1;
-    if (mode === "full") solution = (await solveFull(scramble)).toString();
+    if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done });
       solution = result.solution.toString();
       searches = result.searches;
     }
     const ms = performance.now() - started;
     clearInterval(timer);
     // Double-check the answer on our own pattern
-    const ok = reachesGoal(scramble, solution, mode === "full" ? null : pieces);
+    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : pieces);
     // Record and show the run
-    const run: Run = { scramble, mode, pieces, goal, solution, moves: countMoves(solution), ms, ok };
+    const run: Run = { scramble, done, mode, pieces, goal, solution, moves: countMoves(solution), ms, ok };
     runs.unshift(run);
     showResult(run);
     // Mention how many grips were compared when there was more than one
@@ -398,8 +417,9 @@ scrambleInput.addEventListener("keydown", (event) => {
   }
 });
 
-// Typing in the moves or pieces box, or switching mode, updates the viewer
+// Typing in the moves, done or pieces box, or switching mode, updates the viewer
 scrambleInput.addEventListener("input", onInputChange);
+doneInput.addEventListener("input", onInputChange);
 piecesInput.addEventListener("input", onInputChange);
 for (const radio of form.querySelectorAll<HTMLInputElement>('input[name="mode"]')) {
   radio.addEventListener("change", onInputChange);
@@ -412,19 +432,21 @@ presetSelect.addEventListener("change", () => {
   onInputChange();
 });
 
-// Scramble buttons
+// Scramble buttons (Clear empties the done moves too)
 randomButton.addEventListener("click", newScramble);
 clearButton.addEventListener("click", () => {
   scrambleInput.value = "";
+  doneInput.value = "";
   onInputChange();
 });
 
-// Make the solved position the new start, ready for the next step
+// Add the shown solution to the done moves, ready for the next step
 continueButton.addEventListener("click", () => {
   if (!shown) return;
-  scrambleInput.value = joinMoves(shown.scramble, shown.solution);
+  scrambleInput.value = shown.scramble;
+  doneInput.value = joinMoves(shown.done, shown.solution);
   onInputChange();
-  setStatus("Start moved past the last solve. Pick the next step.");
+  setStatus("Solution added to Done so far. Pick the next step.");
 });
 
 // Copy the shown solution

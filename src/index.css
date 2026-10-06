@@ -158,10 +158,8 @@ select {
   font: inherit;
 }
 textarea,
+#done-input,
 #pieces-input {
-  font-family: var(--mono);
-}
-textarea {
   resize: vertical;
 }
 textarea:focus,

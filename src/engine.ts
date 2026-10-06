@@ -11,10 +11,11 @@ import { experimentalSolveTwips, experimentalSolve3x3x3IgnoringCenters } from "c
 // Lets us build a modified pattern
 import { KPattern, type KPuzzle } from "cubing/kpuzzle";
 
-// What a step checks on a goal piece: solve = home and turned right, orient = turned right (may swap with other orient pieces), place = home, any turn
-export type Role = "solve" | "orient" | "place";
+// What a step checks on a goal piece: solve = home and turned right, place = home with any turn,
+// orientN = turned right anywhere on group N's spots, swapN = anywhere on group N's spots with any turn
+export type Role = "solve" | "place" | `orient${number}` | `swap${number}`;
 
-// Goal pieces by type and piece number, each with its role, e.g. { EDGES: { 4: "solve", 0: "orient" } }
+// Goal pieces by type and piece number, each with its role, e.g. { EDGES: { 4: "solve", 0: "orient1" } }
 export type Goal = Record<string, Record<number, Role>>;
 
 // One piece read from goal text
@@ -32,6 +33,8 @@ export interface StepOptions {
   maxDepth?: number;
   // Grips to try, as rotations from how the cube is held now (default: only the current grip)
   rotations?: string[];
+  // Moves earlier steps already did after the scramble (they change the grip only through x, y, z)
+  done?: string;
 }
 
 // Best answer of a step search
@@ -44,6 +47,9 @@ export interface StepResult {
 // Face turns used when a step search isn't given its own moves
 export const FACE_MOVES = ["U", "R", "F", "D", "L", "B"];
 
+// Whole-cube rotations: they change the grip and don't count as moves
+const ROTATIONS = ["x", "y", "z"];
+
 // Piece names in cubing.js's order: the position in each list is the piece number
 export const PIECE_NAMES: Record<string, string[]> = {
   EDGES: ["UF", "UR", "UB", "UL", "DF", "DR", "DB", "DL", "FR", "FL", "BR", "BL"],
@@ -54,9 +60,6 @@ export const PIECE_NAMES: Record<string, string[]> = {
 // Piece type for each name length: 1 letter = center, 2 = edge, 3 = corner
 export const ORBIT_BY_LENGTH: Record<number, string> = { 1: "CENTERS", 2: "EDGES", 3: "CORNERS" };
 
-// Suffix that marks each role in goal text: "UF" = solve, "UF:o" = orientation only, "UF:p" = position only
-export const ROLE_SUFFIX: Record<Role, string> = { solve: "", orient: ":o", place: ":p" };
-
 // Rotation that puts each face (as held now) on the bottom
 export const BOTTOM_TURNS: Record<string, string> = { D: "", U: "x2", F: "x'", B: "x", R: "z", L: "z'" };
 
@@ -65,6 +68,10 @@ export const FRONT_TURNS = ["", "y", "y2", "y'"];
 
 // Every grip (24 rotations, "as held" first)
 const ALL_GRIPS = Object.values(BOTTOM_TURNS).flatMap((bottom) => FRONT_TURNS.map((front) => joinMoves(bottom, front)));
+
+// Message when a step keeps centers its moves can't bring home (twips would search forever)
+const CENTERS_OUT =
+  "The goal's centers are out of place and the allowed moves can't bring them home: list only the centers the step needs, or allow M, E or S.";
 
 // Sort a name's letters so "UR", "RU" and "ur" all mean the same piece
 export function normalizeName(name: string): string {
@@ -76,7 +83,32 @@ export function joinMoves(...parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
-// Read goal text like "DF DR UF:o UFR:p" into pieces with roles; throws a clear error on a typo
+// Read a role suffix: "" = solve, ":p" = place, ":o" / ":o2"… = oriented in group 1 / 2…, ":s" / ":s2"… = swap group (null if it isn't one)
+export function roleFromSuffix(suffix: string): Role | null {
+  const tag = suffix.toLowerCase();
+  if (tag === "") return "solve";
+  if (tag === ":p") return "place";
+  // Group roles: letter, then an optional group number (1 when left out)
+  const group = /^:([os])([1-9]\d*)?$/.exec(tag);
+  if (!group) return null;
+  return `${group[1] === "o" ? "orient" : "swap"}${Number(group[2] ?? 1)}` as Role;
+}
+
+// Suffix that writes a role in goal text ("" for solve, ":o" for group 1, ":o2" for group 2…)
+export function roleSuffix(role: Role): string {
+  if (role === "solve") return "";
+  if (role === "place") return ":p";
+  // Group roles: first letter, plus the group number unless it's 1
+  const group = role.replace(/^\D+/, "");
+  return `:${role[0]}${group === "1" ? "" : group}`;
+}
+
+// True for roles whose pieces share one id per group (orient and swap groups)
+function isGroupRole(role: Role): boolean {
+  return role.startsWith("orient") || role.startsWith("swap");
+}
+
+// Read goal text like "DF DR UF:o FR:o2 UFR:p L" into pieces with roles; throws a clear error on a typo
 export function parseGoalText(text: string): GoalPiece[] {
   return text
     .split(/[\s,]+/)
@@ -84,8 +116,7 @@ export function parseGoalText(text: string): GoalPiece[] {
     .map((word) => {
       // Split the piece name from its optional role suffix
       const [name, ...suffix] = word.split(":");
-      const tag = suffix.length ? `:${suffix.join(":").toLowerCase()}` : "";
-      const role = (Object.keys(ROLE_SUFFIX) as Role[]).find((r) => ROLE_SUFFIX[r] === tag);
+      const role = roleFromSuffix(suffix.length ? `:${suffix.join(":")}` : "");
       // Pick the piece type from the name's length
       const orbit = ORBIT_BY_LENGTH[name.length];
       const list = orbit ? PIECE_NAMES[orbit] : undefined;
@@ -93,23 +124,22 @@ export function parseGoalText(text: string): GoalPiece[] {
       const index = list ? list.findIndex((n) => normalizeName(n) === normalizeName(name)) : -1;
       // Stop with a clear message on a typo
       if (!orbit || index === -1) throw new Error(`Unknown piece: "${name}"`);
-      if (!role) throw new Error(`Unknown role in "${word}" (use :o or :p)`);
+      if (!role) throw new Error(`Unknown role in "${word}" (use :o, :o2…, :s, :s2… or :p)`);
       return { orbit, index, role };
     });
 }
 
 // Turn goal text into the per-piece roles that maskPattern expects
 export function goalFromText(text: string): Goal {
-  // Always keep every center so slice moves can't move them
-  const goal: Goal = { CENTERS: { 0: "solve", 1: "solve", 2: "solve", 3: "solve", 4: "solve", 5: "solve" } };
-  // Add each typed edge and corner with its role (a piece typed twice keeps its last role)
-  for (const { orbit, index, role } of parseGoalText(text)) {
-    if (orbit !== "CENTERS") (goal[orbit] ??= {})[index] = role;
-  }
+  const goal: Goal = {};
+  // Add each typed piece with its role (a piece typed twice keeps its last role)
+  for (const { orbit, index, role } of parseGoalText(text)) (goal[orbit] ??= {})[index] = role;
+  // No center typed: keep all six, so slice moves can't move them
+  goal.CENTERS ??= Object.fromEntries(PIECE_NAMES.CENTERS.map((_, index) => [index, "solve" as Role]));
   return goal;
 }
 
-// Hide what the goal doesn't check: ignored pieces share one id (any turn), orient pieces share another (turn kept), place pieces keep their id (any turn)
+// Hide what the goal doesn't check: each group (and the ignored pieces) shares one id, place / swap / ignored pieces may be turned any way
 export function maskPattern(pattern: KPattern, goal: Goal): KPattern {
   // Copy the data so the original pattern isn't changed
   const data = structuredClone(pattern.patternData);
@@ -117,21 +147,23 @@ export function maskPattern(pattern: KPattern, goal: Goal): KPattern {
   for (const [orbitName, orbit] of Object.entries(data)) {
     // Role of each goal piece of this type (not listed = ignored)
     const roles = goal[orbitName] ?? {};
-    // Shared ids, picked from the goal (not from where pieces sit) so start and target agree
-    const ids = orbit.pieces.map((_, id) => id);
-    const ignoredId = ids.find((id) => !roles[id]) ?? 0;
-    const orientId = ids.find((id) => roles[id] === "orient") ?? 0;
+    // Shared id per group and for ignored pieces: the first piece number with that role,
+    // picked from the goal (not from where pieces sit) so start and target agree, and never the same for two groups
+    const sharedIds = new Map<string, number>();
+    orbit.pieces.forEach((_, id) => {
+      const group = roles[id] ?? "ignored";
+      if ((group === "ignored" || isGroupRole(group)) && !sharedIds.has(group)) sharedIds.set(group, id);
+    });
     // Per-piece orientation rule (0 = matters, 1 = ignored), starting from the puzzle's own rules
     const mods = orbit.orientationMod ?? orbit.pieces.map(() => 0);
     orbit.orientationMod = mods;
     // Rewrite each spot based on the role of the piece sitting there
     orbit.pieces.forEach((piece, i) => {
       const role = roles[piece];
-      // Orient-only and ignored pieces become interchangeable within their group
-      if (role === "orient") orbit.pieces[i] = orientId;
-      if (!role) orbit.pieces[i] = ignoredId;
-      // Place-only and ignored pieces may be turned any way
-      if (!role || role === "place") {
+      // Group and ignored pieces become interchangeable with the rest of their group
+      if (!role || isGroupRole(role)) orbit.pieces[i] = sharedIds.get(role ?? "ignored")!;
+      // Place, swap and ignored pieces may be turned any way
+      if (!role || role === "place" || role.startsWith("swap")) {
         orbit.orientation[i] = 0;
         mods[i] = 1;
       }
@@ -163,22 +195,33 @@ function netRotation(moves: string): string {
   return gripByCenters.get(centerLayout(kpuzzle.defaultPattern().applyAlg(moves))) ?? "";
 }
 
+// Only the x, y, z rotations of a move sequence, in order
+function rotationsIn(moves: string): string {
+  return Array.from(new Alg(moves).expand().experimentalLeafMoves())
+    .filter((move) => ROTATIONS.includes(move.family))
+    .join(" ");
+}
+
+// Grip after `scramble` then `done`: the scramble is judged by where its centers ended up,
+// after that only x, y, z change the grip (slice and wide moves turn centers, not the hand)
+function gripAfter(scramble: string, done = ""): string {
+  return joinMoves(netRotation(scramble), rotationsIn(done));
+}
+
 // Grips to try: each allowed bottom face, with all four front faces or just the current one
 export function gripRotations(bottoms: string[], anyFront: boolean): string[] {
   return bottoms.flatMap((face) => (anyFront ? FRONT_TURNS : [""]).map((front) => joinMoves(BOTTOM_TURNS[face], front)));
 }
 
-// The cube after `moves` and then `rotation`, renumbered so piece numbers mean "home spot in that grip" (centers back home)
-function heldPattern(moves: string, rotation = ""): KPattern {
-  // Whole grip = rotation already inside the moves, then the extra one
-  const grip = joinMoves(netRotation(moves), rotation);
-  return kpuzzle.defaultPattern().applyAlg(new Alg(grip).invert()).applyAlg(moves).applyAlg(rotation);
+// The cube after `scramble` then `done`, renumbered so piece numbers mean "home spot in the grip it's held in now"
+function heldPattern(scramble: string, done = ""): KPattern {
+  return kpuzzle.defaultPattern().applyAlg(new Alg(gripAfter(scramble, done)).invert()).applyAlg(joinMoves(scramble, done));
 }
 
-// Goal renumbered to the actual pieces that fill its spots in the grip after `moves` (e.g. for the viewer's mask)
-export function goalOnCube(text: string, moves: string): Goal {
+// Goal renumbered to the actual pieces that fill its spots in the grip after `scramble` then `done` (e.g. for the viewer's mask)
+export function goalOnCube(text: string, scramble: string, done = ""): Goal {
   // Solved cube held in that grip: the piece at each spot is the one that belongs there
-  const homes = kpuzzle.defaultPattern().applyAlg(netRotation(moves)).patternData;
+  const homes = kpuzzle.defaultPattern().applyAlg(gripAfter(scramble, done)).patternData;
   const onCube: Goal = {};
   // Move each role from its spot number to the number of the piece that belongs there
   for (const [orbit, roles] of Object.entries(goalFromText(text))) {
@@ -200,36 +243,72 @@ export async function randomScramble(): Promise<string> {
   return (await randomScrambleForEvent("333")).toString();
 }
 
+// Allowed moves as turns of the cube itself in this grip (rotation, move, rotation back), so grips only merge when they allow the same turns
+function movesKey(rotation: string, moves: string[]): string {
+  const back = new Alg(rotation).invert().toString();
+  return moves
+    .map((move) => JSON.stringify(kpuzzle.defaultPattern().applyAlg(joinMoves(rotation, move, back)).patternData))
+    .sort()
+    .join("|");
+}
+
+// True when the allowed moves can bring the start's goal centers to where the target has them (few center layouts, so a quick breadth-first walk)
+function centersReachable(start: KPattern, target: KPattern, moves: string[]): boolean {
+  const goalLayout = centerLayout(target);
+  // Center layouts seen so far, and the patterns still to expand
+  const seen = new Set([centerLayout(start)]);
+  const queue = [start];
+  for (const pattern of queue) {
+    if (centerLayout(pattern) === goalLayout) return true;
+    // Try every allowed move from here, keeping new layouts only
+    for (const move of moves) {
+      const next = pattern.applyMove(move);
+      if (seen.has(centerLayout(next))) continue;
+      seen.add(centerLayout(next));
+      queue.push(next);
+    }
+  }
+  return false;
+}
+
 // Solve only the goal pieces (a step like the cross), trying each grip and keeping the shortest answer
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const goal = goalFromText(pieces);
+  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Target = solved cube with the same pieces hidden (the same for every grip, since spots are named in the grip)
   const target = maskPattern(kpuzzle.defaultPattern(), goal);
-  // Orientation is judged from the grip, so orient-only goals can't be shared between grips
-  const gripMatters = Object.values(goal).some((roles) => Object.values(roles).includes("orient"));
+  // Orientation is judged from the grip, so orient-group goals can't be shared between grips
+  const gripMatters = Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient")));
   // Best answer so far, and the last search error (shown if no grip finds anything)
   let best: StepResult | null = null;
   let bestLength = Infinity;
   let lastError: unknown = null;
-  // What each searched grip asked for: two grips needing the same pieces the same way give the same length
+  // What each searched grip asked for: two grips needing the same pieces with the same turns give the same length
   const asked = new Set<string>();
   let searches = 0;
   for (const rotation of options.rotations ?? [""]) {
+    // Earlier steps, then this grip's rotation
+    const done = joinMoves(options.done ?? "", rotation);
     // Skip a grip that asks for the same thing as one already searched
-    const key = JSON.stringify(goalOnCube(pieces, joinMoves(scramble, rotation))) + (gripMatters ? rotation : "");
+    const key = [JSON.stringify(goalOnCube(pieces, scramble, done)), movesKey(rotation, generatorMoves), gripMatters ? rotation : ""].join("/");
     if (asked.has(key)) continue;
     asked.add(key);
     // Only look for answers shorter than the best so far (and within the user's limit)
     const maxDepth = Math.min(options.maxDepth ?? Infinity, bestLength - 1);
     if (maxDepth < 0) break;
-    // Start = scrambled cube held in this grip, with the same pieces hidden
-    const start = maskPattern(heldPattern(scramble, rotation), goal);
+    // Start = cube held in this grip, with the same pieces hidden
+    const start = maskPattern(heldPattern(scramble, done), goal);
+    // Skip a grip whose goal centers the allowed moves can't bring home (that search would never end)
+    if (!centersReachable(start, target, generatorMoves)) {
+      lastError ??= new Error(CENTERS_OUT);
+      continue;
+    }
     searches++;
     try {
       // Search, passing the depth limit only when there is one
       const moves = await experimentalSolveTwips(kpuzzle, start, {
         targetPattern: target,
-        generatorMoves: options.generatorMoves ?? FACE_MOVES,
+        generatorMoves,
         ...(Number.isFinite(maxDepth) ? { maxDepth } : {}),
       });
       // Keep it if it beats the best so far
@@ -248,22 +327,23 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   return { ...best, searches };
 }
 
-// Solve the whole cube, in the grip the moves leave it in
-export async function solveFull(scramble: string): Promise<Alg> {
-  return experimentalSolve3x3x3IgnoringCenters(heldPattern(scramble));
+// Solve the whole cube, judged by its centers in the grip it's held in
+export async function solveFull(scramble: string, done = ""): Promise<Alg> {
+  return experimentalSolve3x3x3IgnoringCenters(heldPattern(joinMoves(scramble, done)));
 }
 
-// Check that scramble + solution really reaches the goal, in the grip the solution ends in (pieces = null means the whole cube)
-export function reachesGoal(scramble: string, solution: string, pieces: string | null): boolean {
-  const end = heldPattern(joinMoves(scramble, solution));
-  // Full goal: every piece home
-  if (pieces === null) return end.experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
+// Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in (pieces = null means the whole cube)
+export function reachesGoal(scramble: string, done: string, pieces: string | null): boolean {
+  // Full goal: every piece home, judged by the centers
+  if (pieces === null) {
+    return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
+  }
   // Step goal: the goal pieces match the solved cube, everything else hidden
   const goal = goalFromText(pieces);
-  return maskPattern(end, goal).isIdentical(maskPattern(kpuzzle.defaultPattern(), goal));
+  return maskPattern(heldPattern(scramble, done), goal).isIdentical(maskPattern(kpuzzle.defaultPattern(), goal));
 }
 
 // Number of moves in an alg (R2 counts as one, whole-cube rotations don't count)
 export function countMoves(alg: string): number {
-  return Array.from(new Alg(alg).experimentalLeafMoves()).filter((move) => !["x", "y", "z"].includes(move.family)).length;
+  return Array.from(new Alg(alg).experimentalLeafMoves()).filter((move) => !ROTATIONS.includes(move.family)).length;
 }

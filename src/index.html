@@ -21,6 +21,10 @@
                     <label for="scramble-input" class="label">Start position <small>moves from solved</small></label>
                     <textarea id="scramble-input" rows="3" spellcheck="false" autocomplete="off"></textarea>
                     <p id="scramble-error" class="error"></p>
+                    <!-- Moves earlier steps did (Continue adds here); they change the grip only through x, y, z -->
+                    <label for="done-input" class="label">Done so far <small>earlier steps, after the scramble</small></label>
+                    <input id="done-input" type="text" spellcheck="false" autocomplete="off" placeholder="nothing yet" />
+                    <p id="done-error" class="error"></p>
                     <div class="row">
                         <button id="random-button" type="button">New scramble</button>
                         <button id="clear-button" type="button" class="quiet">Clear</button>
@@ -48,15 +52,31 @@
                         <option value="UF:o UR:o UB:o UL:o DF DR:o DB DL:o FR:o FL:o BR:o BL:o">EOLine (EO + DF, DB)</option>
                         <option value="UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o">CO (all corners oriented)</option>
                         <option value="UFR:p UBR:p UBL:p UFL:p DFR:p DFL:p DBL:p DBR:p">CP (all corners in place)</option>
+                        <option value="UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o2 FL:o2 BR:o2 BL:o2">DR (domino reduction)</option>
+                        <option value="L DL FL BL DFL DBL">Roux first block (allow M)</option>
                         <option value="">Custom</option>
                     </select>
 
-                    <!-- Pieces to solve: typed, or toggled with the chips -->
-                    <label for="pieces-input" class="label">Pieces <small>chip clicks cycle: solve → :o orientation only → :p position only</small></label>
+                    <!-- Pieces to solve: typed, or set with the chips -->
+                    <label for="pieces-input" class="label">Pieces <small>no center picked = all six kept</small></label>
                     <input id="pieces-input" type="text" spellcheck="false" autocomplete="off" />
                     <p id="pieces-error" class="error"></p>
+                    <!-- Role a chip click gives (clicking a chip that already has it removes the piece) -->
+                    <div class="brush">
+                        <label for="role-select">Chip click sets</label>
+                        <select id="role-select">
+                            <option value="">solved (home, turned right)</option>
+                            <option value=":o">:o oriented, group 1</option>
+                            <option value=":o2">:o2 oriented, group 2</option>
+                            <option value=":o3">:o3 oriented, group 3</option>
+                            <option value=":s">:s anywhere in group 1, any turn</option>
+                            <option value=":s2">:s2 anywhere in group 2, any turn</option>
+                            <option value=":p">:p in place, any turn</option>
+                        </select>
+                    </div>
                     <div id="edge-chips" class="chips" aria-label="Edges"></div>
                     <div id="corner-chips" class="chips" aria-label="Corners"></div>
+                    <div id="center-chips" class="chips" aria-label="Centers"></div>
                     <!-- Grips to try: faces that may go on the bottom (the shortest answer wins) -->
                     <span class="label">Bottom face <small>as held now; shortest wins</small></span>
                     <div class="moves">
@@ -78,6 +98,9 @@
                         <label><input type="checkbox" name="move" value="D" checked />D</label>
                         <label><input type="checkbox" name="move" value="L" checked />L</label>
                         <label><input type="checkbox" name="move" value="B" checked />B</label>
+                        <label><input type="checkbox" name="move" value="M" />M</label>
+                        <label><input type="checkbox" name="move" value="E" />E</label>
+                        <label><input type="checkbox" name="move" value="S" />S</label>
                     </div>
 
                     <!-- Optional search limit -->
