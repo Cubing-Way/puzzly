@@ -287,6 +287,23 @@ button.primary {
   cursor: pointer;
 }
 
+/* Offsets field with its quick-pick buttons on one line (buttons wrap below on narrow screens) */
+.offsets input {
+  flex: 1 1 9rem;
+  width: auto;
+  min-width: 0;
+}
+.offsets button {
+  padding: 0.45rem 0.6rem;
+}
+
+/* Small note under a field */
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 /* Viewer column: cube on top, result below */
 .viewer {
   display: flex;

@@ -5,7 +5,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 ## Progress
 
 - [x] Part 1 — Groups + centers
-- [ ] Part 2 — Offsets
+- [x] Part 2 — Offsets
 - [ ] Part 3 — Methods (step list) + keep previous
 - [ ] Part 4 — Alternatives
 - [ ] Part 5 — Named whole-state checks (later, one check per chat)
@@ -34,7 +34,7 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
 - `reachesGoal(scramble, solution, pieces)` checks the result in the grip the solution ends in.
 - `countMoves` ignores x/y/z rotations.
 - UI: chips cycle solve → `:o` → `:p` → off; presets (Cross, XCross, First layer, EO, EOLine, CO, CP);
-  "Bottom face" checkboxes + "any front (y turns)"; status says "best of N grips".
+  "Bottom face" checkboxes + "any front (y turns)"; Offsets field + AUF/ADF picks; status says "best of N searches".
 
 ## Facts worth knowing (save re-checking)
 
@@ -50,6 +50,12 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
 - Grip rule (Part 1): grip = `netRotation(scramble)` (centers) + only the x/y/z in `done` (earlier steps). Engine calls take `done` (`StepOptions.done`, `goalOnCube(text, scramble, done)`, `reachesGoal(scramble, done + solution, pieces)`). Part 3's `runMethod` must pass previous solutions as `done`, never fold them into the scramble.
 - Roles are strings `solve | place | orientN | swapN` (`roleFromSuffix` / `roleSuffix`). Grips merge only when the goal pieces and the allowed moves (as turns of the cube body) match. A grip whose kept centers its moves can't bring home is skipped (quick check over center layouts) with a clear error.
 - Testing: no Python on this machine (use the Edit tool). Hundreds of twips searches in one Node process ran out of memory, so split long test runs.
+- Twips `maxDepth` is **exclusive** (it only finds answers shorter than `maxDepth`), so `solveStep` passes `maxDepth + 1`. Twips throws a plain string (`"No solution found!"`); `solveStep` wraps it in an `Error`.
+- Offsets (Part 2): `StepOptions.offsets` (default `[""]`); `offsetsFromText("D D2 D'")` → `["", "D", "D2", "D'"]` (no offset always first; commas split multi-move offsets; x/y/z rejected).
+  Target = `maskedTarget(goal, offset)` (solved cube + offset, masked). Combos = grips × offsets, flat loop, depth tightening across all.
+  A combo is skipped when it repeats (same grip + same masked target) or (same `goalOnCube` + allowed moves + offset as cube turns via `movesKey(rotation, [offset])`), so y grips × `D D2 D'` = 4 searches.
+  `StepResult.offset` = winner (solution excludes it; `invertMoves(offset)` undoes it). `reachesGoal(scramble, done, pieces, offsets)` accepts any offset. Page `Run` stores `offsets` + `offset`.
+  Part 3: `runMethod` must pass each step's offsets to `reachesGoal`; a next step needs the same offsets or the undo moves first.
 ---
 
 ## Part 1 — Groups + centers

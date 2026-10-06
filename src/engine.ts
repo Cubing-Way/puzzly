@@ -35,13 +35,16 @@ export interface StepOptions {
   rotations?: string[];
   // Moves earlier steps already did after the scramble (they change the grip only through x, y, z)
   done?: string;
+  // Goal also counts when the cube is off by one of these moves, e.g. ["", "D", "D2", "D'"] for a pseudo-cross (default: [""], no offset)
+  offsets?: string[];
 }
 
 // Best answer of a step search
 export interface StepResult {
-  solution: Alg; // grip rotation (if any), then the moves
+  solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
   rotation: string; // grip that won ("" = as held)
-  searches: number; // searches actually run (grips asking for the same thing are skipped)
+  offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
+  searches: number; // searches actually run (grip × offset pairs asking for the same thing are skipped)
 }
 
 // Face turns used when a step search isn't given its own moves
@@ -238,6 +241,26 @@ export function parseMoves(text: string): string {
   return alg.toString();
 }
 
+// Moves that undo a move sequence (e.g. to take an offset back out)
+export function invertMoves(moves: string): string {
+  return new Alg(moves).invert().toString();
+}
+
+// Read offset text into a step's offsets list, no offset first: spaces split one-move offsets ("D D2 D'"),
+// commas split offsets of several moves ("U, U D"); throws a clear error on a bad move or a whole-cube turn
+export function offsetsFromText(text: string): string[] {
+  const offsets = [""];
+  for (const part of text.split(text.includes(",") ? "," : /\s+/)) {
+    // Clean up the moves (throws on moves the 3x3x3 doesn't have)
+    const offset = parseMoves(part);
+    // Whole-cube turns are grips, not offsets
+    if (rotationsIn(offset)) throw new Error(`Offset "${offset}" turns the whole cube: use Bottom face / any front for grips.`);
+    // Keep each offset once
+    if (!offsets.includes(offset)) offsets.push(offset);
+  }
+  return offsets;
+}
+
 // New random-state 3x3x3 scramble
 export async function randomScramble(): Promise<string> {
   return (await randomScrambleForEvent("333")).toString();
@@ -271,28 +294,48 @@ function centersReachable(start: KPattern, target: KPattern, moves: string[]): b
   return false;
 }
 
-// Solve only the goal pieces (a step like the cross), trying each grip and keeping the shortest answer
+// What a step aims for: the solved cube turned by an offset ("" = none), with the pieces the goal doesn't check hidden
+function maskedTarget(goal: Goal, offset = ""): KPattern {
+  return maskPattern(kpuzzle.defaultPattern().applyAlg(offset), goal);
+}
+
+// Solve only the goal pieces (a step like the cross), trying each grip × offset and keeping the shortest answer
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const goal = goalFromText(pieces);
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
-  // Target = solved cube with the same pieces hidden (the same for every grip, since spots are named in the grip)
-  const target = maskPattern(kpuzzle.defaultPattern(), goal);
+  // Offsets the goal may be reached up to (an empty list means no offset)
+  const offsets = options.offsets?.length ? options.offsets : [""];
   // Orientation is judged from the grip, so orient-group goals can't be shared between grips
   const gripMatters = Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient")));
-  // Best answer so far, and the last search error (shown if no grip finds anything)
+  // Best answer so far, and the last search error (shown if no grip × offset finds anything)
   let best: StepResult | null = null;
   let bestLength = Infinity;
   let lastError: unknown = null;
-  // What each searched grip asked for: two grips needing the same pieces with the same turns give the same length
+  // What each searched grip × offset asked for: two pairs asking for the same thing give the same length
   const asked = new Set<string>();
   let searches = 0;
-  for (const rotation of options.rotations ?? [""]) {
+  // Every grip with every offset, grip by grip (offsets are named in the grip, like the goal's spots)
+  const combos = (options.rotations ?? [""]).flatMap((rotation) => offsets.map((offset) => ({ rotation, offset })));
+  for (const { rotation, offset } of combos) {
     // Earlier steps, then this grip's rotation
     const done = joinMoves(options.done ?? "", rotation);
-    // Skip a grip that asks for the same thing as one already searched
-    const key = [JSON.stringify(goalOnCube(pieces, scramble, done)), movesKey(rotation, generatorMoves), gripMatters ? rotation : ""].join("/");
-    if (asked.has(key)) continue;
-    asked.add(key);
+    // Target = solved cube turned by the offset, with the same pieces hidden (spots are named in the grip)
+    const target = maskedTarget(goal, offset);
+    // Same grip and same hidden target (an offset the goal can't see), or the same pieces, turns and offset as the cube itself turns them
+    const keys = [
+      `target/${rotation}/${JSON.stringify(target.patternData)}`,
+      [
+        "cube",
+        JSON.stringify(goalOnCube(pieces, scramble, done)),
+        movesKey(rotation, generatorMoves),
+        gripMatters ? rotation : "",
+        movesKey(rotation, [offset]),
+      ].join("/"),
+    ];
+    // Skip a pair that asks for the same thing as one already searched (still noting its keys, so later repeats are caught too)
+    const repeat = keys.some((key) => asked.has(key));
+    for (const key of keys) asked.add(key);
+    if (repeat) continue;
     // Only look for answers shorter than the best so far (and within the user's limit)
     const maxDepth = Math.min(options.maxDepth ?? Infinity, bestLength - 1);
     if (maxDepth < 0) break;
@@ -305,24 +348,24 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
     }
     searches++;
     try {
-      // Search, passing the depth limit only when there is one
+      // Search, passing the depth limit only when there is one (twips only finds answers shorter than its maxDepth, hence + 1)
       const moves = await experimentalSolveTwips(kpuzzle, start, {
         targetPattern: target,
         generatorMoves,
-        ...(Number.isFinite(maxDepth) ? { maxDepth } : {}),
+        ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}),
       });
       // Keep it if it beats the best so far
       const length = countMoves(moves.toString());
       if (length < bestLength) {
         bestLength = length;
-        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, searches };
+        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, searches };
       }
     } catch (error) {
-      // No answer within the limit for this grip: remember why and try the next one
-      lastError = error;
+      // No answer within the limit for this pair: remember why (twips throws a plain string) and try the next one
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
-  // No grip found an answer
+  // No grip × offset found an answer
   if (!best) throw lastError ?? new Error("No solution found.");
   return { ...best, searches };
 }
@@ -332,15 +375,17 @@ export async function solveFull(scramble: string, done = ""): Promise<Alg> {
   return experimentalSolve3x3x3IgnoringCenters(heldPattern(joinMoves(scramble, done)));
 }
 
-// Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in (pieces = null means the whole cube)
-export function reachesGoal(scramble: string, done: string, pieces: string | null): boolean {
+// Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in,
+// up to any of the step's offsets (pieces = null means the whole cube, where offsets don't apply)
+export function reachesGoal(scramble: string, done: string, pieces: string | null, offsets = [""]): boolean {
   // Full goal: every piece home, judged by the centers
   if (pieces === null) {
     return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
   }
-  // Step goal: the goal pieces match the solved cube, everything else hidden
+  // Step goal: the goal pieces match the solved cube turned by one of the offsets, everything else hidden
   const goal = goalFromText(pieces);
-  return maskPattern(heldPattern(scramble, done), goal).isIdentical(maskPattern(kpuzzle.defaultPattern(), goal));
+  const reached = maskPattern(heldPattern(scramble, done), goal);
+  return (offsets.length ? offsets : [""]).some((offset) => reached.isIdentical(maskedTarget(goal, offset)));
 }
 
 // Number of moves in an alg (R2 counts as one, whole-cube rotations don't count)

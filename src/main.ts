@@ -10,6 +10,8 @@ import {
   goalOnCube,
   gripRotations,
   joinMoves,
+  invertMoves,
+  offsetsFromText,
   roleFromSuffix,
   roleSuffix,
   randomScramble,
@@ -29,11 +31,13 @@ interface Run {
   done: string; // moves earlier steps did after the scramble
   mode: "step" | "full";
   pieces: string; // goal pieces ("" for full solves)
+  offsets: string[]; // offsets the goal counted up to ([""] = none)
   goal: string; // label shown in the runs table
   solution: string; // grip rotation (if any), then the moves
+  offset: string; // offset the solution ended up to ("" = none), still in the cube
   moves: number;
   ms: number;
-  ok: boolean; // scramble + done + solution really reaches the goal
+  ok: boolean; // scramble + done + solution really reaches the goal (up to one of the offsets)
 }
 
 // Find a page element by id
@@ -55,6 +59,9 @@ const piecesInput = $<HTMLInputElement>("pieces-input");
 const piecesError = $("pieces-error");
 const roleSelect = $<HTMLSelectElement>("role-select");
 const anyFrontBox = $<HTMLInputElement>("any-front");
+const offsetsInput = $<HTMLInputElement>("offsets-input");
+const offsetsError = $("offsets-error");
+const searchCount = $("search-count");
 const maxDepthInput = $<HTMLInputElement>("max-depth");
 const solveButton = $<HTMLButtonElement>("solve-button");
 const statusText = $("status");
@@ -62,6 +69,7 @@ const solutionText = $("solution");
 const movesStat = $("moves-stat");
 const timeStat = $("time-stat");
 const checkStat = $("check-stat");
+const offsetStat = $("offset-stat");
 const continueButton = $<HTMLButtonElement>("continue-button");
 const copyButton = $<HTMLButtonElement>("copy-button");
 const runsBody = $("runs-body");
@@ -101,6 +109,11 @@ function formatMs(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
+// Count with its word, e.g. "1 grip" or "4 grips"
+function plural(count: number, word: string, many = `${word}s`): string {
+  return `${count} ${count === 1 ? word : many}`;
+}
+
 // Goal mode picked in the form
 function currentMode(): "step" | "full" {
   return (form.elements.namedItem("mode") as RadioNodeList).value as "step" | "full";
@@ -127,6 +140,24 @@ function readPieces(): boolean {
     piecesError.textContent = (error as Error).message;
   }
   return piecesError.textContent === "";
+}
+
+// Read the offsets field; returns the offsets (no offset first), or null and shows why under the field
+function readOffsets(): string[] | null {
+  try {
+    const offsets = offsetsFromText(offsetsInput.value);
+    offsetsError.textContent = "";
+    return offsets;
+  } catch (problem) {
+    offsetsError.textContent = (problem as Error).message;
+    return null;
+  }
+}
+
+// Offsets back as field text (no offset left out; commas only when an offset has several moves)
+function offsetsText(offsets: string[]): string {
+  const typed = offsets.filter(Boolean);
+  return typed.join(typed.some((offset) => offset.includes(" ")) ? ", " : " ");
 }
 
 // Read one word of goal text, or null if it has a typo
@@ -239,6 +270,19 @@ function chosenGrips(): string[] {
   return gripRotations(bottoms, anyFrontBox.checked);
 }
 
+// Show how many searches a step solve may run: grips × offsets (null = offsets unreadable, so no count)
+function showSearchCount(offsets: string[] | null): void {
+  const grips = chosenGrips().length;
+  searchCount.textContent = offsets
+    ? `Up to ${plural(grips * offsets.length, "search", "searches")}: ${plural(grips, "grip")} × ${plural(offsets.length, "offset")} (counting none). Repeats are skipped.`
+    : "";
+}
+
+// Offsets or grips edited: check the offsets and update the search count (the shown result stays)
+function onSearchChange(): void {
+  showSearchCount(readOffsets());
+}
+
 // Push the form into the viewer; returns false if something can't be read
 function syncViewer(): boolean {
   const step = currentMode() === "step";
@@ -246,15 +290,17 @@ function syncViewer(): boolean {
   stepOptions.disabled = !step;
   renderChips();
   syncPreset();
-  // Validate the inputs (step pieces only in step mode)
+  // Validate the inputs (step pieces and offsets only in step mode)
   const scramble = readMoves(scrambleInput, scrambleError);
   const done = readMoves(doneInput, doneError);
   const piecesOk = step ? readPieces() : true;
-  if (!step) piecesError.textContent = "";
+  const offsets = step ? readOffsets() : [""];
+  if (!step) piecesError.textContent = offsetsError.textContent = "";
+  showSearchCount(offsets);
   // Update the cube for whatever parsed (mask the goal in the grip the cube is held in now)
   if (scramble !== null && done !== null) player.experimentalSetupAlg = joinMoves(scramble, done);
   if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? piecesInput.value : null, scramble ?? "", done ?? "");
-  return scramble !== null && done !== null && piecesOk;
+  return scramble !== null && done !== null && piecesOk && offsets !== null;
 }
 
 // Form edited by hand: refresh the viewer and drop the outdated result
@@ -277,6 +323,8 @@ function showResult(run: Run | null): void {
   timeStat.textContent = run ? formatMs(run.ms) : "—";
   checkStat.textContent = run ? (run.ok ? "✓ reaches goal" : "✗ misses goal") : "—";
   checkStat.dataset.kind = run ? (run.ok ? "ok" : "error") : "";
+  // Offset still in the cube, with the moves that undo it
+  offsetStat.textContent = run ? (run.offset ? `${run.offset} (undo: ${invertMoves(run.offset)})` : "none") : "—";
   // Actions need a non-empty solution
   continueButton.disabled = copyButton.disabled = !run?.solution;
   renderRuns();
@@ -293,6 +341,7 @@ function renderRuns(): void {
         String(runs.length - index),
         run.goal,
         String(run.moves),
+        run.offset || "—",
         formatMs(run.ms),
         run.ok ? "✓" : "✗",
         run.solution || "(already solved)",
@@ -316,7 +365,11 @@ function loadRun(run: Run): void {
   scrambleInput.value = run.scramble;
   doneInput.value = run.done;
   (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
-  if (run.mode === "step") piecesInput.value = run.pieces;
+  // Step runs bring back their pieces and offsets too
+  if (run.mode === "step") {
+    piecesInput.value = run.pieces;
+    offsetsInput.value = offsetsText(run.offsets);
+  }
   syncViewer();
   showResult(run);
 }
@@ -354,6 +407,8 @@ async function solve(): Promise<void> {
   const generatorMoves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
   const maxDepth = maxDepthInput.value ? Number(maxDepthInput.value) : undefined;
   const rotations = chosenGrips();
+  // Offsets only apply to steps (syncViewer already checked the field)
+  const offsets = mode === "step" ? (readOffsets() ?? [""]) : [""];
   // A step search needs at least one move and one grip to work with
   if (mode === "step" && generatorMoves.length === 0) {
     setStatus("Pick at least one allowed move.", "error");
@@ -372,27 +427,30 @@ async function solve(): Promise<void> {
   tick();
   const timer = setInterval(tick, 100);
   try {
-    // Solve from scramble + done (a step tries every chosen grip and keeps the shortest answer)
+    // Solve from scramble + done (a step tries every chosen grip × offset and keeps the shortest answer)
     let solution: string;
+    let offset = "";
     let searches = 1;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets });
       solution = result.solution.toString();
+      offset = result.offset;
       searches = result.searches;
     }
     const ms = performance.now() - started;
     clearInterval(timer);
-    // Double-check the answer on our own pattern
-    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : pieces);
+    // Double-check the answer on our own pattern (any of the step's offsets counts)
+    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : pieces, offsets);
     // Record and show the run
-    const run: Run = { scramble, done, mode, pieces, goal, solution, moves: countMoves(solution), ms, ok };
+    const run: Run = { scramble, done, mode, pieces, offsets, goal, solution, offset, moves: countMoves(solution), ms, ok };
     runs.unshift(run);
     showResult(run);
-    // Mention how many grips were compared when there was more than one
-    const compared = searches > 1 ? `, best of ${searches} grips` : "";
+    // Mention how many searches were compared when there was more than one, and the offset left in
+    const compared = searches > 1 ? `, best of ${searches} searches` : "";
+    const offsetNote = offset ? `, offset ${offset}` : "";
     setStatus(
-      ok ? `${goal} solved in ${run.moves} moves (${formatMs(ms)}${compared}).` : `${goal}: the solution doesn't reach the goal!`,
+      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${offsetNote}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
     );
   } catch (error) {
@@ -425,6 +483,21 @@ for (const radio of form.querySelectorAll<HTMLInputElement>('input[name="mode"]'
   radio.addEventListener("change", onInputChange);
 }
 
+// Typing offsets, or changing the grips, updates the search count
+offsetsInput.addEventListener("input", onSearchChange);
+anyFrontBox.addEventListener("change", onSearchChange);
+for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) {
+  box.addEventListener("change", onSearchChange);
+}
+
+// Offset quick picks fill in the offsets field
+for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-offsets]")) {
+  button.addEventListener("click", () => {
+    offsetsInput.value = button.dataset.offsets ?? "";
+    onSearchChange();
+  });
+}
+
 // Picking a preset fills in its pieces ("Custom" just moves to the pieces box)
 presetSelect.addEventListener("change", () => {
   if (presetSelect.value) piecesInput.value = presetSelect.value;
@@ -443,10 +516,17 @@ clearButton.addEventListener("click", () => {
 // Add the shown solution to the done moves, ready for the next step
 continueButton.addEventListener("click", () => {
   if (!shown) return;
+  // Offset still in the cube (read before the result panel is cleared)
+  const offset = shown.offset;
   scrambleInput.value = shown.scramble;
   doneInput.value = joinMoves(shown.done, shown.solution);
   onInputChange();
-  setStatus("Solution added to Done so far. Pick the next step.");
+  // The next step needs the same offsets, or the undo moves first
+  setStatus(
+    offset
+      ? `Solution added to Done so far. The cube is off by ${offset}: keep these offsets for the next step, or add ${invertMoves(offset)} to undo it.`
+      : "Solution added to Done so far. Pick the next step.",
+  );
 });
 
 // Copy the shown solution

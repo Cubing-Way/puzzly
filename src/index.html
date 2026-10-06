@@ -89,6 +89,19 @@
                         <label><input id="any-front" type="checkbox" />any front (y turns)</label>
                     </div>
 
+                    <!-- Offsets: the goal also counts when the cube is off by one of these moves (the solution leaves it in) -->
+                    <label for="offsets-input" class="label">Offsets <small>goal also counts off by these; no offset is always tried</small></label>
+                    <div class="row offsets">
+                        <input id="offsets-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. D D2 D')" />
+                        <!-- Quick picks -->
+                        <button type="button" class="quiet" data-offsets="">None</button>
+                        <button type="button" data-offsets="U U2 U'">AUF</button>
+                        <button type="button" data-offsets="D D2 D'">ADF</button>
+                    </div>
+                    <p id="offsets-error" class="error"></p>
+                    <!-- Searches a step solve may run -->
+                    <p id="search-count" class="hint"></p>
+
                     <!-- Moves the search may use -->
                     <span class="label">Moves allowed</span>
                     <div class="moves">
@@ -122,6 +135,7 @@
                         <div><dt>Moves</dt><dd id="moves-stat">—</dd></div>
                         <div><dt>Time</dt><dd id="time-stat">—</dd></div>
                         <div><dt>Check</dt><dd id="check-stat">—</dd></div>
+                        <div><dt>Offset</dt><dd id="offset-stat">—</dd></div>
                     </dl>
                     <div class="row">
                         <button id="continue-button" type="button" disabled>Continue from here</button>
@@ -136,7 +150,7 @@
                 <div class="table-wrap">
                     <table>
                         <thead>
-                            <tr><th>#</th><th>Goal</th><th>Moves</th><th>Time</th><th>Check</th><th>Solution</th></tr>
+                            <tr><th>#</th><th>Goal</th><th>Moves</th><th>Offset</th><th>Time</th><th>Check</th><th>Solution</th></tr>
                         </thead>
                         <tbody id="runs-body"></tbody>
                     </table>
