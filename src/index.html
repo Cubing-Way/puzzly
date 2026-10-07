@@ -115,8 +115,8 @@
                     <!-- Searches a step solve may run -->
                     <p id="search-count" class="hint"></p>
 
-                    <!-- Moves the search may use -->
-                    <span class="label">Moves allowed</span>
+                    <!-- Moves the search may use: a letter allows every turn of that layer, its 2 box only the half turn (e.g. a DR's second phase: U D R2 L2 F2 B2) -->
+                    <span class="label">Moves allowed <small>letter = any turn of that layer, 2 = half turns only</small></span>
                     <div class="moves">
                         <label><input type="checkbox" name="move" value="U" checked />U</label>
                         <label><input type="checkbox" name="move" value="R" checked />R</label>
@@ -127,6 +127,24 @@
                         <label><input type="checkbox" name="move" value="M" />M</label>
                         <label><input type="checkbox" name="move" value="E" />E</label>
                         <label><input type="checkbox" name="move" value="S" />S</label>
+                    </div>
+                    <!-- Half turns only (a ticked letter above already allows them) -->
+                    <div class="moves">
+                        <label><input type="checkbox" name="move" value="U2" />U2</label>
+                        <label><input type="checkbox" name="move" value="R2" />R2</label>
+                        <label><input type="checkbox" name="move" value="F2" />F2</label>
+                        <label><input type="checkbox" name="move" value="D2" />D2</label>
+                        <label><input type="checkbox" name="move" value="L2" />L2</label>
+                        <label><input type="checkbox" name="move" value="B2" />B2</label>
+                        <label><input type="checkbox" name="move" value="M2" />M2</label>
+                        <label><input type="checkbox" name="move" value="E2" />E2</label>
+                        <label><input type="checkbox" name="move" value="S2" />S2</label>
+                    </div>
+                    <!-- Quick picks: tick exactly these moves -->
+                    <div class="row picks">
+                        <button type="button" data-moves="U R F D L B">Face turns</button>
+                        <button type="button" data-moves="R U">R U</button>
+                        <button type="button" data-moves="U D R2 L2 F2 B2" title="Domino reduction's second phase: keeps a DR state">DR</button>
                     </div>
 
                     <!-- Optional search limit -->

@@ -392,6 +392,18 @@ function chosenGrips(): string[] {
   return gripRotations(bottoms, anyFrontBox.checked);
 }
 
+// Moves the step search may use, from the move boxes: a letter allows every turn of that layer, its 2 box only the half turn (dropped when the letter is ticked too)
+function chosenMoves(): string[] {
+  const ticked = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
+  return ticked.filter((move) => !(move.endsWith("2") && ticked.includes(move.slice(0, -1))));
+}
+
+// Tick the move boxes for these moves (R and R' tick R's box, R2 and R2' its 2 box)
+function showMoves(moves: string[]): void {
+  const boxes = new Set(moves.map((move) => move.replace(/'$/, "")));
+  for (const box of form.querySelectorAll<HTMLInputElement>('input[name="move"]')) box.checked = boxes.has(box.value);
+}
+
 // Show how many searches a step solve may run: alternatives × grips × offsets (null = offsets unreadable, so no count)
 function showSearchCount(offsets: string[] | null): void {
   const grips = chosenGrips().length;
@@ -585,7 +597,7 @@ async function solve(): Promise<void> {
   const alternatives = mode === "step" ? splitAlternatives(piecesInput.value) : [];
   const pieces = alternatives.join(" | ");
   const goal = mode === "full" ? "Full cube" : alternatives.map(goalLabel).join(" | ");
-  const generatorMoves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
+  const generatorMoves = chosenMoves();
   const maxDepth = maxDepthInput.value ? Number(maxDepthInput.value) : undefined;
   // First-answer mode only applies to steps
   const firstFound = mode === "step" && firstFoundBox.checked;
@@ -667,7 +679,7 @@ function stepFromForm(number: number): StepConfig | null {
   const piecesOk = readPieces();
   const offsets = readOffsets();
   const solvableWith = readSolvable();
-  const moves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
+  const moves = chosenMoves();
   const bottom = [...form.querySelectorAll<HTMLInputElement>('input[name="bottom"]:checked')].map((box) => box.value);
   if (!piecesOk || !offsets || !solvableWith) setStatus("Fix the marked field first.", "error");
   else if (!moves.length) setStatus("Pick at least one allowed move.", "error");
@@ -702,7 +714,7 @@ function stepToForm(step: StepConfig): void {
   // Grips and allowed moves as checkboxes
   for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) box.checked = step.grips.bottom.includes(box.value);
   anyFrontBox.checked = step.grips.anyFront;
-  for (const box of form.querySelectorAll<HTMLInputElement>('input[name="move"]')) box.checked = step.moves.includes(box.value);
+  showMoves(step.moves);
   maxDepthInput.value = step.maxDepth == null ? "" : String(step.maxDepth);
   firstFoundBox.checked = Boolean(step.firstFound);
   stepNameInput.value = step.name;
@@ -1014,6 +1026,11 @@ for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-offse
     offsetsInput.value = button.dataset.offsets ?? "";
     onSearchChange();
   });
+}
+
+// Move quick picks tick exactly their moves
+for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-moves]")) {
+  button.addEventListener("click", () => showMoves((button.dataset.moves ?? "").split(" ")));
 }
 
 // Typing solvable-with moves checks them; its quick picks fill in the field

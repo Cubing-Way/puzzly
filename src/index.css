@@ -297,6 +297,11 @@ button.primary {
   padding: 0.45rem 0.6rem;
 }
 
+/* Move quick picks: small buttons under the move boxes (the row wraps them on narrow screens) */
+.picks button {
+  padding: 0.3rem 0.6rem;
+}
+
 /* Pieces box (one alternative per line) with its add button beside it, at the top */
 .pieces {
   align-items: flex-start;

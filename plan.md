@@ -192,6 +192,10 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Numbers (Node): CP line `DL DFL DBL UFR:p UBR:p UBL:p UFL:p DFR:p DBR:p` + R U: 120 closed targets, one table of 8.7M states (depth 8, 1.7 s), answers 4–6 moves in ~0.1 ms; split 1M / 10M and twips give the same lengths.
   Same goal with corners solved (not `:p`): 29,160 closed targets, too big for one table, split 7 / 6 tables, ≤ 2 ms, same lengths. Whole cube + R U: refused (> 100k).
   Testing: `harness/solvable.ts` (fake worker; `ONLY` = sections 1–5) checks each CP line by solving all corners + DL with R U alone afterwards; `harness/direct.ts` compares table / split / twips lengths on the wasm API.
+- Half-turn-only moves (after 7a): the engine always took them (`"R2"` in a step's moves = only R2: Rust `enumerate_turns` and TS `pieceMoves` stop at the first power that is back to solved), only the page couldn't pick them
+  (and `stepToForm` dropped them). Page: a second row of move boxes `U2 … S2` (`chosenMoves()` drops `X2` when `X` is ticked too; `showMoves()` ticks `X` for `X` / `X'` and `X2` for `X2` / `X2'`) and quick picks *Face turns*, *R U*, *DR* (`U D R2 L2 F2 B2`).
+  Separate U / U' boxes would mean nothing: a move's powers are always all used (U' alone = U). DR phase 2 after a DR step (every piece, keep, DR moves), Node, 12 scrambles: finishes of 11–15 moves, shortest within those moves; first solves 2–10 s
+  (small, then big split tables), then 11–13 move finishes 14–131 ms and 14–15 move ones 0.4–4.7 s (generic split tables, no Kociemba-style phase 2 tables). Built page: a 10-move DR-only scramble solved in 10 moves, 1.82 s with 13 table builds.
 ---
 
 ## Part 1 — Groups + centers
