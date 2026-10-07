@@ -25,6 +25,7 @@ import {
   type Role,
   type Method,
   type StepConfig,
+  type MethodStepResult,
   type TableProgress,
 } from "./engine";
 // Example, saved and file methods
@@ -47,6 +48,7 @@ interface Run {
   moves: number;
   ms: number;
   ok: boolean; // scramble + done + solution really reaches the goal (up to one of the offsets)
+  lookahead?: MethodStepResult["lookahead"]; // method steps with lookahead: candidates compared and the winner's moves over the steps they were judged by
 }
 
 // Find a page element by id
@@ -98,6 +100,8 @@ const stepList = $("step-list");
 const stepsEmpty = $("steps-empty");
 const stepNameInput = $<HTMLInputElement>("step-name");
 const keepBox = $<HTMLInputElement>("step-keep");
+const lookaheadInput = $<HTMLInputElement>("step-lookahead");
+const extraMovesInput = $<HTMLInputElement>("step-extra");
 const addStepButton = $<HTMLButtonElement>("add-step");
 const updateStepButton = $<HTMLButtonElement>("update-step");
 const runMethodButton = $<HTMLButtonElement>("run-method");
@@ -451,14 +455,25 @@ function showResult(run: Run | null): void {
   renderMethodRows();
 }
 
-// One table row for a run: label, moves, offset, time, check and solution cells (pick and order them with `cells`)
+// Lookahead cell of a method step: candidates compared → the winner's moves over this step and the ones it was judged by, with the details on hover
+function lookaheadCell(run: Run): { text: string; title: string } {
+  const ahead = run.lookahead;
+  if (!ahead) return { text: "—", title: "" };
+  const total = ahead.total === null ? "—" : String(ahead.total);
+  const title = `Compared ${plural(ahead.candidates, "candidate answer")}; the winner takes ${ahead.total === null ? "?" : plural(ahead.total, "move")} over this step and the next ${plural(ahead.steps, "step")}`;
+  return { text: `${ahead.candidates} → ${total}`, title };
+}
+
+// One table row for a run: label, moves, offset, lookahead, time, check and solution cells (pick and order them with `cells`)
 function runRow(run: Run, label: string, cells: string[], onClick: () => void): HTMLTableRowElement {
   const row = document.createElement("tr");
   // Text for each kind of cell
+  const ahead = lookaheadCell(run);
   const texts: Record<string, string> = {
     label,
     moves: String(run.moves),
     offset: run.offset || "—",
+    lookahead: ahead.text,
     time: formatMs(run.ms),
     check: run.ok ? "✓" : "✗",
     solution: run.solution || "(already solved)",
@@ -467,6 +482,7 @@ function runRow(run: Run, label: string, cells: string[], onClick: () => void): 
     const cell = document.createElement("td");
     cell.textContent = texts[kind];
     cell.dataset.col = kind;
+    if (kind === "lookahead") cell.title = ahead.title;
     row.append(cell);
   }
   // Highlight the shown run and failed checks
@@ -496,7 +512,7 @@ function renderMethodRows(): void {
   methodEmpty.hidden = methodRows.length > 0;
   methodBody.replaceChildren(
     ...methodRows.map(({ label, run }) => {
-      const row = runRow(run, label + alternativeNote(run), ["label", "moves", "offset", "check", "time", "solution"], () => showResult(run));
+      const row = runRow(run, label + alternativeNote(run), ["label", "moves", "offset", "lookahead", "check", "time", "solution"], () => showResult(run));
       row.classList.toggle("total", run.mode === "method");
       return row;
     }),
@@ -617,6 +633,11 @@ async function solve(): Promise<void> {
   }
 }
 
+// A number field's value as a whole number of at least 0 (empty or unreadable = 0)
+function wholeNumber(value: string): number {
+  return Math.max(0, Math.floor(Number(value) || 0));
+}
+
 // Read the step form into a method step (named `Step N` when the name is blank); returns null and shows why when a field can't be read
 function stepFromForm(number: number): StepConfig | null {
   if (currentMode() !== "step") {
@@ -642,6 +663,9 @@ function stepFromForm(number: number): StepConfig | null {
       moves,
       maxDepth: maxDepthInput.value ? Number(maxDepthInput.value) : null,
       firstFound: firstFoundBox.checked,
+      // Lookahead (later steps that judge this step's answers) and extra moves: whole numbers, 0 when empty
+      lookahead: wholeNumber(lookaheadInput.value),
+      extraMoves: wholeNumber(extraMovesInput.value),
     };
   }
   return null;
@@ -661,6 +685,8 @@ function stepToForm(step: StepConfig): void {
   firstFoundBox.checked = Boolean(step.firstFound);
   stepNameInput.value = step.name;
   keepBox.checked = Boolean(step.keep);
+  lookaheadInput.value = String(step.lookahead ?? 0);
+  extraMovesInput.value = String(step.extraMoves ?? 0);
   onInputChange();
 }
 
@@ -674,6 +700,7 @@ function stepSummary(step: StepConfig): string {
     `moves ${step.moves.join(" ")}`,
     step.maxDepth == null ? "" : `max ${step.maxDepth}`,
     step.firstFound ? "first answer" : "",
+    step.lookahead ? `lookahead ${step.lookahead}${step.extraMoves ? ` (+${step.extraMoves} moves)` : ""}` : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -804,6 +831,8 @@ function loadMethod(next: Method): void {
   editing = -1;
   stepNameInput.value = "";
   keepBox.checked = false;
+  lookaheadInput.value = "0";
+  extraMovesInput.value = "0";
   methodChanged();
   dirty = false;
   syncDeleteButton();
@@ -838,7 +867,8 @@ async function runWholeMethod(): Promise<void> {
   const tables = tableTracker();
   const tick = () => {
     const index = methodRows.length;
-    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})… ${formatMs(performance.now() - started)}${tables.note()}`);
+    const looking = running.steps[index]?.lookahead && index < running.steps.length - 1 ? " · looking ahead" : "";
+    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})${looking}… ${formatMs(performance.now() - started)}${tables.note()}`);
   };
   tick();
   const timer = setInterval(tick, 100);
@@ -862,6 +892,7 @@ async function runWholeMethod(): Promise<void> {
           moves: step.moves,
           ms: step.ms,
           ok: step.ok,
+          lookahead: step.lookahead,
         };
         methodRows.push({ label: `${index + 1}. ${step.name}`, run });
         renderMethodRows();
@@ -887,9 +918,12 @@ async function runWholeMethod(): Promise<void> {
     methodRows.push({ label: "Total", run: total });
     runs.unshift(total);
     showResult(total);
+    // Candidate answers the lookahead steps compared, for the status line
+    const compared = result.steps.reduce((sum, step) => sum + (step.lookahead?.candidates ?? 0), 0);
+    const comparedNote = compared ? `, lookahead compared ${plural(compared, "candidate")}` : "";
     setStatus(
       result.ok
-        ? `${running.name} done in ${plural(result.moves, "move")} over ${plural(result.steps.length, "step")} (${formatMs(total.ms)}${tables.summary()}).`
+        ? `${running.name} done in ${plural(result.moves, "move")} over ${plural(result.steps.length, "step")} (${formatMs(total.ms)}${comparedNote}${tables.summary()}).`
         : `${running.name}: a step's solution doesn't reach its goal!`,
       result.ok ? "ok" : "error",
     );

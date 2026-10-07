@@ -7,6 +7,7 @@ use cubing::kpuzzle::{KPatternData, KPuzzle};
 use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
+use crate::split::{answer_list, deepen, move_pruning, read_options, GoalCheck, NO_SOLUTION};
 
 // Version of a table's saved bytes: bump it whenever coords.rs numbers states differently (or the layout below changes), so tables saved by older code are rebuilt, never misread
 pub const TABLE_FORMAT: u32 = 1;
@@ -23,8 +24,6 @@ pub fn table_format() -> u32 {
 
 // Table value for a state not reached (yet): distances 0..14 fit in the other 4-bit values
 pub const UNSEEN: u8 = 15;
-// Same error text as twips, so the engine treats both the same
-const NO_SOLUTION: &str = "No solution found!";
 // Layers stay a list of states while smaller than 1/QUEUE_SHARE of the table; bigger ones are found by scanning
 const QUEUE_SHARE: u64 = 256;
 // Longest list a layer may stay
@@ -48,6 +47,10 @@ pub struct TableCore {
     inner_next: Vec<u16>,
     // Deepest distance in the table
     depth: u8,
+    // Each target's state, and the move pruning, for listing answers
+    goals: Vec<(Units, Units)>,
+    follow: Vec<bool>,
+    groups: usize,
 }
 
 // Distance stored for a state
@@ -79,6 +82,13 @@ fn setup(kpuzzle_json: &str, targets_json: &str, moves_json: &str) -> Result<(KP
     let turns = enumerate_turns(&kpuzzle, &moves)?;
     let coords = Coords::new(&kpuzzle, &targets, turns)?;
     Ok((kpuzzle, targets, coords))
+}
+
+// What listing answers needs besides the distances: each target's state in the numbering, and the move pruning
+fn listing_parts(kpuzzle: &KPuzzle, targets: &[KPatternData], coords: &Coords) -> Result<(Vec<(Units, Units)>, Vec<bool>, usize), String> {
+    let goals = targets.iter().map(|target| coords.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<Vec<_>, _>>()?;
+    let (follow, groups) = move_pruning(kpuzzle, &coords.turns);
+    Ok((goals, follow, groups))
 }
 
 // Inner turn table: every inner value through every turn
@@ -113,7 +123,8 @@ impl DistanceTable {
         // Turn tables for the outer part, so each block's neighbours are lookups
         coords.build_tables();
         let inner_next = inner_turns(&coords);
-        let mut table = TableCore { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0 };
+        let (goals, follow, groups) = listing_parts(&kpuzzle, &targets, &coords)?;
+        let mut table = TableCore { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0, goals, follow, groups };
         table.fill(&targets)?;
         // The outer turn tables only speed up the fill; answers unpack pieces instead
         table.coords.outer.drop_tables();
@@ -125,7 +136,7 @@ impl DistanceTable {
     pub fn from_bytes(kpuzzle_json: &str, targets_json: &str, moves_json: &str, bytes: &[u8]) -> Result<DistanceTable, String> {
         // Show Rust panics in the browser console instead of a bare "unreachable"
         console_error_panic_hook::set_once();
-        let (kpuzzle, _, coords) = setup(kpuzzle_json, targets_json, moves_json)?;
+        let (kpuzzle, targets, coords) = setup(kpuzzle_json, targets_json, moves_json)?;
         // Header: same magic, same format, same state count, and exactly that many distances after it
         let size = coords.size();
         let fits = bytes.len() == HEADER + (size as usize).div_ceil(2)
@@ -136,7 +147,8 @@ impl DistanceTable {
             return Err("Saved table doesn't match this goal or table format".to_owned());
         }
         let inner_next = inner_turns(&coords);
-        Ok(DistanceTable { core: Rc::new(TableCore { kpuzzle, coords, nibbles: bytes[HEADER..].to_vec(), inner_next, depth: bytes[16] }) })
+        let (goals, follow, groups) = listing_parts(&kpuzzle, &targets, &coords)?;
+        Ok(DistanceTable { core: Rc::new(TableCore { kpuzzle, coords, nibbles: bytes[HEADER..].to_vec(), inner_next, depth: bytes[16], goals, follow, groups }) })
     }
 
     // The table as bytes (header + 4-bit distances), to save and load later with fromBytes
@@ -155,6 +167,22 @@ impl DistanceTable {
     // Shortest moves from a start pattern to a target; options_json is like twips's ({"maxDepth": 9} only finds answers shorter than 9, or {})
     pub fn search(&self, start_json: &str, options_json: &str) -> Result<String, String> {
         self.core.search(start_json, options_json)
+    }
+
+    // Every answer from a start pattern shorter than {"maxDepth": n}, shortest first, up to {"maxAnswers": k}, as a JSON list of move texts
+    // (an answer never passes through a target on its way): IDA* with this table as its exact guide
+    pub fn list(&self, start_json: &str, options_json: &str) -> Result<String, String> {
+        let core = &self.core;
+        // Start, depth limit (answers shorter than it) and answers wanted (an exact table needs no node budget)
+        let start = pattern_data(&core.kpuzzle, start_json)?;
+        let (limit, _, max_answers) = read_options(options_json)?;
+        // The start's tracked pieces (none when an untouched spot is wrong: no turn can fix it), also as this table's state
+        let whole = core.coords.read(&start).ok_or(NO_SOLUTION)?;
+        let inner = core.coords.inner.rank(&whole.1, &core.coords.binomials);
+        // Deepen with this one table, checking answers on its own numbering
+        let check = GoalCheck { full: &core.coords, goals: &core.goals, follow: &core.follow, groups: core.groups };
+        let (answers, _) = deepen(&[Rc::clone(core)], &[(whole.0, inner)], whole, &check, limit, u64::MAX, Some(max_answers));
+        Ok(answer_list(&core.coords, &answers?))
     }
 
     // Fewest moves from a start pattern to a target, without listing them (Infinity when the allowed moves can't get there)

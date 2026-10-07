@@ -13,7 +13,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 5b — Split tables + IDA* (Rust): goals too big for one table
 - [x] Part 5c — Rank combos by exact distance + table lifecycle (IndexedDB, idle stop)
 - [ ] Part 5d — Table files: option to download (export) a method's tables and load them back
-- [ ] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
+- [x] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
 - [ ] Part 7 — Named whole-state checks (later, one check per chat)
 
 ## Goal of the project
@@ -163,6 +163,20 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Testing: the fake Worker must use `setImmediate`, not `setTimeout` (Windows' ~15 ms timer tick added ~30 ms per round trip and made the 2-request flow look slow). A replay mode (solve each step from the old run's
   state) compares move counts when ties pick other answers. `harness/fakeidb.ts` style: a tiny file-backed `indexedDB` (open / transaction / objectStore get, put, delete, getAllKeys) set before importing the worker.
   On 2026-10-07 the built-in browser refused to open localhost, so storage and idle stop were checked in Node only (see 5c's Done).
+- Lookahead (Part 6): Rust `DistanceTable.list(start, options)` / `SplitSearch.list(start, options)` = every answer shorter than `maxDepth`, shortest first, up to `maxAnswers` (`maxNodes` as in search), as a JSON list of move texts.
+  One IDA* driver, `deepen()` in `split.rs`, serves search (first answer) and list; an exact table runs it as its only table (`TableCore` now keeps `goals` + `follow` / `groups` for the goal check and move pruning, `move_pruning()` shared).
+  Listing never extends a path that is already at the goal (that answer + goal-keeping moves, e.g. cross + U, is dominated: the next step can make those moves itself), checked per node only in list mode (every table at 0, then the whole goal).
+  Worker: request kind `"list"` (+ `maxAnswers`) goes through the same small → big tier flow as search (`ask()`); twips answers a list with its one answer.
+  Engine: `solveStep` = `stepCombos` (combos measured, closest first) + `searchCombos` (the greedy loop) + `stepResult`. `stepCandidates(scramble, pieces, { ...StepOptions, extraMoves, maxCandidates })` = solveStep's answer first,
+  then each combo's list up to shortest + `extraMoves` (within `maxDepth`), kept once per end state (grip + whole held pattern), sorted by length, more fresh pieces, combo order, capped at `MAX_CANDIDATES` (64). A 0-move step gives only itself.
+  `StepConfig.lookahead` / `extraMoves` (`readStep` fills 0, placed after `firstFound`); 0 = greedy, identical to before (checked: 7 methods × 4 scrambles, same solutions, offsets and search counts).
+  `runMethod`: a step with lookahead N (capped at the steps left) judges each candidate by its moves + the next N steps' own shortest answers, all candidates at once (`Promise.all`); fewest total wins, ties keep the first (greedy's answer).
+  Greedy solves are cached per run (`solveOwn`, key = step index + done + earlier pieces text) and shared with the real run, so a greedy step right after a lookahead step is usually free. `MethodStepResult.lookahead = { candidates, steps, total } | null`.
+  Answer counts (4 scrambles): cross shortest 1–7 (pseudo cross 3–19), +1 move 17–190 (51–512), +2 223–3,800 (806–11,000); XCross +2 77–2,060, pseudo XCross 252–4,926. So the cap of 64 is hit at +1 on crosses and almost always at +2;
+  past the cap, the DFS move order picks which longer answers make it (within one length: more fresh pieces, then closer combos first). Listing time: under 1 ms (shortest), 0.2–11 ms (+1 cross), 10–180 ms (+2 pseudo XCross).
+  Page: method panel "Lookahead [n] steps, up to [n] extra moves" (`step-lookahead`, `step-extra`); results table "Lookahead" column `candidates → total` (details on hover); status "lookahead compared N candidates", live " · looking ahead".
+  Testing: `harness/la.ts` style runs (fake Worker; env `LA`, `EXTRA`, `ONLY` = step index set the steps' lookahead), and a direct-wasm list check (each answer reaches a target, never passes one, within the limit, once, shortest first;
+  exact-table list = forced-split list on cross / pseudo cross / XCross / pseudo XCross; a start already at the goal lists `[""]`). TypeScript isn't in node_modules: `npm install typescript` in a scratch folder for `tsc --noEmit`.
 ---
 
 ## Part 1 — Groups + centers
@@ -345,6 +359,18 @@ The goal side already works: offsets `D D2 D'` mean "D-layer pieces one D turn o
 
 **Test:** with lookahead 1, step 1 + step 2 is never longer than greedy's step 1 + step 2 (same scramble); on the scramble above and several random ones, the pseudo-slotting example
 ends some pair steps with a D offset and is at most as long as greedy overall in most runs (report the numbers); old method JSON without `lookahead` gives the same results as before.
+
+**Done:** see "Lookahead (Part 6)" in Facts. Candidates = every shortest answer of every alternative × grip × offset, plus answers up to `extraMoves` longer (at most 64), so "best per grip × offset" became "all of them within the window".
+Totals on 8 scrambles (the one above + 7 seeded), greedy → lookahead 1 → lookahead 1 with 1 extra move → lookahead 2: pseudo-slotting 218 → 197 → 183 → 192 (2 extra moves: 187, but ~3 s per run);
+CFOP 227 → 211 → 188; ZZ 202 → 184 (1 + 1); "cross | XCross" with lookahead 1 + 2 extra on that step only 219 → 199 (XCrosses up to 2 moves longer than the cross now win when they save the pair).
+The scramble above: greedy pseudo-slotting is now 32 (5c's folded offsets already left D' on the cross; the 35 was before 5c), lookahead 1 → 23, with D2 left on the cross and pair 1. D offsets show up in many pair steps.
+Lookahead 1 on step 1 only: step 1 + step 2 never longer than greedy's (24 checks: CFOP cross, pseudo cross, pseudo pair 1 with 1 extra move; 10 of them shorter). Lookahead on every step is still greedy per window, not optimal overall:
+pseudo-slotting 1 + 1 was 1 move longer than greedy on 1 of 8 scrambles (lookahead 2: also 1 of 8), shorter or equal on the rest.
+Times (Node fake worker; first run with table builds / later runs): pseudo-slotting 1 + 1 4.8 s / 0.5–1.3 s; CFOP 1 + 1 5.2 s / 0.4–0.9 s; "cross | XCross" 1 + 2 4.4 s / 0.5–0.7 s.
+Examples: pseudo-slotting now has lookahead 1 + 1 extra move on the cross and every pair, "CFOP (cross or XCross, lookahead)" has 1 + 2 on its first step; CFOP and ZZ stay greedy as baselines.
+On the harness's own 4 scrambles the two examples went 105 → 90 and 113 → 98 moves.
+5c's follow-up (prefer no offset on ties) needs no rule of its own: pair 4 with lookahead 1 counts the ADF step, so an offset pays for its fix there.
+Not done: beam search (keeping several partial solves); candidates are only judged by greedy runs of the next steps. Not checked in a real browser (the pane refused localhost again): the page changes are type-checked and built.
 
 ## Part 7 — Named whole-state checks (later, one per chat)
 

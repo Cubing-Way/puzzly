@@ -6,11 +6,11 @@ use cubing::alg::Move;
 use cubing::kpuzzle::{KPatternData, KPatternOrbitData, KPuzzle, KPuzzleOrbitName, KTransformationData};
 use wasm_bindgen::prelude::*;
 
-use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Units};
+use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
 use crate::table::{DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
-const NO_SOLUTION: &str = "No solution found!";
+pub(crate) const NO_SOLUTION: &str = "No solution found!";
 // Error when a search used up its maxNodes (the caller may switch to bigger sub-tables)
 const NODE_LIMIT: &str = "Node limit reached";
 // Temporary id for the pieces a sub-table leaves out (they become one shared, twist-free class)
@@ -181,6 +181,110 @@ fn commute(kpuzzle: &KPuzzle, a: &KTransformationData, b: &KTransformationData) 
     })
 }
 
+// Move pruning for a set of turns: may a turn of group b follow one of group a ([a * groups + b]); never two turns of one move in a row,
+// and of two moves that commute only the lower-numbered one first; also returns the number of groups
+pub(crate) fn move_pruning(kpuzzle: &KPuzzle, turns: &[Turn]) -> (Vec<bool>, usize) {
+    let groups = turns.iter().map(|turn| turn.group + 1).max().unwrap_or(0);
+    let mut follow = vec![true; groups * groups];
+    // Rule out each pair of turns that repeats a move, or puts two commuting moves in the higher-numbered order
+    for a in turns {
+        for b in turns {
+            if a.group == b.group || (b.group < a.group && commute(kpuzzle, &a.data, &b.data)) {
+                follow[a.group * groups + b.group] = false;
+            }
+        }
+    }
+    (follow, groups)
+}
+
+// What an IDA* run checks answers with: the whole goal's numbering, each target's state in it, and the move pruning
+pub(crate) struct GoalCheck<'a> {
+    pub full: &'a Coords,
+    pub goals: &'a [(Units, Units)],
+    pub follow: &'a [bool],
+    pub groups: usize,
+}
+
+// Options of a search or list request: answers shorter than maxDepth (twips style), a node budget, and how many answers a list may give
+pub(crate) fn read_options(options_json: &str) -> Result<(u64, u64, usize), String> {
+    let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
+    let limit = options["maxDepth"].as_u64().unwrap_or(u64::MAX);
+    let max_nodes = options["maxNodes"].as_u64().unwrap_or(u64::MAX);
+    let max_answers = options["maxAnswers"].as_u64().unwrap_or(u64::MAX).clamp(1, usize::MAX as u64) as usize;
+    Ok((limit, max_nodes, max_answers))
+}
+
+// Turn lists as a JSON list of move texts, e.g. ["R U R'", "F R"]
+pub(crate) fn answer_list(full: &Coords, answers: &[Vec<usize>]) -> String {
+    let texts: Vec<String> = answers.iter().map(|path| path_text(full, path)).collect();
+    serde_json::to_string(&texts).unwrap_or_default()
+}
+
+// One answer's moves as text
+fn path_text(full: &Coords, path: &[usize]) -> String {
+    path.iter().map(|&turn| full.turns[turn].name.clone()).collect::<Vec<_>>().join(" ")
+}
+
+// IDA* over these tables from their start states (`whole` = the start in the whole goal's numbering), for answers shorter than `limit`:
+// the first shortest answer, or with `list` every answer, shortest first, up to that many (an answer never passes through the goal on its way);
+// gives the answers as turn lists (or NO_SOLUTION / NODE_LIMIT) and the nodes visited
+pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, limit: u64, max_nodes: u64, list: Option<usize>) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
+    // Never deeper than MAX_LENGTH (the search state has room for that many moves)
+    let limit = limit.min(MAX_LENGTH as u64 + 1);
+    // Search state: room for every depth up to MAX_LENGTH
+    let count = tables.len();
+    let mut ida = Ida {
+        tables,
+        full: check.full,
+        goals: check.goals,
+        whole,
+        follow: check.follow,
+        groups: check.groups,
+        outer: vec![Units::new(); (MAX_LENGTH as usize + 1) * count],
+        inner: vec![0; (MAX_LENGTH as usize + 1) * count],
+        bounds: vec![0; (MAX_LENGTH as usize + 1) * count],
+        order: (0..count).collect(),
+        path: vec![],
+        cut: false,
+        nodes: 0,
+        max_nodes,
+        gave_up: false,
+        listing: list.is_some(),
+        max_answers: list.unwrap_or(1),
+        answers: vec![],
+    };
+    // Each table's start state; the largest distance is the first bound
+    let mut bound = 0;
+    for (t, &(outer, inner)) in starts.iter().enumerate() {
+        let distance = tables[t].distance(&outer, inner);
+        if distance == UNSEEN {
+            return (Err(NO_SOLUTION), 0);
+        }
+        bound = bound.max(distance);
+        (ida.outer[t], ida.inner[t], ida.bounds[t]) = (outer, inner, distance);
+    }
+    // Deepen one move at a time until the first answer (or enough answers) turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)
+    while (bound as u64) < limit {
+        ida.cut = false;
+        if ida.dfs(0, bound, NO_GROUP) {
+            break;
+        }
+        if ida.gave_up || !ida.cut {
+            break;
+        }
+        bound += 1;
+    }
+    // Out of nodes, nothing within the limit, or the answers
+    let result = if ida.gave_up {
+        Err(NODE_LIMIT)
+    } else if ida.answers.is_empty() {
+        Err(NO_SOLUTION)
+    } else {
+        Ok(std::mem::take(&mut ida.answers))
+    };
+    (result, ida.nodes)
+}
+
 // One sub-table: how a pattern is relabeled for it, its targets as JSON (the cache key), its estimated size, and the table once attached
 struct Sub {
     relabel: Relabel,
@@ -259,15 +363,7 @@ impl SplitSearch {
             return Err("No sub-table fits".to_owned());
         }
         // Move pruning: never two turns of one move in a row, and of two moves that commute only the lower-numbered one first
-        let groups = moves.len();
-        let mut follow = vec![true; groups * groups];
-        for a in &full.turns {
-            for b in &full.turns {
-                if a.group == b.group || (b.group < a.group && commute(&kpuzzle, &a.data, &b.data)) {
-                    follow[a.group * groups + b.group] = false;
-                }
-            }
-        }
+        let (follow, groups) = move_pruning(&kpuzzle, &full.turns);
         Ok(SplitSearch { kpuzzle, full, goals, subs, follow, groups, nodes: 0.0 })
     }
 
@@ -317,67 +413,35 @@ impl SplitSearch {
     // Shortest answer from a start pattern, with twips's contract ({"maxDepth": 9} only finds answers shorter than 9, or {} for no limit);
     // {"maxNodes": n} gives up with NODE_LIMIT after n search nodes
     pub fn search(&mut self, start_json: &str, options_json: &str) -> Result<String, String> {
-        // Start, depth limit (answers shorter than it), node budget, and the attached sub-tables
+        let answers = self.run(start_json, options_json, false)?;
+        Ok(path_text(&self.full, &answers[0]))
+    }
+
+    // Every answer from a start pattern shorter than {"maxDepth": n}, shortest first, up to {"maxAnswers": k}, as a JSON list of move texts
+    // (an answer never passes through the goal on its way); {"maxNodes": n} as in search
+    pub fn list(&mut self, start_json: &str, options_json: &str) -> Result<String, String> {
+        let answers = self.run(start_json, options_json, true)?;
+        Ok(answer_list(&self.full, &answers))
+    }
+}
+
+// Rust-only part of SplitSearch (not exported to JS)
+impl SplitSearch {
+    // IDA* from a start pattern on the attached sub-tables: the first shortest answer, or with `list` every answer up to maxAnswers
+    fn run(&mut self, start_json: &str, options_json: &str, list: bool) -> Result<Vec<Vec<usize>>, String> {
+        // Start, depth limit (answers shorter than it), node budget, answers wanted, and the attached sub-tables
         self.nodes = 0.0;
         let start = pattern_data(&self.kpuzzle, start_json)?;
-        let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
-        let limit = options["maxDepth"].as_u64().unwrap_or(u64::MAX).min(MAX_LENGTH as u64 + 1);
-        let max_nodes = options["maxNodes"].as_u64().unwrap_or(u64::MAX);
+        let (limit, max_nodes, max_answers) = read_options(options_json)?;
         let tables: Vec<Rc<TableCore>> = self.subs.iter().map(|sub| sub.table.clone().ok_or("A sub-table isn't attached")).collect::<Result<_, _>>()?;
-        // The whole start (None: an untouched spot is wrong, no turn can fix it)
+        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each sub-table's start state
         let whole = self.full.read(&start).ok_or(NO_SOLUTION)?;
-        // Search state: room for every depth up to MAX_LENGTH
-        let count = tables.len();
-        let mut ida = Ida {
-            tables: &tables,
-            full: &self.full,
-            goals: &self.goals,
-            whole,
-            follow: &self.follow,
-            groups: self.groups,
-            outer: vec![Units::new(); (MAX_LENGTH as usize + 1) * count],
-            inner: vec![0; (MAX_LENGTH as usize + 1) * count],
-            bounds: vec![0; (MAX_LENGTH as usize + 1) * count],
-            order: (0..count).collect(),
-            path: vec![],
-            cut: false,
-            nodes: 0,
-            max_nodes,
-            gave_up: false,
-        };
-        // Each sub-table's start state; the largest distance is the first bound
-        let mut bound = 0;
-        for (t, sub) in self.subs.iter().enumerate() {
-            let (outer, inner) = tables[t].read(&sub.relabel.apply(&start)).ok_or(NO_SOLUTION)?;
-            let distance = tables[t].distance(&outer, inner);
-            if distance == UNSEEN {
-                return Err(NO_SOLUTION.to_owned());
-            }
-            bound = bound.max(distance);
-            (ida.outer[t], ida.inner[t], ida.bounds[t]) = (outer, inner, distance);
-        }
-        // Deepen one move at a time until an answer turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)
-        let mut found = false;
-        while (bound as u64) < limit {
-            ida.cut = false;
-            if ida.dfs(0, bound, NO_GROUP) {
-                found = true;
-                break;
-            }
-            if ida.gave_up || !ida.cut {
-                break;
-            }
-            bound += 1;
-        }
-        // Out of nodes, nothing within the limit, or the moves of the answer
-        self.nodes = ida.nodes as f64;
-        if ida.gave_up {
-            return Err(NODE_LIMIT.to_owned());
-        }
-        if !found {
-            return Err(NO_SOLUTION.to_owned());
-        }
-        Ok(ida.path.iter().map(|&turn| self.full.turns[turn].name.clone()).collect::<Vec<_>>().join(" "))
+        let starts = self.subs.iter().zip(&tables).map(|(sub, table)| table.read(&sub.relabel.apply(&start))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
+        // Deepen, checking answers on the whole goal
+        let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
+        let (answers, nodes) = deepen(&tables, &starts, whole, &check, limit, max_nodes, list.then_some(max_answers));
+        self.nodes = nodes as f64;
+        answers.map_err(|error| error.to_owned())
     }
 }
 
@@ -400,10 +464,14 @@ struct Ida<'a> {
     // Node budget, and whether it ran out
     max_nodes: u64,
     gave_up: bool,
+    // Listing every answer (else the first one ends the search), how many answers end it, and the answers so far
+    listing: bool,
+    max_answers: usize,
+    answers: Vec<Vec<usize>>,
 }
 
 impl Ida<'_> {
-    // Depth-first search below the state at `depth`, with `remaining` moves left in this bound; true once an answer is in `path`
+    // Depth-first search below the state at `depth`, with `remaining` moves left in this bound; true once the search is over (first answer, or enough answers)
     fn dfs(&mut self, depth: usize, remaining: u8, last: usize) -> bool {
         // Out of nodes: stop the whole search
         if self.nodes >= self.max_nodes {
@@ -414,9 +482,15 @@ impl Ida<'_> {
         // Out of moves: every sub-table is at 0 here, so check the whole goal (sub-tables alone may miss pieces or mix targets)
         if remaining == 0 {
             if self.is_goal() {
-                return true;
+                // At the goal: note the answer; a search ends here, a list once it has enough
+                self.answers.push(self.path.clone());
+                return self.answers.len() >= self.max_answers;
             }
             self.cut = true;
+            return false;
+        }
+        // Listing: a path already at the goal goes no further (a shorter answer plus moves that keep the goal, which later steps can always make themselves)
+        if self.listing && self.at_goal(depth) {
             return false;
         }
         let count = self.tables.len();
@@ -469,6 +543,12 @@ impl Ida<'_> {
             }
         }
         false
+    }
+
+    // True when the state at `depth` is already at the goal: every table at 0 (a bound of 0 is exact, others are looked up), then the whole goal checked
+    fn at_goal(&self, depth: usize) -> bool {
+        let here = depth * self.tables.len();
+        (0..self.tables.len()).all(|t| self.bounds[here + t] == 0 || self.tables[t].distance(&self.outer[here + t], self.inner[here + t]) == 0) && self.is_goal()
     }
 
     // Replay the moves so far on the whole start and compare with every target

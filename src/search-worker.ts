@@ -8,15 +8,16 @@ import init, { DistanceTable, Searcher, SplitSearch, tableFormat } from "../sear
 import wasmBytes from "../search/pkg/puzzly_search_bg.wasm";
 
 // One request from the engine: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts);
-// "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves
+// "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves, "list" for every answer shorter than maxDepth (up to maxAnswers)
 interface Request {
   id: number;
-  kind: "measure" | "search";
+  kind: "measure" | "search" | "list";
   kpuzzle: string;
   start: string;
   targets: string;
   moves: string[];
   maxDepth?: number;
+  maxAnswers?: number;
 }
 
 // What every solver offers: same search contract (twips-style options, "No solution found!" when nothing fits), and freeing its memory
@@ -330,17 +331,28 @@ async function measure(request: Request): Promise<{ bound: number | null; exact:
   return { bound: null, exact: false };
 }
 
-// Answer one search: a split goal on small sub-tables may use as many search nodes as building its big plan's missing tables would cost, then switches
+// Ask a solver for the request's answer (search), or for every answer as a JSON list of move texts (list; twips can only give its one answer)
+function ask(solver: Solver, request: Request, options: object): string {
+  const text = JSON.stringify(options);
+  if (request.kind !== "list") return solver.search(request.start, text);
+  if (solver instanceof DistanceTable || solver instanceof SplitSearch) return solver.list(request.start, text);
+  return JSON.stringify([solver.search(request.start, text)]);
+}
+
+// Answer one search or list: a split goal on small sub-tables may use as many search nodes as building its big plan's missing tables would cost, then switches
 async function search(request: Request): Promise<string> {
   const key = tableKey(request, request.targets);
   const entry = await entryFor(request, key);
-  const options = request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth };
+  const options = {
+    ...(request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth }),
+    ...(request.maxAnswers === undefined ? {} : { maxAnswers: request.maxAnswers }),
+  };
   if (entry.next) {
     const small = entry.solver as SplitSearch;
     const allowed = Math.floor(missingStates(entry.next.split, request) / STATES_PER_NODE) - entry.next.spent;
     if (allowed > 0) {
       try {
-        return small.search(request.start, JSON.stringify({ ...options, maxNodes: allowed }));
+        return ask(small, request, { ...options, maxNodes: allowed });
       } catch (error) {
         if (!String(error).includes(NODE_LIMIT)) throw error;
       } finally {
@@ -350,15 +362,15 @@ async function search(request: Request): Promise<string> {
     // Out of budget (or the big tables are kept or stored already): search with the big plan from now on
     await upgrade(entry, request, key);
   }
-  return entry.solver.search(request.start, JSON.stringify(options));
+  return ask(entry.solver, request, options);
 }
-
-// Answer one request and post back its moves or bound, or the error
+// Answer one request and post back its bound, moves or list of answers, or the error
 async function answer(request: Request): Promise<void> {
   await ready;
   current = request.id;
   try {
     if (request.kind === "measure") scope.postMessage({ id: request.id, ...(await measure(request)) });
+    else if (request.kind === "list") scope.postMessage({ id: request.id, answers: JSON.parse(await search(request)) });
     else scope.postMessage({ id: request.id, moves: await search(request) });
   } catch (error) {
     scope.postMessage({ id: request.id, error: String(error) });

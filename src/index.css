@@ -452,6 +452,12 @@ tbody tr.bad td[data-col="check"] {
   cursor: pointer;
 }
 
+/* Small number field inside its text (lookahead steps, extra moves) */
+.number-label input[type="number"] {
+  width: 4rem;
+  padding: 0.3rem 0.4rem;
+}
+
 /* Numbered step list */
 .step-list {
   display: flex;

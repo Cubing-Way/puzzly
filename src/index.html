@@ -181,6 +181,11 @@
                             <input id="step-name" type="text" spellcheck="false" autocomplete="off" placeholder="Step name" aria-label="Step name" />
                             <label class="check-label"><input id="step-keep" type="checkbox" /> keep earlier steps' pieces</label>
                         </div>
+                        <!-- Lookahead: later steps that judge this step's answers (0 = take its own shortest), and how many moves longer than its shortest a candidate may be -->
+                        <div class="row">
+                            <label class="check-label number-label">Lookahead <input id="step-lookahead" type="number" min="0" max="5" value="0" /> steps</label>
+                            <label class="check-label number-label">up to <input id="step-extra" type="number" min="0" max="4" value="0" /> extra moves</label>
+                        </div>
                         <div class="row">
                             <button id="add-step" type="button">Add form as step</button>
                             <button id="update-step" type="button" disabled>Update step</button>
@@ -191,7 +196,7 @@
                     <div class="table-wrap">
                         <table>
                             <thead>
-                                <tr><th>Step</th><th>Moves</th><th>Offset</th><th>Check</th><th>Time</th><th>Solution</th></tr>
+                                <tr><th>Step</th><th>Moves</th><th>Offset</th><th title="Candidate answers compared → the winner's moves over this step and the next ones">Lookahead</th><th>Check</th><th>Time</th><th>Solution</th></tr>
                             </thead>
                             <tbody id="method-body"></tbody>
                         </table>

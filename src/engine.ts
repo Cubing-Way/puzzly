@@ -74,6 +74,8 @@ export interface StepConfig {
   moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
+  lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way), fewest moves in total wins (0 = none, the step's own shortest)
+  extraMoves?: number; // with lookahead: candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
 }
 
 // A whole method: steps run in order, each from where the last one left the cube
@@ -90,6 +92,7 @@ export interface MethodStepResult extends StepResult {
   moves: number; // move count of the solution
   ms: number; // search time
   ok: boolean; // scramble + done + solution really reaches the step's goal
+  lookahead: { candidates: number; steps: number; total: number | null } | null; // with lookahead: answers compared, later steps they were judged over, and the winner's moves over this step and those (null = no answer got through them)
 }
 
 // A whole method run
@@ -522,24 +525,26 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
   return { bound, total };
 }
 
-// One answer from the search worker: a search's moves, a measure's distance (bound, exact or a lower bound; null = unknown), an error,
+// One answer from the search worker: a search's moves, a list's answers, a measure's distance (bound, exact or a lower bound; null = unknown), an error,
 // or table progress for the request it's working on (the answer comes later)
 interface WorkerReply {
   id: number;
   moves?: string;
+  answers?: string[];
   bound?: number | null;
   exact?: boolean;
   error?: string;
   progress?: TableProgress;
 }
 
-// One request to the search worker: measure how far the start is from the targets (any one counts), or search for the moves
+// One request to the search worker: measure how far the start is from the targets (any one counts), search for the moves, or list every answer
 interface WorkerRequest {
-  kind: "measure" | "search";
+  kind: "measure" | "search" | "list";
   start: KPattern;
   targets: KPattern[];
   moves: string[];
-  maxDepth?: number; // search only: answers shorter than this (twips style)
+  maxDepth?: number; // search and list: answers shorter than this (twips style)
+  maxAnswers?: number; // list only: most answers to give (shortest first)
 }
 
 // Stop the search worker after this long without requests, so its memory goes back to the system (WebAssembly memory never shrinks);
@@ -611,26 +616,41 @@ function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress
       targets: JSON.stringify(request.targets.map((target) => target.patternData)),
       moves: request.moves,
       maxDepth: request.maxDepth,
+      maxAnswers: request.maxAnswers,
     });
   });
 }
 
-// Solve only the goal pieces (a step like the cross), trying each alternative × grip (each with all its offsets at once) and keeping the shortest answer
-// (on a tie, the alternative adding more new pieces wins, so "cross | XCross" takes the XCross when it costs no extra move).
-// The worker first measures every combo (exact distance from one table, or a lower bound from split tables), so only combos that can still win are searched
-export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
+// One alternative × grip with all its offsets' targets (one table holds them all), measured and ready to search
+interface Combo {
+  alternative: number; // which of the step's alternatives
+  rotation: string; // grip ("" = as held)
+  goal: Goal; // the goal named in that grip (kept pieces included)
+  fresh: number; // goal pieces earlier steps don't cover yet in that grip
+  held: KPattern; // cube held in that grip
+  start: KPattern; // held cube with the goal's hidden pieces masked
+  offsets: string[]; // offsets the goal counts up to, one per target
+  targets: KPattern[]; // masked targets (solved cube turned by each offset)
+  bound: number; // measured distance: exact from one table, a lower bound from split tables or the pieces' own moves
+}
+
+// One answer of a step: the combo it came from and its moves (after the grip rotation)
+interface Answer {
+  combo: Combo;
+  moves: string;
+}
+
+// Every alternative × grip combo of a step worth searching (each with all its offsets at once), measured by the worker and sorted closest first,
+// plus the error to throw if none of them finds anything
+async function stepCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
   const keep = options.keep;
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Offsets the goal may be reached up to (an empty list means no offset), in groups that share one table
   const groups = offsetGroups(options.offsets?.length ? options.offsets : [""], generatorMoves);
-  // Best answer so far, how many new pieces it adds, and the last search error (shown if no combo finds anything)
-  let best: StepResult | null = null;
-  let bestLength = Infinity;
-  let bestFresh = -1;
+  // Last error seen (shown if no combo finds anything)
   let lastError: unknown = null;
-  // What each searched combo asked for: two combos asking for the same thing give the same length
+  // What each combo asks for: two combos asking for the same thing give the same answers
   const asked = new Set<string>();
-  let searches = 0;
   // How each piece moves under the allowed moves, for the easy-looking scores
   const tables = pieceMoves(generatorMoves);
   // Each grip once: earlier steps then the grip's rotation, the cube held that way, and the earlier steps' pieces named in that grip
@@ -740,7 +760,18 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   if (measured.some((combo) => combo.bound === Infinity)) lastError ??= new Error("No solution found!");
   // Closest first; on a tie the one adding more new pieces, then the easiest-looking (the sort keeps the order above)
   const queue = measured.filter((combo) => combo.bound !== Infinity).sort((a, b) => a.bound - b.bound || b.fresh - a.fresh);
-  for (const { alternative, rotation, goal, fresh, held, start, offsets, targets, bound } of queue) {
+  return { queue, lastError };
+}
+
+// Search the measured combos in turn for the shortest answer (on a tie, the alternative adding more new pieces), skipping combos that can't beat the best so far
+async function searchCombos(queue: Combo[], options: StepOptions, lastError: unknown): Promise<{ answer: Answer; searches: number }> {
+  // Best answer so far, its length and how many new pieces it adds
+  let best: Answer | null = null;
+  let bestLength = Infinity;
+  let bestFresh = -1;
+  let searches = 0;
+  for (const combo of queue) {
+    const { fresh, start, targets, bound } = combo;
     // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
     const maxDepth = Math.min(options.maxDepth ?? Infinity, fresh > bestFresh ? bestLength : bestLength - 1);
     // Skip a combo whose distance (or lower bound) is already too long: no search there can beat the best so far
@@ -749,7 +780,7 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
     try {
       // Search, passing the depth limit only when there is one (the worker only finds answers shorter than its maxDepth, hence + 1)
       const reply = await askWorker(
-        { kind: "search", start, targets, moves: generatorMoves, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
+        { kind: "search", start, targets, moves: options.generatorMoves ?? FACE_MOVES, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
         options.onProgress,
       );
       const moves = reply.moves ?? "";
@@ -758,10 +789,7 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
       if (length < bestLength || (length === bestLength && fresh > bestFresh)) {
         bestLength = length;
         bestFresh = fresh;
-        // Offset the answer reached: the target the cube matches after it
-        const end = maskPattern(held.applyAlg(moves), goal);
-        const offset = offsets[Math.max(0, targets.findIndex((target) => end.isIdentical(target)))];
-        best = { solution: new Alg(joinMoves(rotation, moves)), rotation, offset, pieces: goalToText(goal), alternative, searches };
+        best = { combo, moves };
       }
       // First-answer mode: any answer within the limit will do, so skip the remaining combos
       if (options.firstFound) break;
@@ -772,7 +800,76 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   }
   // No combo found an answer
   if (!best) throw lastError ?? new Error("No solution found.");
-  return { ...best, searches };
+  return { answer: best, searches };
+}
+
+// A step's result for one answer: the grip rotation and moves, and the offset it reached (the target the cube matches after it)
+function stepResult({ combo, moves }: Answer, searches: number): StepResult {
+  const end = maskPattern(combo.held.applyAlg(moves), combo.goal);
+  const offset = combo.offsets[Math.max(0, combo.targets.findIndex((target) => end.isIdentical(target)))];
+  return { solution: new Alg(joinMoves(combo.rotation, moves)), rotation: combo.rotation, offset, pieces: goalToText(combo.goal), alternative: combo.alternative, searches };
+}
+
+// Solve only the goal pieces (a step like the cross), trying each alternative × grip (each with all its offsets at once) and keeping the shortest answer
+// (on a tie, the alternative adding more new pieces wins, so "cross | XCross" takes the XCross when it costs no extra move).
+// The worker first measures every combo (exact distance from one table, or a lower bound from split tables), so only combos that can still win are searched
+export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
+  const { queue, lastError } = await stepCombos(scramble, pieces, options);
+  const { answer, searches } = await searchCombos(queue, options, lastError);
+  return stepResult(answer, searches);
+}
+
+// Most answers stepCandidates gives by default (each one costs a run of the next steps when a method looks ahead)
+export const MAX_CANDIDATES = 64;
+
+// Options for listing a step's answers: solveStep's, plus how much longer than the shortest an answer may be, and how many to give
+export interface CandidateOptions extends StepOptions {
+  extraMoves?: number; // answers up to this many moves longer than the step's shortest count too (default 0: the shortest answers only)
+  maxCandidates?: number; // most answers given (default MAX_CANDIDATES), shortest first
+}
+
+// Answers a step could take, for looking ahead: solveStep's answer first, then every other answer of every alternative × grip × offset up to extraMoves longer
+// (shortest first, then the ones adding more new pieces, then the closest combos). Answers leaving the cube the same way count once, and an answer never
+// passes through the goal on its way (that would be a shorter answer plus moves that keep the goal, which the next steps can always make themselves)
+export async function stepCandidates(scramble: string, pieces: string, options: CandidateOptions = {}): Promise<StepResult[]> {
+  const { queue, lastError } = await stepCombos(scramble, pieces, options);
+  const { answer, searches } = await searchCombos(queue, options, lastError);
+  const shortest = countMoves(answer.moves);
+  const most = Math.max(1, options.maxCandidates ?? MAX_CANDIDATES);
+  // Longest answer that still counts: the shortest plus the extra moves, within the user's limit
+  const longest = Math.min(shortest + Math.max(0, options.extraMoves ?? 0), options.maxDepth ?? Infinity);
+  // How an answer leaves the cube (grip and every piece), so answers leaving it the same way count once
+  const leaves = ({ combo, moves }: Answer) => `${combo.rotation}/${JSON.stringify(combo.held.applyAlg(moves).patternData)}`;
+  const seen = new Set([leaves(answer)]);
+  const found: { answer: Answer; length: number; order: number }[] = [];
+  let lists = 0;
+  // A step that's already done (0 moves) has nothing else worth trying, and one candidate is just the shortest answer
+  if (shortest > 0 && most > 1) {
+    for (const [order, combo] of queue.entries()) {
+      // Skip a combo whose distance (or lower bound) is already too long
+      if (combo.bound > longest) continue;
+      lists++;
+      try {
+        // Every answer of this combo up to the longest (the worker only lists answers shorter than its maxDepth, hence + 1)
+        const reply = await askWorker(
+          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, maxDepth: longest + 1, maxAnswers: most },
+          options.onProgress,
+        );
+        for (const moves of reply.answers ?? []) {
+          const candidate = { combo, moves };
+          const key = leaves(candidate);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          found.push({ answer: candidate, length: countMoves(moves), order });
+        }
+      } catch {
+        // No answer within the limit for this combo
+      }
+    }
+  }
+  // Shortest first, then the ones adding more new pieces, then the closest combos (the sort keeps each list's own order on ties)
+  found.sort((a, b) => a.length - b.length || b.answer.combo.fresh - a.answer.combo.fresh || a.order - b.order);
+  return [answer, ...found.slice(0, most - 1).map((entry) => entry.answer)].map((entry) => stepResult(entry, searches + lists));
 }
 
 // Solve the whole cube, judged by its centers in the grip it's held in
@@ -808,7 +905,7 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
-// Read one step's data, filling defaults (D bottom, face turns, no offsets, no limit) and checking pieces, grips, offsets and moves
+// Read one step's data, filling defaults (D bottom, face turns, no offsets, no limit, no lookahead) and checking pieces, grips, offsets, moves and lookahead
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
@@ -832,37 +929,98 @@ function readStep(data: unknown, index: number): StepConfig {
     // Depth limit: a whole number, or null for none
     const maxDepth = step.maxDepth == null ? null : Number(step.maxDepth);
     if (maxDepth !== null && !(Number.isInteger(maxDepth) && maxDepth >= 0)) throw new Error("Max depth must be a whole number (or null for no limit).");
-    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, moves, maxDepth, firstFound: Boolean(step.firstFound) };
+    // Lookahead: later steps that judge this step's answers, and how many moves longer than the shortest a candidate may be (0 = none)
+    const lookahead = Number(step.lookahead ?? 0);
+    const extraMoves = Number(step.extraMoves ?? 0);
+    if (![lookahead, extraMoves].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Lookahead and extra moves must be whole numbers (0 = none).");
+    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, moves, maxDepth, firstFound: Boolean(step.firstFound), lookahead, extraMoves };
   } catch (error) {
     // Say which step is wrong (by number, plus its name when it has one)
     throw new Error(`Step ${index + 1}${typed ? ` (${typed})` : ""}: ${(error as Error).message}`);
   }
 }
 
-// Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done)
+// Search options for one step of a method, from where earlier steps left the cube (done), with their pieces named in the grip the step starts in (earlier)
+function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProgress?: (progress: TableProgress) => void): StepOptions {
+  return {
+    generatorMoves: step.moves,
+    maxDepth: step.maxDepth ?? undefined,
+    rotations: gripRotations(step.grips.bottom, step.grips.anyFront),
+    done,
+    offsets: offsetsFromText(step.offsets),
+    firstFound: step.firstFound,
+    keep: step.keep ? earlier : undefined,
+    earlier,
+    onProgress,
+  };
+}
+
+// Earlier pieces after a step: they follow its grip turn, then its pieces join them (later roles win)
+function piecesAfter(earlier: Goal, result: StepResult): Goal {
+  return mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.pieces));
+}
+
+// Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done).
+// A step with lookahead lists its candidate answers and takes the one with the fewest moves over it and its next steps (each of those solved its own shortest way)
 export async function runMethod(scramble: string, method: Method, options: MethodOptions = {}): Promise<MethodResult> {
   const steps: MethodStepResult[] = [];
   // Moves after the scramble so far, always passed as done (never folded into the scramble), so only their x, y, z change the grip
   let done = options.done ?? "";
   // Every earlier step's pieces, named in the grip the next step starts in
   let earlier: Goal = {};
+  // Each step's own shortest answer from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again)
+  const ownAnswers = new Map<string, Promise<StepResult>>();
+  const solveOwn = (index: number, from: string, before: Goal): Promise<StepResult> => {
+    const key = `${index}\n${from}\n${goalToText(before)}`;
+    let answer = ownAnswers.get(key);
+    if (!answer) {
+      const step = method.steps[index];
+      answer = solveStep(scramble, step.pieces, methodStepOptions(step, from, before, options.onProgress));
+      ownAnswers.set(key, answer);
+    }
+    return answer;
+  };
+  // Moves the `count` steps after step `index` take, each its own shortest answer, from where `from` leaves the cube (Infinity when one of them finds nothing)
+  const movesAhead = async (index: number, count: number, from: string, before: Goal): Promise<number> => {
+    let total = 0;
+    for (let next = index + 1; next <= index + count; next++) {
+      try {
+        const result = await solveOwn(next, from, before);
+        const solution = result.solution.toString();
+        total += countMoves(solution);
+        from = joinMoves(from, solution);
+        before = piecesAfter(before, result);
+      } catch {
+        return Infinity;
+      }
+    }
+    return total;
+  };
   for (const [index, step] of method.steps.entries()) {
     const offsets = offsetsFromText(step.offsets);
     const started = performance.now();
+    // Later steps that judge this step's answers (none past the last step)
+    const ahead = Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
     let result: StepResult;
+    let lookahead: MethodStepResult["lookahead"] = null;
     try {
-      // Search this step from where the last one ended, keeping the earlier pieces if it asks to
-      result = await solveStep(scramble, step.pieces, {
-        generatorMoves: step.moves,
-        maxDepth: step.maxDepth ?? undefined,
-        rotations: gripRotations(step.grips.bottom, step.grips.anyFront),
-        done,
-        offsets,
-        firstFound: step.firstFound,
-        keep: step.keep ? earlier : undefined,
-        earlier,
-        onProgress: options.onProgress,
-      });
+      if (ahead > 0) {
+        // Every candidate answer, judged by its own moves plus the next steps' own shortest answers (all asked at once: the worker answers them in turn)
+        const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress), extraMoves: step.extraMoves ?? 0 });
+        const totals = await Promise.all(
+          candidates.map(async (candidate) => {
+            const solution = candidate.solution.toString();
+            return countMoves(solution) + (await movesAhead(index, ahead, joinMoves(done, solution), piecesAfter(earlier, candidate)));
+          }),
+        );
+        // Fewest moves in total wins; on a tie the earlier candidate (the step's own shortest answer comes first)
+        const winner = totals.indexOf(Math.min(...totals));
+        result = candidates[winner];
+        lookahead = { candidates: candidates.length, steps: ahead, total: Number.isFinite(totals[winner]) ? totals[winner] : null };
+      } else {
+        // Search this step from where the last one ended, keeping the earlier pieces if it asks to
+        result = await solveOwn(index, done, earlier);
+      }
     } catch (error) {
       // Say which step found nothing
       throw new Error(`${step.name}: ${(error as Error).message}`);
@@ -870,7 +1028,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
     const ms = performance.now() - started;
     const solution = result.solution.toString();
     // Earlier pieces follow the step's grip turn, then this step's pieces join them (later roles win)
-    earlier = mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.pieces));
+    earlier = piecesAfter(earlier, result);
     // Record the step, checked on its own goal and offsets
     const after = joinMoves(done, solution);
     const finished: MethodStepResult = {
@@ -881,6 +1039,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       moves: countMoves(solution),
       ms,
       ok: reachesGoal(scramble, after, result.pieces, offsets),
+      lookahead,
     };
     steps.push(finished);
     options.onStep?.(finished, index);
