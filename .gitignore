@@ -4,3 +4,5 @@ node_modules/
 dist/
 # Local archive of node_modules
 node_modules.7z
+# Rust build cache (recreated by npm run build-search)
+search/target/

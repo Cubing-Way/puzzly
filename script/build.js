@@ -4,7 +4,8 @@ import { barelyServe } from "barely-a-dev-server";
 
 export const COMMON_BUILD_OPTIONS = {
   entryRoot: "./src",
-  esbuildOptions: { chunkNames: "chunks/[name]-[hash]" },
+  // Shared chunks go in chunks/; a .wasm import becomes its bytes (the Rust search code)
+  esbuildOptions: { chunkNames: "chunks/[name]-[hash]", loader: { ".wasm": "binary" } },
 };
 
 if (process.argv.at(-1) === "--dev") {

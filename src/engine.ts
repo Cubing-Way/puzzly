@@ -7,7 +7,7 @@ import { Alg } from "cubing/alg";
 // Puzzle model
 import { cube3x3x3 } from "cubing/puzzles";
 // Partial-goal solver and full 3x3x3 solver
-import { experimentalSolveTwips, experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
+import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 // Lets us build a modified pattern
 import { KPattern, type KPuzzle } from "cubing/kpuzzle";
 
@@ -496,26 +496,58 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
   return { bound, total };
 }
 
-// Run one twips search, then stop the worker cubing.js started for it (cubing.js starts one per search and never stops it)
-async function searchTwips(...args: Parameters<typeof experimentalSolveTwips>): Promise<Alg> {
-  // Workers started during this search
-  const started: Worker[] = [];
-  // The real Worker constructor, put back when the search ends
-  const RealWorker = globalThis.Worker;
-  // Build workers as usual, but note each one so it can be stopped afterwards
-  globalThis.Worker = class extends RealWorker {
-    constructor(url: string | URL, options?: WorkerOptions) {
-      super(url, options);
-      started.push(this);
-    }
+// One search worker for the whole session, so each target's exact table (or twips prune table) is built once and reused
+let searchWorker: Worker | null = null;
+// Searches waiting for the worker's answer, by request number
+const waiting = new Map<number, { resolve: (moves: string) => void; reject: (error: Error) => void }>();
+// Number for the next request
+let nextRequest = 0;
+
+// Start the search worker on first use (search-worker.js is built next to the page, so the path is page-relative)
+function getSearchWorker(): Worker {
+  if (searchWorker) return searchWorker;
+  const worker = new Worker("search-worker.js", { type: "module" });
+  // Hand each answer or error to the search that asked for it
+  worker.onmessage = ({ data }: MessageEvent<{ id: number; moves?: string; error?: string }>) => {
+    const entry = waiting.get(data.id);
+    waiting.delete(data.id);
+    if (data.error !== undefined) entry?.reject(new Error(data.error));
+    else entry?.resolve(data.moves ?? "");
   };
-  try {
-    return await experimentalSolveTwips(...args);
-  } finally {
-    // Put the real constructor back and stop this search's workers, freeing their memory
-    globalThis.Worker = RealWorker;
-    for (const worker of started) worker.terminate();
-  }
+  // A crashed worker fails every waiting search, and the next search starts a fresh one
+  worker.onerror = (event) => {
+    for (const entry of waiting.values()) entry.reject(new Error(event.message || "Search worker failed."));
+    waiting.clear();
+    worker.terminate();
+    searchWorker = null;
+  };
+  searchWorker = worker;
+  return worker;
+}
+
+// Run one search in the shared worker, from an exact table or with twips (same inputs as cubing.js's experimentalSolveTwips)
+async function searchTwips(
+  kpuzzle: KPuzzle,
+  start: KPattern,
+  options: { targetPattern: KPattern; generatorMoves: string[]; maxDepth?: number },
+): Promise<Alg> {
+  // The puzzle definition without its check function, which JSON can't carry
+  const definition: Record<string, unknown> = { ...kpuzzle.definition };
+  delete definition.experimentalIsPatternSolved;
+  // Send the request and wait for its answer
+  const id = nextRequest++;
+  const moves = await new Promise<string>((resolve, reject) => {
+    waiting.set(id, { resolve, reject });
+    getSearchWorker().postMessage({
+      id,
+      kpuzzle: JSON.stringify(definition),
+      start: JSON.stringify(start.patternData),
+      target: JSON.stringify(options.targetPattern.patternData),
+      moves: options.generatorMoves,
+      maxDepth: options.maxDepth,
+    });
+  });
+  return new Alg(moves);
 }
 
 // Solve only the goal pieces (a step like the cross), trying each alternative × grip × offset and keeping the shortest answer

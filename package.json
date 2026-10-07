@@ -3,6 +3,7 @@
   "scripts": {
     "build": "node script/build.js",
     "dev": "node script/build.js -- --dev",
+    "build-search": "wasm-pack build search --target web --release",
     "clean": "rm -rf ./dist",
     "upgrade-cubing": "npm install --save cubing@latest"
   },

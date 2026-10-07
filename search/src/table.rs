@@ -1,0 +1,351 @@
+// Exact distance tables: every state of a goal's tracked pieces with its fewest-moves distance, so a goal that fits needs no search
+
+use cubing::alg::Move;
+use cubing::kpuzzle::{KPatternData, KPuzzle};
+use wasm_bindgen::prelude::*;
+
+use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
+
+// Table value for a state not reached (yet): distances 0..14 fit in the other 4-bit values
+const UNSEEN: u8 = 15;
+// Same error text as twips, so the engine treats both the same
+const NO_SOLUTION: &str = "No solution found!";
+// Layers stay a list of states while smaller than 1/QUEUE_SHARE of the table; bigger ones are found by scanning
+const QUEUE_SHARE: u64 = 256;
+// Longest list a layer may stay
+const QUEUE_LIMIT: u64 = 1 << 20;
+// Twist values handled at once inside a block (keeps the per-block neighbour buffer small)
+const CHUNK: u64 = 4096;
+
+// Distance of every state to the nearest target, for one set of targets and allowed moves
+#[wasm_bindgen]
+pub struct DistanceTable {
+    kpuzzle: KPuzzle,
+    coords: Coords,
+    // 4 bits per state, two states per byte (even index in the low half)
+    nibbles: Vec<u8>,
+    // Inner part after each turn: inner_next[turn * inner size + inner value]
+    inner_next: Vec<u16>,
+    // Deepest distance in the table
+    depth: u8,
+}
+
+// Distance stored for a state
+#[inline]
+fn get(nibbles: &[u8], index: u64) -> u8 {
+    (nibbles[(index >> 1) as usize] >> ((index & 1) * 4)) & 15
+}
+
+// Store a state's distance
+#[inline]
+fn set(nibbles: &mut [u8], index: u64, value: u8) {
+    let byte = &mut nibbles[(index >> 1) as usize];
+    let shift = (index & 1) * 4;
+    *byte = (*byte & !(15 << shift)) | (value << shift);
+}
+
+#[wasm_bindgen]
+impl DistanceTable {
+    // Build the table by breadth-first search from every target at once; fails (so the caller can use twips) when it has more than max_states states
+    #[wasm_bindgen(constructor)]
+    pub fn new(kpuzzle_json: &str, targets_json: &str, moves_json: &str, max_states: f64) -> Result<DistanceTable, String> {
+        // Show Rust panics in the browser console instead of a bare "unreachable"
+        console_error_panic_hook::set_once();
+        // Puzzle, targets (a JSON list of patterns) and allowed moves
+        let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
+        let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|target| pattern_data(&kpuzzle, &target.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if targets.is_empty() {
+            return Err("No target".to_owned());
+        }
+        let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
+        let turns = enumerate_turns(&kpuzzle, &moves)?;
+        // State numbering, and the size check before anything big is allocated
+        let mut coords = Coords::new(&kpuzzle, &targets, turns)?;
+        let size = coords.size();
+        if size as f64 > max_states || size >= u32::MAX as u64 {
+            return Err(format!("Too big for one table ({} states)", size));
+        }
+        // Turn tables for the outer part, so each block's neighbours are lookups
+        coords.build_tables();
+        // Inner turn table: every inner value through every turn
+        let turn_count = coords.turns.len();
+        let inner_size = coords.inner.size;
+        let mut inner_next = vec![0u16; turn_count * inner_size as usize];
+        let (mut units, mut moved) = (Units::new(), Units::new());
+        for inner in 0..inner_size {
+            coords.inner.unrank(inner, &coords.binomials, &mut units);
+            for turn in 0..turn_count {
+                coords.inner.apply(&units, turn, &mut moved);
+                inner_next[turn * inner_size as usize + inner as usize] = coords.inner.rank(&moved, &coords.binomials) as u16;
+            }
+        }
+        let mut table = DistanceTable { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0 };
+        table.fill(&targets)?;
+        // The outer turn tables only speed up the fill; answers unpack pieces instead
+        table.coords.outer.drop_tables();
+        Ok(table)
+    }
+
+    // Shortest moves from a start pattern to a target; options_json is like twips's ({"maxDepth": 9} only finds answers shorter than 9, or {})
+    pub fn search(&self, start_json: &str, options_json: &str) -> Result<String, String> {
+        let start = pattern_data(&self.kpuzzle, start_json)?;
+        let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
+        // Tracked pieces of the start (none when an untouched spot is wrong: no turn can fix it)
+        let (mut outer, inner) = self.coords.read(&start).ok_or(NO_SOLUTION)?;
+        let mut inner = self.coords.inner.rank(&inner, &self.coords.binomials);
+        let mut distance = get(&self.nibbles, self.index(&outer, inner));
+        // Unreachable, or longer than allowed
+        if distance == UNSEEN || options["maxDepth"].as_u64().is_some_and(|max| distance as u64 >= max) {
+            return Err(NO_SOLUTION.to_owned());
+        }
+        // Descend: any turn that lowers the distance by one is the start of a shortest answer
+        let mut answer = vec![];
+        let mut moved = Units::new();
+        while distance > 0 {
+            let step = (0..self.coords.turns.len()).find_map(|turn| {
+                self.coords.outer.apply(&outer, turn, &mut moved);
+                let next_inner = self.inner_next[turn * self.coords.inner.size as usize + inner as usize] as u64;
+                (get(&self.nibbles, self.index(&moved, next_inner)) == distance - 1).then_some((turn, moved, next_inner))
+            });
+            let (turn, next_outer, next_inner) = step.ok_or("Distance table is inconsistent")?;
+            answer.push(self.coords.turns[turn].name.clone());
+            outer = next_outer;
+            inner = next_inner;
+            distance -= 1;
+        }
+        Ok(answer.join(" "))
+    }
+
+    // Number of states in the table
+    pub fn states(&self) -> f64 {
+        self.coords.size() as f64
+    }
+
+    // Memory the table holds, in bytes (distances plus the inner turn table)
+    pub fn bytes(&self) -> f64 {
+        (self.nibbles.len() + self.inner_next.len() * 2 + self.coords.outer.table_bytes()) as f64
+    }
+
+    // Deepest distance in the table (the hardest state's fewest moves)
+    pub fn depth(&self) -> u8 {
+        self.depth
+    }
+}
+
+// Where the table's states are and how to reach their neighbours: index = outer positions × block + outer twists × inner size + inner value
+struct Layout {
+    turn_count: usize,
+    inner_size: u64,
+    twist_space: u64,
+    block: u64,
+    blocks: u64,
+}
+
+impl DistanceTable {
+    // Table index from outer pieces and an inner value
+    #[inline]
+    fn index(&self, outer: &Units, inner: u64) -> u64 {
+        self.coords.outer.rank(outer, &self.coords.binomials) * self.coords.inner.size + inner
+    }
+
+    // Breadth-first fill from the targets, one layer at a time: a list while layers are small, then block scans (backward once few states are left)
+    fn fill(&mut self, targets: &[KPatternData]) -> Result<(), String> {
+        let outer = &self.coords.outer;
+        let layout = Layout {
+            turn_count: self.coords.turns.len(),
+            inner_size: self.coords.inner.size,
+            twist_space: outer.twist_space,
+            block: outer.twist_space * self.coords.inner.size,
+            blocks: outer.positions,
+        };
+        let size = self.coords.size();
+        let mut nibbles = std::mem::take(&mut self.nibbles);
+        let inner_next = std::mem::take(&mut self.inner_next);
+        // Targets start at distance 0
+        let mut queue: Option<Vec<u32>> = Some(vec![]);
+        for target in targets {
+            let (outer, inner) = self.coords.read(target).ok_or("A target doesn't fit its own numbering")?;
+            let index = self.coords.index(&outer, &inner);
+            if get(&nibbles, index) == UNSEEN {
+                set(&mut nibbles, index, 0);
+                queue.as_mut().unwrap().push(index as u32);
+            }
+        }
+        let mut seen = queue.as_ref().unwrap().len() as u64;
+        let mut frontier = seen;
+        let mut depth: u8 = 0;
+        while frontier > 0 {
+            // A 15th layer can't be stored: fail if any state at 14 still has an unseen neighbour
+            let too_deep = depth == UNSEEN - 1;
+            let found = if let Some(list) = &queue {
+                // Small layer: expand each listed state, listing the next layer while it stays small
+                let (found, next_list) = self.expand_list(&layout, list, &mut nibbles, &inner_next, depth, too_deep)?;
+                queue = next_list;
+                found
+            } else if size - seen < frontier * 2 && !too_deep {
+                self.scan(&layout, &mut nibbles, &inner_next, depth, true, false)?
+            } else {
+                self.scan(&layout, &mut nibbles, &inner_next, depth, false, too_deep)?
+            };
+            // Next layer
+            if found > 0 {
+                self.depth = depth + 1;
+            }
+            seen += found;
+            frontier = found;
+            depth += 1;
+        }
+        self.nibbles = nibbles;
+        self.inner_next = inner_next;
+        Ok(())
+    }
+
+    // Expand a listed layer: returns how many states joined the next layer, and their list (None once it grows too big)
+    fn expand_list(&self, layout: &Layout, list: &[u32], nibbles: &mut [u8], inner_next: &[u16], depth: u8, too_deep: bool) -> Result<(u64, Option<Vec<u32>>), String> {
+        let limit = (self.coords.size() / QUEUE_SHARE).clamp(1024, QUEUE_LIMIT) as usize;
+        let direct = self.coords.outer.direct();
+        let mut next_list = Some(vec![]);
+        let mut found: u64 = 0;
+        let mut next_positions = vec![0u64; layout.turn_count];
+        let mut next_twists = vec![0u32; layout.turn_count];
+        let (mut units, mut moved) = (Units::new(), Units::new());
+        for &index in list {
+            // Split the index into outer positions, outer twists and inner value
+            let index = index as u64;
+            let (position, rest) = (index / layout.block, index % layout.block);
+            let (twists, inner) = (rest / layout.inner_size, (rest % layout.inner_size) as usize);
+            // Neighbours of this state's outer part: from the tables, or worked out
+            let own = self.coords.outer.split_positions(position);
+            if direct {
+                for turn in 0..layout.turn_count {
+                    next_positions[turn] = self.coords.outer.next_position(&own, turn);
+                    let row = self.coords.outer.twist_row(&own, turn);
+                    next_twists[turn] = row[(twists as usize).min(row.len() - 1)];
+                }
+            } else {
+                self.coords.outer.block_next(position, twists, 1, &mut next_positions, &mut next_twists, &self.coords.binomials, &mut units, &mut moved);
+            }
+            for turn in 0..layout.turn_count {
+                let child = next_positions[turn] * layout.block + next_twists[turn] as u64 * layout.inner_size + inner_next[turn * layout.inner_size as usize + inner] as u64;
+                if get(nibbles, child) != UNSEEN {
+                    continue;
+                }
+                if too_deep {
+                    return Err("Too deep for an exact table".to_owned());
+                }
+                set(nibbles, child, depth + 1);
+                found += 1;
+                // Keep listing while the next layer stays small
+                if next_list.as_ref().is_some_and(|l: &Vec<u32>| l.len() >= limit) {
+                    next_list = None;
+                }
+                if let Some(l) = &mut next_list {
+                    l.push(child as u32);
+                }
+            }
+        }
+        Ok((found, next_list))
+    }
+
+    // One layer by block scan: forward expands this layer, backward lets unseen states find a neighbour in it (turns come with their inverses)
+    fn scan(&self, layout: &Layout, nibbles: &mut [u8], inner_next: &[u16], depth: u8, backward: bool, too_deep: bool) -> Result<u64, String> {
+        let wanted = if backward { UNSEEN } else { depth };
+        // Which halves of a byte hold the wanted value (bit 0 = even state, bit 1 = odd state)
+        let matches: [u8; 256] = std::array::from_fn(|byte| ((byte & 15) as u8 == wanted) as u8 | ((((byte >> 4) as u8 == wanted) as u8) << 1));
+        // Twist rows straight from the outer tables when they allow it (no per-block work)
+        let direct = self.coords.outer.direct();
+        let width = layout.twist_space.min(CHUNK);
+        let mut next_positions = vec![0u64; layout.turn_count];
+        let mut next_twists = vec![0u32; layout.turn_count * width as usize];
+        let (mut units, mut moved) = (Units::new(), Units::new());
+        let inner_size = layout.inner_size as usize;
+        // States of the chunk to work on: (twist offset in the chunk, inner value)
+        let mut active: Vec<(u32, u32)> = vec![];
+        let mut found: u64 = 0;
+        for position in 0..layout.blocks {
+            for first in (0..layout.twist_space).step_by(width as usize) {
+                let count = width.min(layout.twist_space - first) as usize;
+                let start = position * layout.block + first * layout.inner_size;
+                // List the chunk's states with the wanted value (a byte at a time), skipping chunks with none (the common case in early and late layers)
+                active.clear();
+                let end = start + (count * inner_size) as u64;
+                let mut index = start;
+                while index < end {
+                    let offset = (index - start) as usize;
+                    if index & 1 == 1 || index + 1 == end {
+                        // A lone half byte at either end
+                        if get(nibbles, index) == wanted {
+                            active.push(((offset / inner_size) as u32, (offset % inner_size) as u32));
+                        }
+                        index += 1;
+                        continue;
+                    }
+                    let found_here = matches[nibbles[(index >> 1) as usize] as usize];
+                    if found_here & 1 != 0 {
+                        active.push(((offset / inner_size) as u32, (offset % inner_size) as u32));
+                    }
+                    if found_here & 2 != 0 {
+                        active.push((((offset + 1) / inner_size) as u32, ((offset + 1) % inner_size) as u32));
+                    }
+                    index += 2;
+                }
+                if active.is_empty() {
+                    continue;
+                }
+                // The block's neighbours: positions after each turn, and twist rows (from the tables, or worked out for this chunk)
+                let own = self.coords.outer.split_positions(position);
+                if direct {
+                    for (turn, next) in next_positions.iter_mut().enumerate() {
+                        *next = self.coords.outer.next_position(&own, turn);
+                    }
+                } else {
+                    self.coords.outer.block_next(position, first, count, &mut next_positions, &mut next_twists, &self.coords.binomials, &mut units, &mut moved);
+                }
+                for turn in 0..layout.turn_count {
+                    // This turn's destination block, twist row and inner row (turn by turn, so the destination block stays in cache)
+                    let base = next_positions[turn] * layout.block;
+                    let twists = if direct {
+                        let row = self.coords.outer.twist_row(&own, turn);
+                        &row[(first as usize).min(row.len() - 1)..]
+                    } else {
+                        &next_twists[turn * count..(turn + 1) * count]
+                    };
+                    let inners = &inner_next[turn * inner_size..(turn + 1) * inner_size];
+                    if backward {
+                        // Unseen states with a neighbour in this layer join the next one and leave the list
+                        let mut i = 0;
+                        while i < active.len() {
+                            let (k, inner) = active[i];
+                            let neighbour = base + twists[k as usize] as u64 * layout.inner_size + inners[inner as usize] as u64;
+                            if get(nibbles, neighbour) == depth {
+                                set(nibbles, start + k as u64 * layout.inner_size + inner as u64, depth + 1);
+                                found += 1;
+                                active.swap_remove(i);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        continue;
+                    }
+                    // Forward: unseen children of this layer's states join the next layer
+                    for &(k, inner) in &active {
+                        let child = base + twists[k as usize] as u64 * layout.inner_size + inners[inner as usize] as u64;
+                        if get(nibbles, child) != UNSEEN {
+                            continue;
+                        }
+                        if too_deep {
+                            return Err("Too deep for an exact table".to_owned());
+                        }
+                        set(nibbles, child, depth + 1);
+                        found += 1;
+                    }
+                }
+            }
+        }
+        Ok(found)
+    }
+}

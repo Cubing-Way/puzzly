@@ -19,6 +19,14 @@ npm run build
 
 The site lands in `dist/web` as plain static files you can host anywhere.
 
+## Rust search
+
+Step searches run in `search/`, a small Rust crate built to WebAssembly, in one worker that keeps what it builds between searches. A goal small enough for one exact distance table (up to 10M states: cross, EO, CO, EOLine, a Roux first block, ZZ blocks after EOLine…) gets one: it's built once (about 50 ms to 0.6 s), then every scramble is answered with a shortest solution right away, without searching. Bigger goals (XCross, F2L pairs that keep earlier pieces…) are searched with [twips](https://github.com/cubing/twips), keeping each target's prune table. Build it once before `npm run dev` / `npm run build`, and again after changing it (needs Rust, the `wasm32-unknown-unknown` target and wasm-pack):
+
+```bash
+npm run build-search
+```
+
 ## Test bench
 
 - **Start position**: a random scramble, or any moves you type (Ctrl+Enter solves).
@@ -57,6 +65,8 @@ A method is plain JSON, the same in saved methods, exported files and `src/examp
 | `src/method-store.ts` | Example, saved (localStorage) and file methods for the page |
 | `src/example-methods.json` | Example methods, as data only |
 | `src/index.html`, `src/index.css` | Test bench page |
+| `src/search-worker.ts` | Search worker: one per session; exact tables for small goals, twips for the rest, kept up to 256 MB |
+| `search/` | Rust search crate: `src/table.rs` exact distance tables, `src/coords.rs` their state numbering, `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |
 | `script/build.js` | Dev server and build (barely-a-dev-server + esbuild) |
 
 ## Browser support
