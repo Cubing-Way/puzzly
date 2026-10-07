@@ -1,5 +1,7 @@
 // Exact distance tables: every state of a goal's tracked pieces with its fewest-moves distance, so a goal that fits needs no search
 
+use std::rc::Rc;
+
 use cubing::alg::Move;
 use cubing::kpuzzle::{KPatternData, KPuzzle};
 use wasm_bindgen::prelude::*;
@@ -7,7 +9,7 @@ use wasm_bindgen::prelude::*;
 use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
 
 // Table value for a state not reached (yet): distances 0..14 fit in the other 4-bit values
-const UNSEEN: u8 = 15;
+pub const UNSEEN: u8 = 15;
 // Same error text as twips, so the engine treats both the same
 const NO_SOLUTION: &str = "No solution found!";
 // Layers stay a list of states while smaller than 1/QUEUE_SHARE of the table; bigger ones are found by scanning
@@ -17,9 +19,14 @@ const QUEUE_LIMIT: u64 = 1 << 20;
 // Twist values handled at once inside a block (keeps the per-block neighbour buffer small)
 const CHUNK: u64 = 4096;
 
-// Distance of every state to the nearest target, for one set of targets and allowed moves
+// Distance of every state to the nearest target, for one set of targets and allowed moves (shared, so split searches can use it too)
 #[wasm_bindgen]
 pub struct DistanceTable {
+    core: Rc<TableCore>,
+}
+
+// A built table's numbering and distances
+pub struct TableCore {
     kpuzzle: KPuzzle,
     coords: Coords,
     // 4 bits per state, two states per byte (even index in the low half)
@@ -83,15 +90,44 @@ impl DistanceTable {
                 inner_next[turn * inner_size as usize + inner as usize] = coords.inner.rank(&moved, &coords.binomials) as u16;
             }
         }
-        let mut table = DistanceTable { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0 };
+        let mut table = TableCore { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0 };
         table.fill(&targets)?;
         // The outer turn tables only speed up the fill; answers unpack pieces instead
         table.coords.outer.drop_tables();
-        Ok(table)
+        Ok(DistanceTable { core: Rc::new(table) })
     }
 
     // Shortest moves from a start pattern to a target; options_json is like twips's ({"maxDepth": 9} only finds answers shorter than 9, or {})
     pub fn search(&self, start_json: &str, options_json: &str) -> Result<String, String> {
+        self.core.search(start_json, options_json)
+    }
+
+    // Number of states in the table
+    pub fn states(&self) -> f64 {
+        self.core.coords.size() as f64
+    }
+
+    // Memory the table holds, in bytes (distances plus the inner turn table)
+    pub fn bytes(&self) -> f64 {
+        (self.core.nibbles.len() + self.core.inner_next.len() * 2 + self.core.coords.outer.table_bytes()) as f64
+    }
+
+    // Deepest distance in the table (the hardest state's fewest moves)
+    pub fn depth(&self) -> u8 {
+        self.core.depth
+    }
+}
+
+impl DistanceTable {
+    // The table data, for a split search that keeps using it
+    pub(crate) fn core(&self) -> Rc<TableCore> {
+        Rc::clone(&self.core)
+    }
+}
+
+impl TableCore {
+    // Shortest moves from a start pattern to a target, by descent
+    fn search(&self, start_json: &str, options_json: &str) -> Result<String, String> {
         let start = pattern_data(&self.kpuzzle, start_json)?;
         let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
         // Tracked pieces of the start (none when an untouched spot is wrong: no turn can fix it)
@@ -120,19 +156,23 @@ impl DistanceTable {
         Ok(answer.join(" "))
     }
 
-    // Number of states in the table
-    pub fn states(&self) -> f64 {
-        self.coords.size() as f64
+    // A pattern's state in this table: outer pieces and inner value (None when an untouched spot can't match)
+    pub fn read(&self, pattern: &KPatternData) -> Option<(Units, u64)> {
+        let (outer, inner) = self.coords.read(pattern)?;
+        Some((outer, self.coords.inner.rank(&inner, &self.coords.binomials)))
     }
 
-    // Memory the table holds, in bytes (distances plus the inner turn table)
-    pub fn bytes(&self) -> f64 {
-        (self.nibbles.len() + self.inner_next.len() * 2 + self.coords.outer.table_bytes()) as f64
+    // A state after one turn: outer pieces into `out`, inner value returned
+    #[inline]
+    pub fn step(&self, outer: &Units, inner: u64, turn: usize, out: &mut Units) -> u64 {
+        self.coords.outer.apply(outer, turn, out);
+        self.inner_next[turn * self.coords.inner.size as usize + inner as usize] as u64
     }
 
-    // Deepest distance in the table (the hardest state's fewest moves)
-    pub fn depth(&self) -> u8 {
-        self.depth
+    // A state's distance (UNSEEN when no allowed turns reach a target from it)
+    #[inline]
+    pub fn distance(&self, outer: &Units, inner: u64) -> u8 {
+        get(&self.nibbles, self.index(outer, inner))
     }
 }
 
@@ -145,7 +185,7 @@ struct Layout {
     blocks: u64,
 }
 
-impl DistanceTable {
+impl TableCore {
     // Table index from outer pieces and an inner value
     #[inline]
     fn index(&self, outer: &Units, inner: u64) -> u64 {

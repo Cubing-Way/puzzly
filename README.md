@@ -21,7 +21,7 @@ The site lands in `dist/web` as plain static files you can host anywhere.
 
 ## Rust search
 
-Step searches run in `search/`, a small Rust crate built to WebAssembly, in one worker that keeps what it builds between searches. A goal small enough for one exact distance table (up to 10M states: cross, EO, CO, EOLine, a Roux first block, ZZ blocks after EOLine…) gets one: it's built once (about 50 ms to 0.6 s), then every scramble is answered with a shortest solution right away, without searching. Bigger goals (XCross, F2L pairs that keep earlier pieces…) are searched with [twips](https://github.com/cubing/twips), keeping each target's prune table. Build it once before `npm run dev` / `npm run build`, and again after changing it (needs Rust, the `wasm32-unknown-unknown` target and wasm-pack):
+Step searches run in `search/`, a small Rust crate built to WebAssembly, in one worker that keeps what it builds between searches. A goal small enough for one exact distance table (up to 10M states: cross, EO, CO, EOLine, a Roux first block, ZZ blocks after EOLine…) gets one: it's built once (about 50 ms to 0.6 s), then every scramble is answered with a shortest solution right away, without searching. A bigger goal (XCross, XXCross, first layer, DR, F2L pairs, OLL or PLL that keep earlier pieces…) is split into sub-tables that each fit (the goal with some pieces, or their twists, left out) and searched with IDA*, bounded by the largest sub-table distance: still a shortest solution, e.g. XXCross in a few ms instead of up to 9 s, or an OLL step that keeps F2L in about 0.1–0.5 s instead of ~20 s. Equal sub-goals share one table (all CFOP pair steps use the same eight "cross + one slot piece" tables). Each split goal starts on small sub-tables (built in a fraction of a second) and switches to bigger, sharper ones (a few seconds to build, once per session) when its searches have cost about that much. [twips](https://github.com/cubing/twips) is only the fallback for goals that can't be split. Build it once before `npm run dev` / `npm run build`, and again after changing it (needs Rust, the `wasm32-unknown-unknown` target and wasm-pack):
 
 ```bash
 npm run build-search
@@ -65,8 +65,8 @@ A method is plain JSON, the same in saved methods, exported files and `src/examp
 | `src/method-store.ts` | Example, saved (localStorage) and file methods for the page |
 | `src/example-methods.json` | Example methods, as data only |
 | `src/index.html`, `src/index.css` | Test bench page |
-| `src/search-worker.ts` | Search worker: one per session; exact tables for small goals, twips for the rest, kept up to 256 MB |
-| `search/` | Rust search crate: `src/table.rs` exact distance tables, `src/coords.rs` their state numbering, `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |
+| `src/search-worker.ts` | Search worker: one per session; an exact table for small goals, split tables + IDA* for bigger ones (small sub-tables first), twips as the fallback; kept up to 256 MB |
+| `search/` | Rust search crate: `src/table.rs` exact distance tables, `src/coords.rs` their state numbering, `src/split.rs` split tables + IDA*, `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |numbering, `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |
 | `script/build.js` | Dev server and build (barely-a-dev-server + esbuild) |
 
 ## Browser support

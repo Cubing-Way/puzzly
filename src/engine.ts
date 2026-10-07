@@ -496,7 +496,7 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
   return { bound, total };
 }
 
-// One search worker for the whole session, so each target's exact table (or twips prune table) is built once and reused
+/// One search worker for the whole session, so each target's tables (exact, split, or twips's prune table) are built once and reused
 let searchWorker: Worker | null = null;
 // Searches waiting for the worker's answer, by request number
 const waiting = new Map<number, { resolve: (moves: string) => void; reject: (error: Error) => void }>();
@@ -525,7 +525,7 @@ function getSearchWorker(): Worker {
   return worker;
 }
 
-// Run one search in the shared worker, from an exact table or with twips (same inputs as cubing.js's experimentalSolveTwips)
+/// Run one search in the shared worker: an exact table, split tables + IDA*, or twips (same inputs as cubing.js's experimentalSolveTwips)
 async function searchTwips(
   kpuzzle: KPuzzle,
   start: KPattern,

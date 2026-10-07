@@ -10,7 +10,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 4 — Alternatives
 - [x] Rust search worker (one worker per session, twips tables kept between searches; done outside the numbered parts)
 - [x] Part 5a — Exact distance tables (Rust): goals that fit one table, answered without searching
-- [ ] Part 5b — Split tables + IDA* (Rust): goals too big for one table
+- [x] Part 5b — Split tables + IDA* (Rust): goals too big for one table
 - [ ] Part 5c — Rank combos by exact distance + table lifecycle (IndexedDB, idle stop)
 - [ ] Part 5d — Table files: option to download (export) a method's tables and load them back
 - [ ] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
@@ -116,6 +116,32 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   engine level (10 step kinds incl. "cross | XCross", any bottom + any front) and all 4 example methods × 4 scrambles give identical solutions to the twips-only worker; page check in the built app.
   Engine-level Node testing without a browser: set `globalThis.self = globalThis`, a fake `Worker` class whose `postMessage` calls `self.onmessage` (and `self.postMessage` back to the fake's `onmessage`),
   import the worker module, then the engine; bundle with `--loader:.wasm=binary`. Import the project's committed `src/search-worker.ts` by absolute path to compare old vs new.
+- Split tables (Part 5b): `search/src/split.rs`, `SplitSearch` exported next to `DistanceTable`. `new SplitSearch(kpuzzleJson, targetsJson, movesJson, maxStates)` plans sub-tables (throws when nothing can be split);
+  `.tables()`, `.targets(i)` (the JSON list `new DistanceTable` takes, also its cache key), `.states(i)` (estimate, upper bound), `.attach(i, table)` (shares the table's data through an `Rc`: `DistanceTable` now wraps
+  `Rc<TableCore>`, so freeing the JS handle later is fine), `.search(start, options)` (twips's contract, plus `{"maxNodes": n}` → error `"Node limit reached"`), `.nodes()` (last search). Several targets work (goal check below).
+  Items = the whole goal's classes from 5a's numbering (the biggest twist-free class stays out, frozen twists aren't items), puzzle orbit order (edges first), classes by first spot.
+  Plan: seed = first item no sub-table covers yet (its twist too), then every other item in order while `estimate_size` (5a's sizes without the reachable-layout walk) ≤ budget, with its twist if that fits, else positions only.
+  A sub-goal = the targets relabeled: kept classes keep their id (and twist), every other piece on a moving spot joins one twist-free rest class, then ids are renumbered by the first spot they fill in the first target,
+  so equal sub-goals from different goals give equal JSON and share one table (XXCross reuses XCross's; CFOP's four pair steps, every grip, use the same 8 "cross + one slot piece" tables).
+  Plans at 10M: XCross = cross + FR, cross + DFR · XXCross / XXXCross / F2L = cross + each piece · first layer = cross + each corner · DR = EO + E-slice (2.0M) and CO + E-slice positions (3.2M), found by the rule ·
+  OLL with keep = 12 tables (27M states, 13 MB) · whole cube (PLL with keep) = 16 tables "4 U edges + one piece" (61M states, 29 MB, ~10–12 s to build).
+  IDA*: per depth, each table's (outer `Units`, inner value), stepped with `TableCore::step` / `distance`. Move pruning: never one move twice in a row, commuting moves only in ascending order (commuting is checked
+  on the KPuzzle transformations, so M/E/S and any move set work). Distances change by ≤ 1 per move, so a table is only looked up when its last exact distance plus the moves since could reach the bound;
+  the table that last ruled a child out is checked first (both together ~40% faster, same nodes). Goal check = replay the path on the whole goal's numbering (`Coords` sizes now saturate instead of failing),
+  so sub-tables needn't cover every piece. No maxDepth = up to 40 moves. ~3–4 µs per node with 4–8 tables.
+  Coords: `Turn.group` (powers of one move), `OrbitCoord::new(…, reach)`. Twisted groups (`:o` with several pieces) now get turn tables: per (position, turn) a row id into deduplicated twist rows
+  (digit permutation from re-sorting the group + gained twists, ≤ 1M entries, ≤ 16 digits), which replaced the singles-only delta/add tables. OLL-with-keep sub-tables: ~25 s → ~0.4 s each.
+  Worker tiers (`src/search-worker.ts`): one table if it fits (10M), else a split goal starts on small sub-tables (`SMALL_TABLE_STATES` 1M, ~0.2–0.4 s to build) and keeps its big plan (`MAX_TABLE_STATES` 10M);
+  searches on the small tables may use (missing big states / `STATES_PER_NODE` 20) nodes in total (~3 µs per node vs ~0.15 µs per filled state), then the goal switches to the big plan
+  (at once when those tables exist already). Entries list the sub-table keys they use (`uses`); dropping a table drops the splits using it. Twips `Searcher` only when no split works.
+  Budget test: 1M-only builds 5–10× faster but XXXCross searches take 3–16 s (vs 0.2–0.8 s at 10M); 4M gains little over 10M.
+  Numbers (Node, wasm, direct API, 10M, 5 scrambles; twips in brackets): XCross build 1.1–1.4 s, 0–1 ms (1–29 ms) · XXCross 1.9–2.3 s, 2–28 ms (0.2–9.1 s) · first layer 1.8–2.0 s, 0–14 ms (0.06–8.9 s) ·
+  DR 0.3–0.4 s, 1–27 ms (3–320 ms) · XXXCross 3.5–4.1 s, 0.23–0.8 s (twips > 10 min on one scramble) · OLL with keep 3.8–5.2 s, 0–196 ms (6 ms–12.8 s) · PLL whole cube (T, Ua, Ub) 10–12 s, 2–441 ms (T in 11, Ua in 9).
+  Methods (tiered worker, 3 scrambles, first run / later runs; committed worker in brackets): CFOP 1.0 s / 37–95 ms (0.41 s / 62–73 ms) · pseudo-slotting 1.7 s / 0.2–0.57 s (1.36 s / 161–171 ms) ·
+  ZZ 0.94 s / 12–19 ms (0.22 s / 19–25 ms) · CFOP + OLL, OLL step 3.0–3.4 s / 0.12–0.5 s (19.5–27 s every time) · XXCross any front 0.47–0.75 s / 32–85 ms (2.1–9.3 s) · first layer 15–360 ms (0.1–9.7 s) · DR 29–412 ms (0.13–0.33 s).
+  Same move counts as twips on every step. Built page: first-layer preset 561 ms (9.7 s before), pseudo-slotting first run 1.13 s then 115 ms, CFOP 33–36 ms after it (shared tables).
+  Slowest left: the first, unlimited combo of a pseudo last pair (~100k nodes on small tables) until that goal switches to big tables.
+  Testing: `bench.ts` style scripts call the wasm API directly (`initSync`, masked start/target from `maskPattern`), check answers with cubing.js, and print nodes; method runs use the fake-Worker harness above.
 ---
 
 ## Part 1 — Groups + centers
@@ -219,6 +245,12 @@ Pseudo pairs and every F2L pair with keep are XCross-size or bigger, so they sti
 
 **Test:** same move counts as twips on XXCross (D bottom + any front), first layer, DR, the CFOP + OLL method and the pseudo-slotting method; compare with the numbers in Facts.
 
+**Done:** see "Split tables (Part 5b)" in Facts. Same move counts as twips on every step of the 4 example methods, CFOP + OLL, XXCross (any front), first layer and DR; the heavy goals are 10–1000× faster after a
+one-time build (XXCross 2–28 ms vs up to 9 s, OLL with keep ~0.1–0.5 s vs ~20 s every time, XXXCross 0.2–0.8 s where twips didn't finish in 10 min).
+The 10M-only version made first runs of shallow methods slow (CFOP 6.3 s, pseudo-slotting 7.3 s of table builds, vs 0.4 / 1.4 s with twips), hence the small-then-big tiers (CFOP 1.0 s, pseudo 1.7 s).
+Whole-cube decision: no Korf tables and no automatic non-shortest answer. The generic split handles PLL with keep (16 tables, ~10–12 s once, then ms per case), so whole-cube steps go through it like
+everything else; 5c's IndexedDB makes that build one-time. A random full-cube state (not a last-layer step) is still out of reach (`solveFull` remains the way to solve a whole cube).
+
 ## Part 5c — Rank combos by exact distance + table lifecycle
 
 **Why:** with exact distances (5a) or sharp lower bounds (5b) known before searching, most alternative × grip × offset combos never need a search;
@@ -232,6 +264,9 @@ big tables should survive a reload, and memory should go back to Windows when no
 - First-time builds: the worker posts progress, the status shows "Building tables…".
 - Store tables above ~1 MB in IndexedDB, keyed by (masked targets, moves, table-format version), so XCross-size tables load instead of rebuilding after a reload.
 - Stop the search worker after ~60 s without searches so its memory is released; the next search starts a fresh worker (stored tables load from IndexedDB).
+- From 5b: split goals start on small sub-tables and switch to big ones when their searches cost about as much as building them (`STATES_PER_NODE`). Big sub-tables already in IndexedDB count as built,
+  so a stored goal goes straight to its big plan; store the big sub-tables (1.5–2.3 MB each), not the small ones (cheap to rebuild). For combo ranking, a split goal's bound = the largest sub-table distance
+  at the start (no search). `SplitSearch` already takes a targets list, so folding offsets needs the sub-tables built with every offset's target, plus a check that the goal check still matches each target.
 
 **Test:** method runs give the same solutions as before 5c with fewer searches (report search counts); after a reload the first solve uses stored tables (time before / after);
 the worker disappears from DevTools → Threads after the idle time and the next solve still works.

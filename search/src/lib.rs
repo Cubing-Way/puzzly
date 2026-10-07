@@ -1,10 +1,13 @@
-// puzzly's search: exact distance tables for goals small enough, and twips searches (kept between calls) for the rest
+// puzzly's search: exact distance tables for goals small enough, split tables + IDA* for bigger ones, and twips searches (kept between calls) as the fallback
 
 // State numbering read from masked targets
 mod coords;
 // Exact distance tables (DistanceTable)
 mod table;
 pub use table::DistanceTable;
+// Goals too big for one table: sub-tables + IDA* (SplitSearch)
+mod split;
+pub use split::SplitSearch;
 
 use cubing::alg::Move;
 use cubing::kpuzzle::{KPattern, KPuzzle};
