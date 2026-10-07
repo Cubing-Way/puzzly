@@ -6,7 +6,8 @@ import {
   loadEngine,
   parseMoves,
   parseGoalText,
-  goalFromText,
+  splitAlternatives,
+  readAlternatives,
   goalOnCube,
   gripRotations,
   joinMoves,
@@ -35,7 +36,9 @@ interface Run {
   scramble: string; // start position
   done: string; // moves earlier steps did after the scramble
   mode: "step" | "full" | "method"; // one step, the whole cube, or every step of a method
-  pieces: string; // goal pieces ("" for full solves; every step's pieces for a method)
+  pieces: string; // goal pieces solved, named in the grip the solution ends in ("" for full solves; every step's pieces for a method)
+  alternatives: string[]; // goal texts the step could pick from (one for most steps; none for full solves and whole methods)
+  alternative: number; // which of them won (0 = the first, or the only one)
   offsets: string[]; // offsets the goal counted up to ([""] = none)
   goal: string; // label shown in the runs table
   solution: string; // grip rotation (if any), then the moves
@@ -60,8 +63,9 @@ const randomButton = $<HTMLButtonElement>("random-button");
 const clearButton = $<HTMLButtonElement>("clear-button");
 const stepOptions = $<HTMLFieldSetElement>("step-options");
 const presetSelect = $<HTMLSelectElement>("preset-select");
-const piecesInput = $<HTMLInputElement>("pieces-input");
+const piecesInput = $<HTMLTextAreaElement>("pieces-input");
 const piecesError = $("pieces-error");
+const addAlternativeButton = $<HTMLButtonElement>("add-alternative");
 const roleSelect = $<HTMLSelectElement>("role-select");
 const anyFrontBox = $<HTMLInputElement>("any-front");
 const offsetsInput = $<HTMLInputElement>("offsets-input");
@@ -76,6 +80,7 @@ const movesStat = $("moves-stat");
 const timeStat = $("time-stat");
 const checkStat = $("check-stat");
 const offsetStat = $("offset-stat");
+const alternativeStat = $("alternative-stat");
 const continueButton = $<HTMLButtonElement>("continue-button");
 const copyButton = $<HTMLButtonElement>("copy-button");
 const runsBody = $("runs-body");
@@ -166,15 +171,45 @@ function readMoves(input: HTMLTextAreaElement | HTMLInputElement, error: HTMLEle
   }
 }
 
-// Check the goal pieces; returns false and shows why on a typo or an empty list (empty is fine for a step that keeps earlier pieces)
+// Check the goal pieces, one alternative per line; returns false and shows why on a typo or an empty goal (empty is fine for a step that keeps earlier pieces)
 function readPieces(): boolean {
   try {
-    goalFromText(piecesInput.value);
-    piecesError.textContent = rolesIn(piecesInput.value).size || keepBox.checked ? "" : "Pick at least one piece.";
+    readAlternatives(piecesInput.value, !keepBox.checked);
+    piecesError.textContent = "";
   } catch (error) {
     piecesError.textContent = (error as Error).message;
   }
   return piecesError.textContent === "";
+}
+
+// Number of the pieces line the caret is on (the chips, preset and viewer follow that alternative)
+function currentLine(): number {
+  return piecesInput.value.slice(0, piecesInput.selectionStart).split("\n").length - 1;
+}
+
+// Goal text on the caret's line
+function currentLineText(): string {
+  return piecesInput.value.split("\n")[currentLine()] ?? "";
+}
+
+// Put new goal text on the caret's line, leaving the caret at that line's end
+function setCurrentLine(text: string): void {
+  const lines = piecesInput.value.split("\n");
+  const at = currentLine();
+  lines[at] = text;
+  piecesInput.value = lines.join("\n");
+  const end = lines.slice(0, at + 1).join("\n").length;
+  piecesInput.setSelectionRange(end, end);
+}
+
+// Grow the pieces box to show every line (one line per alternative)
+function fitPieces(): void {
+  piecesInput.rows = Math.max(1, piecesInput.value.split("\n").length);
+}
+
+// Which alternative won, as " (alt 2 of 3)" ("" when the run had only one)
+function alternativeNote(run: Run): string {
+  return run.alternatives.length > 1 ? ` (alt ${run.alternative + 1} of ${run.alternatives.length})` : "";
 }
 
 // Read the offsets field; returns the offsets (no offset first), or null and shows why under the field
@@ -260,9 +295,9 @@ function buildChips(): void {
   }
 }
 
-// Show each chip's role from the pieces box (pressed = in the goal, data-tag = its role suffix)
+// Show each chip's role from the caret's line of the pieces box (pressed = in that goal, data-tag = its role suffix)
 function renderChips(): void {
-  const roles = rolesIn(piecesInput.value);
+  const roles = rolesIn(currentLineText());
   // No center typed means all six are kept
   const allCenters = ![...roles.keys()].some((piece) => piece.startsWith("CENTERS:"));
   for (const chip of document.querySelectorAll<HTMLButtonElement>(".chip")) {
@@ -274,9 +309,9 @@ function renderChips(): void {
   }
 }
 
-// Give one piece the role picked in "Chip click sets", or remove it when it already has that role
+// Give one piece the role picked in "Chip click sets" on the caret's line, or remove it when it already has that role
 function togglePiece(orbit: string, index: number, name: string): void {
-  const words = piecesInput.value.split(/[\s,]+/).filter(Boolean);
+  const words = currentLineText().split(/[\s,]+/).filter(Boolean);
   // Find this piece's word, if it's already there
   const at = words.findIndex((word) => {
     const piece = pieceOf(word);
@@ -288,15 +323,24 @@ function togglePiece(orbit: string, index: number, name: string): void {
   if (at !== -1 && pieceOf(words[at])?.role === role) words.splice(at, 1);
   else if (at === -1) words.push(name + roleSuffix(role));
   else words[at] = name + roleSuffix(role);
-  piecesInput.value = words.join(" ");
+  setCurrentLine(words.join(" "));
   onInputChange();
 }
 
-// Select the preset that matches the typed goal, or "Custom"
+// Preset whose pieces match a goal text (undefined = none)
+function presetFor(text: string): HTMLOptionElement | undefined {
+  const typed = goalKey(text);
+  return [...presetSelect.options].find((option) => option.value && goalKey(option.value) === typed);
+}
+
+// Select the preset that matches the caret's goal line, or "Custom"
 function syncPreset(): void {
-  const typed = goalKey(piecesInput.value);
-  const match = [...presetSelect.options].find((option) => option.value && goalKey(option.value) === typed);
-  presetSelect.value = match?.value ?? "";
+  presetSelect.value = presetFor(currentLineText())?.value ?? "";
+}
+
+// Name for a goal text in the runs table: its preset's name when it matches one, else the text
+function goalLabel(text: string): string {
+  return presetFor(text)?.text ?? text;
 }
 
 // Grips the step search may use, from the bottom-face boxes and the any-front switch
@@ -305,11 +349,14 @@ function chosenGrips(): string[] {
   return gripRotations(bottoms, anyFrontBox.checked);
 }
 
-// Show how many searches a step solve may run: grips × offsets (null = offsets unreadable, so no count)
+// Show how many searches a step solve may run: alternatives × grips × offsets (null = offsets unreadable, so no count)
 function showSearchCount(offsets: string[] | null): void {
   const grips = chosenGrips().length;
+  const alternatives = splitAlternatives(piecesInput.value).length;
+  // Alternatives are only mentioned when there are several
+  const each = alternatives > 1 ? `${plural(alternatives, "alternative")} × ` : "";
   searchCount.textContent = offsets
-    ? `Up to ${plural(grips * offsets.length, "search", "searches")}: ${plural(grips, "grip")} × ${plural(offsets.length, "offset")} (counting none). Repeats are skipped.`
+    ? `Up to ${plural(alternatives * grips * offsets.length, "search", "searches")}: ${each}${plural(grips, "grip")} × ${plural(offsets.length, "offset")} (counting none). Repeats are skipped.`
     : "";
 }
 
@@ -323,6 +370,7 @@ function syncViewer(): boolean {
   const step = currentMode() === "step";
   // Step options only matter for step solves
   stepOptions.disabled = !step;
+  fitPieces();
   renderChips();
   syncPreset();
   // Validate the inputs (step pieces and offsets only in step mode)
@@ -332,9 +380,9 @@ function syncViewer(): boolean {
   const offsets = step ? readOffsets() : [""];
   if (!step) piecesError.textContent = offsetsError.textContent = "";
   showSearchCount(offsets);
-  // Update the cube for whatever parsed (mask the goal in the grip the cube is held in now)
+  // Update the cube for whatever parsed (mask the caret line's goal in the grip the cube is held in now)
   if (scramble !== null && done !== null) player.experimentalSetupAlg = joinMoves(scramble, done);
-  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? piecesInput.value : null, scramble ?? "", done ?? "");
+  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? currentLineText() : null, scramble ?? "", done ?? "");
   return scramble !== null && done !== null && piecesOk && offsets !== null;
 }
 
@@ -342,6 +390,14 @@ function syncViewer(): boolean {
 function onInputChange(): void {
   syncViewer();
   showResult(null);
+}
+
+// Caret moved in the pieces box: the chips, preset and viewer follow that line's alternative (a shown result stays on the cube)
+function onCaretMove(): void {
+  if (shown) {
+    renderChips();
+    syncPreset();
+  } else syncViewer();
 }
 
 // Fill the result panel and the viewer's solution (null = clear)
@@ -360,6 +416,10 @@ function showResult(run: Run | null): void {
   checkStat.dataset.kind = run ? (run.ok ? "ok" : "error") : "";
   // Offset still in the cube, with the moves that undo it
   offsetStat.textContent = run ? (run.offset ? `${run.offset} (undo: ${invertMoves(run.offset)})` : "none") : "—";
+  // Alternative that won (its goal text on hover), when the step had several
+  const several = run !== null && run.alternatives.length > 1;
+  alternativeStat.textContent = several ? `${run.alternative + 1} of ${run.alternatives.length}` : "—";
+  alternativeStat.title = several ? run.alternatives[run.alternative] : "";
   // Actions need a non-empty solution
   continueButton.disabled = copyButton.disabled = !run?.solution;
   renderRuns();
@@ -396,8 +456,8 @@ function renderRuns(): void {
   runsEmpty.hidden = runs.length > 0;
   runsBody.replaceChildren(
     ...runs.map((run, index) => {
-      // Number column first, then the goal as the label
-      const row = runRow(run, run.goal, ["label", "moves", "offset", "time", "check", "solution"], () => loadRun(run));
+      // Number column first, then the goal (and the alternative that won) as the label
+      const row = runRow(run, run.goal + alternativeNote(run), ["label", "moves", "offset", "time", "check", "solution"], () => loadRun(run));
       const number = document.createElement("td");
       number.textContent = String(runs.length - index);
       row.prepend(number);
@@ -411,7 +471,7 @@ function renderMethodRows(): void {
   methodEmpty.hidden = methodRows.length > 0;
   methodBody.replaceChildren(
     ...methodRows.map(({ label, run }) => {
-      const row = runRow(run, label, ["label", "moves", "offset", "check", "time", "solution"], () => showResult(run));
+      const row = runRow(run, label + alternativeNote(run), ["label", "moves", "offset", "check", "time", "solution"], () => showResult(run));
       row.classList.toggle("total", run.mode === "method");
       return row;
     }),
@@ -425,9 +485,9 @@ function loadRun(run: Run): void {
   doneInput.value = run.done;
   // Method runs only bring back the start position (their steps stay in the method panel)
   if (run.mode !== "method") (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
-  // Step runs bring back their pieces and offsets too
+  // Step runs bring back their pieces (every alternative, one per line) and offsets too
   if (run.mode === "step") {
-    piecesInput.value = run.pieces;
+    piecesInput.value = run.alternatives.join("\n");
     offsetsInput.value = offsetsText(run.offsets);
   }
   syncViewer();
@@ -462,8 +522,10 @@ async function solve(): Promise<void> {
   const scramble = readMoves(scrambleInput, scrambleError) ?? "";
   const done = readMoves(doneInput, doneError) ?? "";
   const mode = currentMode();
-  const pieces = mode === "step" ? piecesInput.value.trim() : "";
-  const goal = mode === "full" ? "Full cube" : presetSelect.value ? presetSelect.selectedOptions[0].text : pieces;
+  // Step goal: one alternative per line, any one counts (labelled with preset names where they match)
+  const alternatives = mode === "step" ? splitAlternatives(piecesInput.value) : [];
+  const pieces = alternatives.join(" | ");
+  const goal = mode === "full" ? "Full cube" : alternatives.map(goalLabel).join(" | ");
   const generatorMoves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
   const maxDepth = maxDepthInput.value ? Number(maxDepthInput.value) : undefined;
   // First-answer mode only applies to steps
@@ -489,30 +551,36 @@ async function solve(): Promise<void> {
   tick();
   const timer = setInterval(tick, 100);
   try {
-    // Solve from scramble + done (a step tries every chosen grip × offset and keeps the shortest answer)
+    // Solve from scramble + done (a step tries every alternative × chosen grip × offset and keeps the shortest answer)
     let solution: string;
+    // Goal pieces the winner solved (named in the grip it ends in), and which alternative it was
+    let solved = "";
+    let alternative = 0;
     let offset = "";
     let searches = 1;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces,{ generatorMoves, maxDepth, rotations, done, offsets, firstFound });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, firstFound });
       solution = result.solution.toString();
+      solved = result.pieces;
+      alternative = result.alternative;
       offset = result.offset;
       searches = result.searches;
     }
     const ms = performance.now() - started;
     clearInterval(timer);
-    // Double-check the answer on our own pattern (any of the step's offsets counts)
-    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : pieces, offsets);
+    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts)
+    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets);
     // Record and show the run
-    const run: Run = { scramble, done, mode, pieces, offsets, goal, solution, offset, moves: countMoves(solution), ms, ok };
+    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, goal, solution, offset, moves: countMoves(solution), ms, ok };
     runs.unshift(run);
     showResult(run);
-    // Mention how many searches ran (all compared, or up to the first answer), and the offset left in
+    // Mention how many searches ran (all compared, or up to the first answer), the alternative that won and the offset left in
     const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
+    const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
     const offsetNote = offset ? `, offset ${offset}` : "";
     setStatus(
-      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${offsetNote}).` : `${goal}: the solution doesn't reach the goal!`,
+      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
     );
   } catch (error) {
@@ -540,7 +608,8 @@ function stepFromForm(number: number): StepConfig | null {
   else {
     return {
       name: stepNameInput.value.trim() || `Step ${number}`,
-      pieces: piecesInput.value.trim(),
+      // One alternative per line in the form, " | " between them in the method
+      pieces: splitAlternatives(piecesInput.value).join(" | "),
       keep: keepBox.checked,
       grips: { bottom, anyFront: anyFrontBox.checked },
       offsets: offsetsText(offsets),
@@ -555,7 +624,8 @@ function stepFromForm(number: number): StepConfig | null {
 // Put a method step into the form (and the step name / keep fields) for editing
 function stepToForm(step: StepConfig): void {
   (form.elements.namedItem("mode") as RadioNodeList).value = "step";
-  piecesInput.value = step.pieces;
+  // Each alternative on its own line
+  piecesInput.value = splitAlternatives(step.pieces).join("\n");
   offsetsInput.value = step.offsets;
   // Grips and allowed moves as checkboxes
   for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) box.checked = step.grips.bottom.includes(box.value);
@@ -755,6 +825,8 @@ async function runWholeMethod(): Promise<void> {
           done: step.done,
           mode: "step",
           pieces: step.pieces,
+          alternatives: splitAlternatives(running.steps[index].pieces),
+          alternative: step.alternative,
           offsets: step.offsets,
           goal: `${running.name}: ${step.name}`,
           solution: step.solution.toString(),
@@ -774,6 +846,8 @@ async function runWholeMethod(): Promise<void> {
       done,
       mode: "method",
       pieces: result.pieces,
+      alternatives: [],
+      alternative: 0,
       offsets: result.steps.at(-1)?.offsets ?? [""],
       goal: running.name,
       solution: result.solution,
@@ -805,12 +879,31 @@ form.addEventListener("submit", (event) => {
   solve();
 });
 
-// Ctrl+Enter in the moves box solves too (plain Enter adds a line)
-scrambleInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault();
-    form.requestSubmit();
-  }
+// Ctrl+Enter in the moves or pieces box solves too (plain Enter adds a line: in the pieces box, a new alternative)
+for (const box of [scrambleInput, piecesInput]) {
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+}
+
+// Moving the caret in the pieces box makes the chips, preset and viewer follow its line
+piecesInput.addEventListener("keyup", onCaretMove);
+piecesInput.addEventListener("click", onCaretMove);
+
+// Add an alternative under the caret's line, starting as a copy of it (e.g. the cross, then click a pair's chips for an XCross)
+addAlternativeButton.addEventListener("click", () => {
+  const lines = piecesInput.value.split("\n");
+  const at = currentLine();
+  lines.splice(at + 1, 0, lines[at]);
+  piecesInput.value = lines.join("\n");
+  // Caret at the end of the new line, so the chips and preset edit it
+  const end = lines.slice(0, at + 2).join("\n").length;
+  piecesInput.focus();
+  piecesInput.setSelectionRange(end, end);
+  onInputChange();
 });
 
 // Typing in the moves, done or pieces box, or switching mode, updates the viewer
@@ -836,9 +929,9 @@ for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-offse
   });
 }
 
-// Picking a preset fills in its pieces ("Custom" just moves to the pieces box)
+// Picking a preset puts its pieces on the caret's line ("Custom" just moves to the pieces box)
 presetSelect.addEventListener("change", () => {
-  if (presetSelect.value) piecesInput.value = presetSelect.value;
+  if (presetSelect.value) setCurrentLine(presetSelect.value);
   else piecesInput.focus();
   onInputChange();
 });

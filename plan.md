@@ -7,8 +7,10 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 1 — Groups + centers
 - [x] Part 2 — Offsets
 - [x] Part 3 — Methods (step list) + keep previous
-- [ ] Part 4 — Alternatives
-- [ ] Part 5 — Named whole-state checks (later, one check per chat)
+- [x] Part 4 — Alternatives
+- [ ] Part 5 — Pruning tables (speed: own search + cached distance tables)
+- [ ] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
+- [ ] Part 7 — Named whole-state checks (later, one check per chat)
 
 ## Goal of the project
 
@@ -60,10 +62,19 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   `readMethod(data)` checks and fills every field in a fixed key order, so `JSON.stringify(readMethod(x), null, 2)` round-trips identically.
   `StepOptions.keep` is a `Goal` named in the grip the step starts in; `solveStep` renames it per grip with `rotateGoal(goal, rotation)` (piece on spot `turned.pieces[to]` moves to `to`) and merges `mergeGoals(kept, own)` (own wins).
   With `keep`, the step's own centers count only when typed (`goalFromText(text, false)`); no centers at all after the merge = all six.
-  Only the grips where the kept pieces cover the fewest own pieces are searched (`covers(kept, role)`: same role, kept solve, or kept place over a swap role), so `DFR FR` + any front = "easiest unsolved pair", an OLL step can't win with x2 or a sideways grip (that put solved pieces under its names), and a `pieces: ""` + keep step (ADF fix) still runs.
+  `runMethod` also passes `StepOptions.earlier` (every earlier step's pieces, keep or not). Only the grips where those cover the fewest own pieces (centers left out) are searched
+  (`covers(kept, role)`: same role, kept solve, or kept place over a swap role), so `DFR FR` + any front = "easiest unsolved pair", an OLL step can't win with x2 or a sideways grip
+  (that put solved pieces under its names), and a `pieces: ""` + keep step (ADF fix) still runs. If every grip only names done pieces, the step throws `NOTHING_NEW` instead of answering with a bare grip turn.
+  (A user once read "Bottom face" as "the face the step works on" and picked U for OLL; that's what this catches.)
   `StepResult.pieces` = goal text actually solved, named in the end grip. `runMethod(scramble, method, { done, onStep })` passes earlier solutions as `done`, keeps `earlier` (every step's pieces, renamed through each winning rotation), and checks each step with `reachesGoal(scramble, after, result.pieces, offsets)`.
   Page: `src/method-store.ts` (examples from `src/example-methods.json`, localStorage key `puzzly.methods`, file export/import). Example timings: CFOP ~2 s, ZZ ~0.5 s, pseudo-slotting ~10 s (16 searches per pseudo pair).
-  Part 4: alternatives with keep need the same covered-count filter, or an alternative already covered by kept pieces wins with 0 moves.
+- Alternatives (Part 4): goal text may hold several goals split by `|` or new lines; `splitAlternatives(text)` (blank ones dropped, none = `[""]`), `readAlternatives(text, needPieces)` also checks each ("Alternative 2: Unknown piece…").
+  `StepConfig.pieces` stores them joined with `" | "` (a JSON list is read as alternatives too, so `String(list)` can't merge them into one goal). Page: the pieces box is a textarea, one alternative per line; chips, preset and viewer mask follow the caret's line; "+ Alternative" copies the line below.
+  `solveStep` combos = alternatives × grips × offsets (one flat queue, easiest first). The covered-count filter runs per alternative, and an alternative whose pieces are all done in every grip is dropped.
+  If every alternative is like that, only the as-held grip `""` is searched (the step is already done: 0 moves, or the offset fix; e.g. Pair 4 after an XCross). Without `""` among the grips it still throws `NOTHING_NEW` (OLL with only U bottom).
+  Shorter wins; on a tie the alternative adding more new pieces wins (`fresh` = own pieces − covered), so those combos search with `maxDepth = bestLength` instead of `bestLength - 1` ("cross | XCross" takes a free XCross, in either order).
+  `StepResult.alternative` = winner's index, `pieces` = winner + kept. `reachesGoal` accepts alternatives text (any one counts). Old method JSON gives identical solutions (checked on CFOP, ZZ, pseudo-slotting).
+  Example "CFOP (cross or free XCross)": on 7 random scrambles a free XCross never came up (same moves as CFOP, ~1 s slower); greedy steps only take a bigger goal when it costs nothing, so the real payoff needs Part 6 lookahead.
 ---
 
 ## Part 1 — Groups + centers
@@ -111,7 +122,55 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
 
 **Test:** with alternatives "cross" and "xcross", the result is never longer than either alone.
 
-## Part 5 — Named whole-state checks (later, one per chat)
+**Done:** see "Alternatives (Part 4)" in Facts. Checked on 9 scrambles (D bottom, and any front): always min(cross, XCross); ties go to the XCross.
+
+## Part 5 — Pruning tables (speed)
+
+**Why:** heavy steps are slow: the OLL step takes ~6 s with bottom D (~30 s with any front, 4 grips), a whole-cube PLL step takes minutes, pseudo-slotting ~10 s in Node.
+Each twips search runs in a fresh worker that is terminated afterwards (log: "Search ended, terminating dedicated `twips` worker"), so whatever it builds is thrown away every search
+(~200 ms start-up even for easy goals), and search time grows ~10× per extra move.
+
+**Do:**
+- Own search in a new `src/search.ts`: IDA* on a compact state holding only the goal's pieces (spot + twist per tracked piece, group members interchangeable), move lookups per orbit like `pieceMoves`,
+  and the usual move pruning (no same face twice, opposite faces in one fixed order). Same contract as twips (shortest answer within `maxDepth`), so `solveStep`'s grips × offsets loop, depth tightening and skips stay.
+- Distance tables in `src/tables.ts`: breadth-first from **every accepted target at once** (all the step's offsets), so one table covers all offsets and one search can accept any offset
+  (fewer searches than grips × offsets; find the winning offset afterwards). Store as `Uint8Array` (or 4-bit packed); index = rank of the tracked pieces' spots (+ twists).
+- Cache tables by (pieces with roles, allowed moves, offsets), so they're shared across grips, scrambles, steps and method runs.
+  Exact table when it fits (cross: 12·11·10·9 spots × 2⁴ twists = 190,080 states); bigger goals use several smaller tables over parts of the goal, h = max of them
+  (cross + pair → "cross + pair edge", 5 edges ≈ 3.0M, and "cross + pair corner" ≈ 4.6M). With keep, the merged goal differs per grip and per run,
+  so cover goals with reusable sub-tables (cross edges, each pair, last-layer pieces…) instead of one table per whole goal.
+- Build tables in a Web Worker so the page stays responsive; the status shows "Building tables…" the first time. Later: save them in IndexedDB.
+- Start with face turns and solve / place / ignored roles; keep twips as the fallback for anything not covered yet (slice moves that move centers, group roles), then widen.
+- Whole-cube goals (PLL with keep): Korf-style tables (corners 8!·3⁷ ≈ 88M states ≈ 44 MB at 4 bits, plus edge tables) are heavy for a browser.
+  Decide in that chat: build them once and store in IndexedDB, or offer a fast non-shortest option for whole-cube steps (`solveFull`, two-phase). Until then, split PLL into corners, then edges.
+- cubing.js's Kociemba (min2phase) tables don't help masked goals: they measure distance to DR / solved over every piece. They only fit whole-cube steps (via `solveFull`) and a DR step,
+  and they're internal to cubing.js's solver worker (reusing them means copying that code).
+- Part 6 (several answers per search) and Part 7 (IDA* with a check function) reuse this search.
+
+**Test:** same move counts as twips (both are shortest) on cross, XCross, XXCross (cross + 2 pairs), pseudo pairs with ADF, first layer, EOLine, and the CFOP + OLL method.
+Benchmark heavy goals, not only cross / EO (light goals are dominated by start-up time). Report table build time, memory and solve time before / after.
+
+## Part 6 — Lookahead across steps
+
+**Why:** each method step takes its own shortest answer, so a method never accepts a slightly worse step that sets up the next ones.
+Pseudo-slotting ("advanced keyhole": the corner and edge of a pair go into different slots, one D turn at the end lines them up), multislotting and keyhole choices only pay off across steps.
+The goal side already works: offsets `D D2 D'` mean "D-layer pieces one D turn off, middle-layer edges home", which is exactly a pseudo pair. But on
+`B D2 R' F R' L2 F' D' L' D2 F2 D2 L B2 U2 R' D2 L' U2 B'` the pseudo-slotting example picked offset "none" in every step and matched plain CFOP move for move (35 moves).
+(Merging cross + first pair into one XCross step is **not** pseudo-slotting; don't "fix" the example that way.)
+
+**Do:**
+- `solveStep` can return several candidates instead of one: the best answer per grip × offset (today depth tightening cuts the other combos short), optionally also answers up to best + N moves.
+- Optional `lookahead` per step in `StepConfig` (0 / missing = today's greedy behaviour, so old JSON keeps working): for each candidate of step i, run the next `lookahead` steps greedily
+  and keep the candidate with the lowest total; then continue from that candidate for real. Beam search (keeping several partial solves) later if it's worth it.
+- Candidates include each alternative (Part 4), so "cross | XCross" with lookahead can take a slightly longer XCross that saves a whole pair step.
+- Cost ≈ candidates × the next steps' time, so it needs Part 5's speed. Twips returns one answer per search; listing several answers per grip × offset needs Part 5's own search (IDA* can keep going after the first hit).
+- Results show, per step, how many candidates were compared and the total they were judged by; the step editor gets a lookahead field.
+- Still no method code: lookahead is a generic search setting.
+
+**Test:** with lookahead 1, step 1 + step 2 is never longer than greedy's step 1 + step 2 (same scramble); on the scramble above and several random ones, the pseudo-slotting example
+ends some pair steps with a D offset and is at most as long as greedy overall in most runs (report the numbers); old method JSON without `lookahead` gives the same results as before.
+
+## Part 7 — Named whole-state checks (later, one per chat)
 
 **Why:** some goals aren't a pattern at all, so config can't express them:
 - 2GR / ZZ-CT "CP solved" (corners solvable with only R and U), "solvable with M and U only", BLD parity.

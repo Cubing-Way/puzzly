@@ -297,6 +297,16 @@ button.primary {
   padding: 0.45rem 0.6rem;
 }
 
+/* Pieces box (one alternative per line) with its add button beside it, at the top */
+.pieces {
+  align-items: flex-start;
+}
+.pieces textarea {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 0;
+}
+
 /* Small note under a field */
 .hint {
   margin: 0;

@@ -10,6 +10,16 @@
     ]
   },
   {
+    "name": "CFOP (cross or free XCross)",
+    "steps": [
+      { "name": "Cross or XCross", "pieces": "DF DR DB DL | DF DR DB DL DFR FR", "keep": false, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 1", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 2", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 3", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },
+      { "name": "Pair 4", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false }
+    ]
+  },
+  {
     "name": "ZZ (EOLine + blocks)",
     "steps": [
       { "name": "EOLine", "pieces": "UF:o UR:o UB:o UL:o DF DR:o DB DL:o FR:o FL:o BR:o BL:o", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false },

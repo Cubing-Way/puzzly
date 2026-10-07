@@ -57,9 +57,12 @@
                         <option value="">Custom</option>
                     </select>
 
-                    <!-- Pieces to solve: typed, or set with the chips -->
-                    <label for="pieces-input" class="label">Pieces <small>no center picked = all six kept</small></label>
-                    <input id="pieces-input" type="text" spellcheck="false" autocomplete="off" />
+                    <!-- Pieces to solve: typed, or set with the chips; each line is an alternative goal (any one counts), the chips and preset edit the caret's line -->
+                    <label for="pieces-input" class="label">Pieces <small>no center picked = all six kept; one alternative per line</small></label>
+                    <div class="row pieces">
+                        <textarea id="pieces-input" rows="1" spellcheck="false" autocomplete="off"></textarea>
+                        <button id="add-alternative" type="button" title="Add a line under this one (starting as a copy): any one line counts as the goal">+ Alternative</button>
+                    </div>
                     <p id="pieces-error" class="error"></p>
                     <!-- Role a chip click gives (clicking a chip that already has it removes the piece) -->
                     <div class="brush">
@@ -142,6 +145,7 @@
                             <div><dt>Time</dt><dd id="time-stat">—</dd></div>
                             <div><dt>Check</dt><dd id="check-stat">—</dd></div>
                             <div><dt>Offset</dt><dd id="offset-stat">—</dd></div>
+                            <div><dt>Alternative</dt><dd id="alternative-stat">—</dd></div>
                         </dl>
                         <div class="row">
                             <button id="continue-button" type="button" disabled>Continue from here</button>

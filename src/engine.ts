@@ -50,14 +50,15 @@ export interface StepResult {
   solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
-  pieces: string; // goal text it solved (this step's pieces plus kept ones), named in the grip it ends in
-  searches: number; // searches actually run (grip × offset pairs asking for the same thing are skipped)
+  pieces: string; // goal text it solved (the winning alternative plus kept pieces), named in the grip it ends in
+  alternative: number; // which of the step's alternatives won (0 = the first, or the only one)
+  searches: number; // searches actually run (alternative × grip × offset combos asking for the same thing are skipped)
 }
 
 // One step of a method, as plain data (what users edit and save as JSON)
 export interface StepConfig {
   name: string;
-  pieces: string; // goal text, e.g. "DFR FR" or "UF:o UR:o…"
+  pieces: string; // goal text, e.g. "DFR FR" or "UF:o UR:o…"; alternatives split by " | " (any one counts, e.g. "DF DR DB DL | DF DR DB DL DFR FR")
   keep?: boolean; // also keep every earlier step's pieces solved
   grips: { bottom: string[]; anyFront: boolean }; // faces that may go on the bottom, and whether y turns pick the front too
   offsets: string; // offsets text, e.g. "D D2 D'" ("" = none)
@@ -186,6 +187,26 @@ export function parseGoalText(text: string): GoalPiece[] {
       if (!role) throw new Error(`Unknown role in "${word}" (use :o, :o2…, :s, :s2… or :p)`);
       return { orbit, index, role };
     });
+}
+
+// Split goal text into its alternatives ("|" or a new line between them; blank ones are dropped, so no text at all = one empty goal)
+export function splitAlternatives(text: string): string[] {
+  const alternatives = text.split(/[|\n]/).map((part) => part.trim()).filter(Boolean);
+  return alternatives.length ? alternatives : [""];
+}
+
+// Split goal text into its alternatives and check each one; throws a clear error on a typo (naming the alternative when there are several),
+// or on an empty goal when needPieces is set (a step that doesn't keep earlier pieces needs some of its own)
+export function readAlternatives(text: string, needPieces = false): string[] {
+  const alternatives = splitAlternatives(text);
+  alternatives.forEach((alternative, index) => {
+    try {
+      if (!parseGoalText(alternative).length && needPieces) throw new Error("Pick at least one piece, or keep earlier steps' pieces.");
+    } catch (error) {
+      throw new Error(alternatives.length > 1 ? `Alternative ${index + 1}: ${(error as Error).message}` : (error as Error).message);
+    }
+  });
+  return alternatives;
 }
 
 // All six centers kept solved (a goal's centers when its text names none)
@@ -475,59 +496,94 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
   return { bound, total };
 }
 
-// Solve only the goal pieces (a step like the cross), trying each grip × offset and keeping the shortest answer
+// Run one twips search, then stop the worker cubing.js started for it (cubing.js starts one per search and never stops it)
+async function searchTwips(...args: Parameters<typeof experimentalSolveTwips>): Promise<Alg> {
+  // Workers started during this search
+  const started: Worker[] = [];
+  // The real Worker constructor, put back when the search ends
+  const RealWorker = globalThis.Worker;
+  // Build workers as usual, but note each one so it can be stopped afterwards
+  globalThis.Worker = class extends RealWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      started.push(this);
+    }
+  };
+  try {
+    return await experimentalSolveTwips(...args);
+  } finally {
+    // Put the real constructor back and stop this search's workers, freeing their memory
+    globalThis.Worker = RealWorker;
+    for (const worker of started) worker.terminate();
+  }
+}
+
+// Solve only the goal pieces (a step like the cross), trying each alternative × grip × offset and keeping the shortest answer
+// (on a tie, the alternative adding more new pieces wins, so "cross | XCross" takes the XCross when it costs no extra move)
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const keep = options.keep;
-  // This step's pieces (with kept pieces, its centers only count when typed, so the kept ones stand)
-  const own = goalFromText(pieces, !keep);
-  // Goal in one grip: the kept pieces renamed for that grip, with this step's pieces on top (no centers left at all = all six, like goal text)
-  const goalFor = (rotation: string): Goal => {
-    if (!keep) return own;
-    const goal = mergeGoals(rotateGoal(keep, rotation), own);
-    goal.CENTERS ??= allCenters();
-    return goal;
-  };
-  // This step's pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
-  const ownPieces = Object.entries(own)
-    .filter(([orbit]) => orbit !== "CENTERS")
-    .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Offsets the goal may be reached up to (an empty list means no offset)
   const offsets = options.offsets?.length ? options.offsets : [""];
-  // Orientation is judged from the grip, so orient-group goals can't be shared between grips
-  const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
-  // Best answer so far, and the last search error (shown if no grip × offset finds anything)
+  // Best answer so far, how many new pieces it adds, and the last search error (shown if no combo finds anything)
   let best: StepResult | null = null;
   let bestLength = Infinity;
+  let bestFresh = -1;
   let lastError: unknown = null;
-  // What each searched grip × offset asked for: two pairs asking for the same thing give the same length
+  // What each searched combo asked for: two combos asking for the same thing give the same length
   const asked = new Set<string>();
   let searches = 0;
   // How each piece moves under the allowed moves, for the easy-looking scores
   const tables = pieceMoves(generatorMoves);
-  // Every grip with every offset
-  const combos = (options.rotations ?? [""]).flatMap((rotation) => {
-    // Earlier steps, then this grip's rotation; start = cube held in this grip, with the goal's hidden pieces masked
+  // Each grip once: earlier steps then the grip's rotation, the cube held that way, and the earlier steps' pieces named in that grip
+  const grips = (options.rotations ?? [""]).map((rotation) => {
     const done = joinMoves(options.done ?? "", rotation);
-    const held = heldPattern(scramble, done);
-    const goal = goalFor(rotation);
-    const start = maskPattern(held, goal);
-    // How many of this step's pieces earlier steps already cover in this grip (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
-    const before = rotateGoal(options.earlier ?? keep ?? {}, rotation);
-    const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
-    // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
-    return offsets.map((offset) => {
-      const target = maskedTarget(goal, offset);
-      return { rotation, offset, done, goal, covered, start, target, ...estimate(held, start, target, goal, tables) };
-    });
+    return { rotation, done, held: heldPattern(scramble, done), before: rotateGoal(options.earlier ?? keep ?? {}, rotation) };
   });
-  // Only the grips where earlier steps cover the fewest of this step's pieces (a grip turn can't trade the step's pieces for ones already done),
-  // then easiest-looking first (ties keep grip order, no offset first)
-  const least = Math.min(...combos.map((combo) => combo.covered));
-  // Every grip only names pieces earlier steps already did: stop rather than answer with a bare grip turn
-  if (ownPieces.length && least === ownPieces.length) throw new Error(NOTHING_NEW);
-  const queue = combos.filter((combo) => combo.covered === least).sort((a, b) => a.total - b.total || a.bound - b.bound);
-  for (const { rotation, offset, done, goal, start, target, bound } of queue) {
+  // Each alternative's combos (grips × offsets), keeping only its grips where earlier steps cover the fewest of its pieces
+  const perAlternative = readAlternatives(pieces).map((text, alternative) => {
+    // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand)
+    const own = goalFromText(text, !keep);
+    // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no centers left at all = all six, like goal text)
+    const goalFor = (rotation: string): Goal => {
+      if (!keep) return own;
+      const goal = mergeGoals(rotateGoal(keep, rotation), own);
+      goal.CENTERS ??= allCenters();
+      return goal;
+    };
+    // Its pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
+    const ownPieces = Object.entries(own)
+      .filter(([orbit]) => orbit !== "CENTERS")
+      .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
+    // Orientation is judged from the grip, so orient-group goals can't be shared between grips
+    const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
+    // Every grip with every offset
+    const combos = grips.flatMap(({ rotation, done, held, before }) => {
+      // Start = cube held in this grip, with the goal's hidden pieces masked
+      const goal = goalFor(rotation);
+      const start = maskPattern(held, goal);
+      // How many of its pieces earlier steps already cover in this grip (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
+      const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
+      // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
+      return offsets.map((offset) => {
+        const target = maskedTarget(goal, offset);
+        const fresh = ownPieces.length - covered;
+        return { alternative, rotation, offset, done, goal, gripMatters, covered, fresh, start, target, ...estimate(held, start, target, goal, tables) };
+      });
+    });
+    // Only the grips where earlier steps cover the fewest of its pieces (a grip turn can't trade its pieces for ones already done)
+    const least = Math.min(...combos.map((combo) => combo.covered));
+    // nothingNew: every grip only names pieces earlier steps already did
+    return { combos: combos.filter((combo) => combo.covered === least), nothingNew: ownPieces.length > 0 && least === ownPieces.length };
+  });
+  // Alternatives that add something; if none does, the step is already done when the cube may stay as held (only that grip is searched, e.g. a last pair after an XCross),
+  // otherwise stop rather than answer with a bare grip turn
+  const adding = perAlternative.filter((entry) => !entry.nothingNew);
+  const combos = adding.length ? adding.flatMap((entry) => entry.combos) : perAlternative.flatMap((entry) => entry.combos.filter((combo) => combo.rotation === ""));
+  if (!combos.length) throw new Error(NOTHING_NEW);
+  // Easiest-looking first (ties keep alternative and grip order, no offset first)
+  const queue = combos.sort((a, b) => a.total - b.total || a.bound - b.bound);
+  for (const { alternative, rotation, offset, done, goal, gripMatters, fresh, start, target, bound } of queue) {
     // Same grip and same hidden target (an offset the goal can't see), or the same pieces, turns and offset as the cube itself turns them
     const keys = [
       `target/${rotation}/${JSON.stringify(target.patternData)}`,
@@ -539,14 +595,14 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
         movesKey(rotation, [offset]),
       ].join("/"),
     ];
-    // Skip a pair that asks for the same thing as one already searched (still noting its keys, so later repeats are caught too)
+    // Skip a combo that asks for the same thing as one already searched (still noting its keys, so later repeats are caught too)
     const repeat = keys.some((key) => asked.has(key));
     for (const key of keys) asked.add(key);
     if (repeat) continue;
-    // Only look for answers shorter than the best so far (and within the user's limit)
-    const maxDepth = Math.min(options.maxDepth ?? Infinity, bestLength - 1);
-    if (maxDepth < 0) break;
-    // Skip a pair whose hardest piece alone needs more moves than allowed: no search there can beat the best so far
+    // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
+    const maxDepth = Math.min(options.maxDepth ?? Infinity, fresh > bestFresh ? bestLength : bestLength - 1);
+    if (maxDepth < 0) continue;
+    // Skip a combo whose hardest piece alone needs more moves than allowed: no search there can beat the best so far
     if (bound > maxDepth) continue;
     // Skip a grip whose goal centers the allowed moves can't bring home (that search would never end)
     if (!centersReachable(start, target, generatorMoves)) {
@@ -556,25 +612,26 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
     searches++;
     try {
       // Search, passing the depth limit only when there is one (twips only finds answers shorter than its maxDepth, hence + 1)
-      const moves = await experimentalSolveTwips(kpuzzle, start, {
+      const moves = await searchTwips(kpuzzle, start, {
         targetPattern: target,
         generatorMoves,
         ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}),
       });
-      // Keep it if it beats the best so far
+      // Keep it if it's shorter than the best so far, or as short with more new pieces
       const length = countMoves(moves.toString());
-      if (length < bestLength) {
+      if (length < bestLength || (length === bestLength && fresh > bestFresh)) {
         bestLength = length;
-        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, pieces: goalToText(goal), searches };
+        bestFresh = fresh;
+        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, pieces: goalToText(goal), alternative, searches };
       }
-      // First-answer mode: any answer within the limit will do, so skip the remaining grips and offsets
+      // First-answer mode: any answer within the limit will do, so skip the remaining combos
       if (options.firstFound) break;
     } catch (error) {
-      // No answer within the limit for this pair: remember why (twips throws a plain string) and try the next one
+      // No answer within the limit for this combo: remember why (twips throws a plain string) and try the next one
       lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
-  // No grip × offset found an answer
+  // No combo found an answer
   if (!best) throw lastError ?? new Error("No solution found.");
   return { ...best, searches };
 }
@@ -585,16 +642,19 @@ export async function solveFull(scramble: string, done = ""): Promise<Alg> {
 }
 
 // Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in,
-// up to any of the step's offsets (pieces = null means the whole cube, where offsets don't apply)
+// up to any of the step's offsets; with alternatives, any one counts (pieces = null means the whole cube, where offsets don't apply)
 export function reachesGoal(scramble: string, done: string, pieces: string | null, offsets = [""]): boolean {
   // Full goal: every piece home, judged by the centers
   if (pieces === null) {
     return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
   }
-  // Step goal: the goal pieces match the solved cube turned by one of the offsets, everything else hidden
-  const goal = goalFromText(pieces);
-  const reached = maskPattern(heldPattern(scramble, done), goal);
-  return (offsets.length ? offsets : [""]).some((offset) => reached.isIdentical(maskedTarget(goal, offset)));
+  // Step goal: some alternative's pieces match the solved cube turned by one of the offsets, everything else hidden
+  const held = heldPattern(scramble, done);
+  return splitAlternatives(pieces).some((text) => {
+    const goal = goalFromText(text);
+    const reached = maskPattern(held, goal);
+    return (offsets.length ? offsets : [""]).some((offset) => reached.isIdentical(maskedTarget(goal, offset)));
+  });
 }
 
 // Number of moves in an alg (R2 counts as one, whole-cube rotations don't count)
@@ -615,10 +675,10 @@ function readStep(data: unknown, index: number): StepConfig {
   const typed = String(step.name ?? "").trim();
   const name = typed || `Step ${index + 1}`;
   try {
-    // Goal pieces: no typos, and at least one piece unless the step keeps earlier ones
-    const pieces = String(step.pieces ?? "").trim();
+    // Goal pieces: alternatives written with " | " (a JSON list counts as alternatives too), no typos, and at least one piece unless the step keeps earlier ones
     const keep = Boolean(step.keep);
-    if (!parseGoalText(pieces).length && !keep) throw new Error("Pick at least one piece, or keep earlier steps' pieces.");
+    const given: unknown = step.pieces;
+    const pieces = readAlternatives(Array.isArray(given) ? given.join("|") : String(given ?? ""), !keep).join(" | ");
     // Grips: faces that may go on the bottom
     const bottom = (step.grips?.bottom ?? ["D"]).map((face) => String(face).toUpperCase());
     if (!bottom.length || !bottom.every((face) => Object.hasOwn(BOTTOM_TURNS, face))) throw new Error("Bottom faces must be some of U D F B R L.");
