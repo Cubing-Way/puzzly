@@ -13,6 +13,7 @@ import {
   joinMoves,
   invertMoves,
   offsetsFromText,
+  solvableFromText,
   roleFromSuffix,
   roleSuffix,
   randomScramble,
@@ -42,6 +43,7 @@ interface Run {
   alternatives: string[]; // goal texts the step could pick from (one for most steps; none for full solves and whole methods)
   alternative: number; // which of them won (0 = the first, or the only one)
   offsets: string[]; // offsets the goal counted up to ([""] = none)
+  solvableWith: string[]; // moves that may finish the goal later ([] = none)
   goal: string; // label shown in the runs table
   solution: string; // grip rotation (if any), then the moves
   offset: string; // offset the solution ended up to ("" = none), still in the cube
@@ -73,6 +75,8 @@ const roleSelect = $<HTMLSelectElement>("role-select");
 const anyFrontBox = $<HTMLInputElement>("any-front");
 const offsetsInput = $<HTMLInputElement>("offsets-input");
 const offsetsError = $("offsets-error");
+const solvableInput = $<HTMLInputElement>("solvable-input");
+const solvableError = $("solvable-error");
 const searchCount = $("search-count");
 const maxDepthInput = $<HTMLInputElement>("max-depth");
 const firstFoundBox = $<HTMLInputElement>("first-found");
@@ -251,6 +255,18 @@ function readOffsets(): string[] | null {
   }
 }
 
+// Read the solvable-with field; returns its moves ([] = none), or null and shows why under the field
+function readSolvable(): string[] | null {
+  try {
+    const moves = solvableFromText(solvableInput.value);
+    solvableError.textContent = "";
+    return moves;
+  } catch (problem) {
+    solvableError.textContent = (problem as Error).message;
+    return null;
+  }
+}
+
 // Offsets back as field text (no offset left out; commas only when an offset has several moves)
 function offsetsText(offsets: string[]): string {
   const typed = offsets.filter(Boolean);
@@ -402,17 +418,18 @@ function syncViewer(): boolean {
   fitPieces();
   renderChips();
   syncPreset();
-  // Validate the inputs (step pieces and offsets only in step mode)
+  // Validate the inputs (step pieces, offsets and solvable-with moves only in step mode)
   const scramble = readMoves(scrambleInput, scrambleError);
   const done = readMoves(doneInput, doneError);
   const piecesOk = step ? readPieces() : true;
   const offsets = step ? readOffsets() : [""];
-  if (!step) piecesError.textContent = offsetsError.textContent = "";
+  const solvableWith = step ? readSolvable() : [];
+  if (!step) piecesError.textContent = offsetsError.textContent = solvableError.textContent = "";
   showSearchCount(offsets);
   // Update the cube for whatever parsed (mask the caret line's goal in the grip the cube is held in now)
   if (scramble !== null && done !== null) player.experimentalSetupAlg = joinMoves(scramble, done);
   if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? currentLineText() : null, scramble ?? "", done ?? "");
-  return scramble !== null && done !== null && piecesOk && offsets !== null;
+  return scramble !== null && done !== null && piecesOk && offsets !== null && solvableWith !== null;
 }
 
 // Form edited by hand: refresh the viewer and drop the outdated result
@@ -526,10 +543,11 @@ function loadRun(run: Run): void {
   doneInput.value = run.done;
   // Method runs only bring back the start position (their steps stay in the method panel)
   if (run.mode !== "method") (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
-  // Step runs bring back their pieces (every alternative, one per line) and offsets too
+  // Step runs bring back their pieces (every alternative, one per line), offsets and solvable-with moves too
   if (run.mode === "step") {
     piecesInput.value = run.alternatives.join("\n");
     offsetsInput.value = offsetsText(run.offsets);
+    solvableInput.value = run.solvableWith.join(" ");
   }
   syncViewer();
   showResult(run);
@@ -572,8 +590,9 @@ async function solve(): Promise<void> {
   // First-answer mode only applies to steps
   const firstFound = mode === "step" && firstFoundBox.checked;
   const rotations = chosenGrips();
-  // Offsets only apply to steps (syncViewer already checked the field)
+  // Offsets and solvable-with moves only apply to steps (syncViewer already checked the fields)
   const offsets = mode === "step" ? (readOffsets() ?? [""]) : [""];
+  const solvableWith = mode === "step" ? (readSolvable() ?? []) : [];
   // A step search needs at least one move and one grip to work with
   if (mode === "step" && generatorMoves.length === 0) {
     setStatus("Pick at least one allowed move.", "error");
@@ -602,7 +621,7 @@ async function solve(): Promise<void> {
     let searches = 1;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, firstFound, onProgress: tables.onProgress });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, onProgress: tables.onProgress });
       solution = result.solution.toString();
       solved = result.pieces;
       alternative = result.alternative;
@@ -611,16 +630,16 @@ async function solve(): Promise<void> {
     }
     const ms = performance.now() - started;
     clearInterval(timer);
-    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts)
-    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets);
+    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts, and what the solvable-with moves can still do)
+    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets, solvableWith);
     // Record and show the run
-    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, goal, solution, offset, moves: countMoves(solution), ms, ok };
+    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, solvableWith, goal, solution, offset, moves: countMoves(solution), ms, ok };
     runs.unshift(run);
     showResult(run);
-    // Mention how many searches ran (all compared, or up to the first answer), the alternative that won and the offset left in
+    // Mention how many searches ran (all compared, or up to the first answer), the alternative that won, the offset left in and the moves that may finish it
     const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
     const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
-    const offsetNote = offset ? `, offset ${offset}` : "";
+    const offsetNote = (offset ? `, offset ${offset}` : "") + (solvableWith.length ? `, solvable with ${solvableWith.join(" ")}` : "");
     setStatus(
       ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}${tables.summary()}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
@@ -644,12 +663,13 @@ function stepFromForm(number: number): StepConfig | null {
     setStatus("Switch Goal to Step to set up a method step.", "error");
     return null;
   }
-  // Pieces and offsets, checked like a step solve
+  // Pieces, offsets and solvable-with moves, checked like a step solve
   const piecesOk = readPieces();
   const offsets = readOffsets();
+  const solvableWith = readSolvable();
   const moves = [...form.querySelectorAll<HTMLInputElement>('input[name="move"]:checked')].map((box) => box.value);
   const bottom = [...form.querySelectorAll<HTMLInputElement>('input[name="bottom"]:checked')].map((box) => box.value);
-  if (!piecesOk || !offsets) setStatus("Fix the marked field first.", "error");
+  if (!piecesOk || !offsets || !solvableWith) setStatus("Fix the marked field first.", "error");
   else if (!moves.length) setStatus("Pick at least one allowed move.", "error");
   else if (!bottom.length) setStatus("Pick at least one bottom face.", "error");
   else {
@@ -660,6 +680,7 @@ function stepFromForm(number: number): StepConfig | null {
       keep: keepBox.checked,
       grips: { bottom, anyFront: anyFrontBox.checked },
       offsets: offsetsText(offsets),
+      solvableWith: solvableWith.join(" "),
       moves,
       maxDepth: maxDepthInput.value ? Number(maxDepthInput.value) : null,
       firstFound: firstFoundBox.checked,
@@ -677,6 +698,7 @@ function stepToForm(step: StepConfig): void {
   // Each alternative on its own line
   piecesInput.value = splitAlternatives(step.pieces).join("\n");
   offsetsInput.value = step.offsets;
+  solvableInput.value = step.solvableWith ?? "";
   // Grips and allowed moves as checkboxes
   for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) box.checked = step.grips.bottom.includes(box.value);
   anyFrontBox.checked = step.grips.anyFront;
@@ -697,6 +719,7 @@ function stepSummary(step: StepConfig): string {
     step.keep ? "+ earlier pieces" : "",
     `bottom ${step.grips.bottom.join("/")}${step.grips.anyFront ? " any front" : ""}`,
     step.offsets ? `offsets ${step.offsets}` : "",
+    step.solvableWith ? `solvable with ${step.solvableWith}` : "",
     `moves ${step.moves.join(" ")}`,
     step.maxDepth == null ? "" : `max ${step.maxDepth}`,
     step.firstFound ? "first answer" : "",
@@ -886,6 +909,7 @@ async function runWholeMethod(): Promise<void> {
           alternatives: splitAlternatives(running.steps[index].pieces),
           alternative: step.alternative,
           offsets: step.offsets,
+          solvableWith: step.solvableWith,
           goal: `${running.name}: ${step.name}`,
           solution: step.solution.toString(),
           offset: step.offset,
@@ -908,6 +932,7 @@ async function runWholeMethod(): Promise<void> {
       alternatives: [],
       alternative: 0,
       offsets: result.steps.at(-1)?.offsets ?? [""],
+      solvableWith: result.steps.at(-1)?.solvableWith ?? [],
       goal: running.name,
       solution: result.solution,
       offset: result.offset,
@@ -988,6 +1013,15 @@ for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-offse
   button.addEventListener("click", () => {
     offsetsInput.value = button.dataset.offsets ?? "";
     onSearchChange();
+  });
+}
+
+// Typing solvable-with moves checks them; its quick picks fill in the field
+solvableInput.addEventListener("input", readSolvable);
+for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-solvable]")) {
+  button.addEventListener("click", () => {
+    solvableInput.value = button.dataset.solvable ?? "";
+    readSolvable();
   });
 }
 

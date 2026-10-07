@@ -37,6 +37,8 @@ export interface StepOptions {
   done?: string;
   // Goal also counts when the cube is off by one of these moves, e.g. ["", "D", "D2", "D'"] for a pseudo-cross (default: [""], no offset)
   offsets?: string[];
+  // Goal also counts when only these moves are needed to finish it later, e.g. ["R", "U"] for corners a 2-gen finish can solve; named in the grip, like offsets (default: none)
+  solvableWith?: string[];
    // Stop at the first grip × offset that finds an answer (within maxDepth) instead of comparing them all for the shortest
   firstFound?: boolean;
   // Earlier steps' pieces to keep solved too, named in the grip the step starts in (this step's roles win on conflicts)
@@ -60,6 +62,7 @@ export interface StepResult {
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
   pieces: string; // goal text it solved (the winning alternative plus kept pieces), named in the grip it ends in
+  settled: string; // the goal pieces it left for good, for later steps to keep: pieces, minus those the solvable-with moves would still move
   alternative: number; // which of the step's alternatives won (0 = the first, or the only one)
   searches: number; // searches actually run (combos asking for the same thing, or whose measured distance can't beat the best, are skipped)
 }
@@ -71,6 +74,7 @@ export interface StepConfig {
   keep?: boolean; // also keep every earlier step's pieces solved
   grips: { bottom: string[]; anyFront: boolean }; // faces that may go on the bottom, and whether y turns pick the front too
   offsets: string; // offsets text, e.g. "D D2 D'" ("" = none)
+  solvableWith?: string; // moves that may finish the goal later, e.g. "R U" ("" = none: the goal itself)
   moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
@@ -89,6 +93,7 @@ export interface MethodStepResult extends StepResult {
   name: string; // step name
   done: string; // moves before this step (after the scramble)
   offsets: string[]; // offsets the step's goal counted up to
+  solvableWith: string[]; // moves that may finish the step's goal later ([] = none)
   moves: number; // move count of the solution
   ms: number; // search time
   ok: boolean; // scramble + done + solution really reaches the step's goal
@@ -409,6 +414,20 @@ export function offsetsFromText(text: string): string[] {
   return offsets;
 }
 
+// Read "solvable with" text into its moves ("R U" → ["R", "U"]; spaces or commas between them, "" = none); throws a clear error on a bad move or a whole-cube turn
+export function solvableFromText(text: string): string[] {
+  const moves: string[] = [];
+  for (const word of text.split(/[\s,]+/).filter(Boolean)) {
+    // Clean up the move (throws on moves the 3x3x3 doesn't have)
+    const move = parseMoves(word);
+    // Whole-cube turns are grips, not moves that finish a goal
+    if (rotationsIn(move)) throw new Error(`Solvable with "${move}" turns the whole cube: list face or slice moves (e.g. R U).`);
+    // Keep each move once
+    if (!moves.includes(move)) moves.push(move);
+  }
+  return moves;
+}
+
 // New random-state 3x3x3 scramble
 export async function randomScramble(): Promise<string> {
   return (await randomScrambleForEvent("333")).toString();
@@ -445,6 +464,135 @@ function centersReachable(start: KPattern, target: KPattern, moves: string[]): b
 // What a step aims for: the solved cube turned by an offset ("" = none), with the pieces the goal doesn't check hidden
 function maskedTarget(goal: Goal, offset = ""): KPattern {
   return maskPattern(kpuzzle.defaultPattern().applyAlg(offset), goal);
+}
+
+// Most patterns a "solvable with" check walks through (the search worker refuses goals with more end states than this too)
+const MAX_SOLVABLE_STATES = 100_000;
+
+// A pattern as one number per spot (piece types in the puzzle's order): piece × 256 + orientation mod × 16 + twist, for quick "solvable with" checks
+function cellsOf(pattern: KPattern): Uint16Array {
+  const cells: number[] = [];
+  for (const { orbitName, numOrientations } of kpuzzle.definition.orbits) {
+    const { pieces, orientation, orientationMod } = pattern.patternData[orbitName];
+    pieces.forEach((piece, spot) => {
+      const mod = orientationMod?.[spot] ?? 0;
+      cells.push(piece * 256 + mod * 16 + (orientation[spot] % (mod || numOrientations)));
+    });
+  }
+  return Uint16Array.from(cells);
+}
+
+// One move as cell lookups: spot i takes the cell on spot from[i] and gains twist[i], wrapping at count[i] (its piece type's orientations) unless the piece's own mod is smaller
+interface CellMove {
+  from: number[];
+  twist: number[];
+  count: number[];
+}
+
+// "Solvable with" moves as cell lookups
+function cellMoves(moves: string[]): CellMove[] {
+  return moves.map((move) => {
+    const data = kpuzzle.moveToTransformation(move).transformationData;
+    const cellMove: CellMove = { from: [], twist: [], count: [] };
+    // First cell of each piece type
+    let offset = 0;
+    for (const { orbitName, numPieces, numOrientations } of kpuzzle.definition.orbits) {
+      const { permutation, orientationDelta } = data[orbitName];
+      for (let spot = 0; spot < numPieces; spot++) {
+        cellMove.from.push(offset + permutation[spot]);
+        cellMove.twist.push(orientationDelta[spot]);
+        cellMove.count.push(numOrientations);
+      }
+      offset += numPieces;
+    }
+    return cellMove;
+  });
+}
+
+// Cells after one move (orientation mods travel with their pieces; a twist wraps at the piece's mod, or at its type's orientations when it has none)
+function moveCells(cells: Uint16Array, move: CellMove): Uint16Array {
+  const out = new Uint16Array(cells.length);
+  for (let spot = 0; spot < cells.length; spot++) {
+    const cell = cells[move.from[spot]];
+    const mod = (cell >> 4) & 15;
+    out[spot] = (cell & ~15) | (((cell & 15) + move.twist[spot]) % (mod || move.count[spot]));
+  }
+  return out;
+}
+
+// Lookup key of some cells
+function cellsKey(cells: Uint16Array): string {
+  return String.fromCharCode(...cells);
+}
+
+// Which target the start reaches with only these moves (the earliest in the list when several do, so no offset wins when it can; -1 when none does):
+// breadth-first from the start through every pattern those moves reach
+function solvableIndex(start: KPattern, targets: KPattern[], moves: string[]): number {
+  // Each target's key (a repeated target keeps its first index)
+  const wanted = new Map<string, number>();
+  targets.forEach((target, index) => {
+    const key = cellsKey(cellsOf(target));
+    if (!wanted.has(key)) wanted.set(key, index);
+  });
+  const turns = cellMoves(moves);
+  const first = cellsOf(start);
+  const seen = new Set([cellsKey(first)]);
+  const queue = [first];
+  // Earliest target found so far (the first one can't be beaten)
+  let best = -1;
+  for (let next = 0; next < queue.length; next++) {
+    const found = wanted.get(cellsKey(queue[next]));
+    if (found !== undefined && (best === -1 || found < best)) best = found;
+    if (best === 0) return best;
+    // Every move from here, keeping new patterns only (up to the cap)
+    for (const turn of turns) {
+      const moved = moveCells(queue[next], turn);
+      const key = cellsKey(moved);
+      if (seen.has(key) || seen.size >= MAX_SOLVABLE_STATES) continue;
+      seen.add(key);
+      queue.push(moved);
+    }
+  }
+  return best;
+}
+
+// True when every mix of the moves leaves spot `at` holding what it holds now: follows where the spot's content could come from, and the twist it gains on the way
+function keepsCell(cells: Uint16Array, at: number, turns: CellMove[]): boolean {
+  const seen = new Set([`${at}/0`]);
+  const queue: [number, number][] = [[at, 0]];
+  for (const [spot, twist] of queue) {
+    // The content of `spot`, brought to `at` with `twist` gained, must be what `at` holds (same piece and mod, same twist where it counts)
+    const cell = cells[spot];
+    const mod = (cell >> 4) & 15;
+    if ((cell & ~15) !== (cells[at] & ~15) || ((cell & 15) + twist) % (mod || turns[0].count[at]) !== (cells[at] & 15)) return false;
+    // One more move before the others: the content comes from where that move takes it from
+    for (const turn of turns) {
+      const step: [number, number] = [turn.from[spot], (twist + turn.twist[spot]) % turn.count[spot]];
+      const key = `${step[0]}/${step[1]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      queue.push(step);
+    }
+  }
+  return true;
+}
+
+// The goal's pieces that the "solvable with" moves can't disturb, so later steps may keep them: every mix of those moves leaves the same piece on their spot, turned the same way
+// where that counts (under R U: the left D-layer pieces, and the edges' orientation; not the R- and U-layer corners)
+function settledGoal(goal: Goal, moves: string[]): Goal {
+  if (!moves.length) return goal;
+  const turns = cellMoves(moves);
+  const target = cellsOf(maskedTarget(goal));
+  const settled: Goal = {};
+  // First cell of each piece type
+  let offset = 0;
+  for (const { orbitName, numPieces } of kpuzzle.definition.orbits) {
+    for (const [spot, role] of Object.entries(goal[orbitName] ?? {})) {
+      if (keepsCell(target, offset + Number(spot), turns)) (settled[orbitName] ??= {})[Number(spot)] = role;
+    }
+    offset += numPieces;
+  }
+  return settled;
 }
 
 
@@ -545,6 +693,7 @@ interface WorkerRequest {
   moves: string[];
   maxDepth?: number; // search and list: answers shorter than this (twips style)
   maxAnswers?: number; // list only: most answers to give (shortest first)
+  solvableWith?: string[]; // moves that may finish the goal later: the worker closes the targets under them (none = the targets as they are)
 }
 
 // Stop the search worker after this long without requests, so its memory goes back to the system (WebAssembly memory never shrinks);
@@ -613,7 +762,12 @@ function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress
       kind: request.kind,
       kpuzzle: puzzleJson,
       start: JSON.stringify(request.start.patternData),
-      targets: JSON.stringify(request.targets.map((target) => target.patternData)),
+      // Targets as a list, or with the moves that may finish them later (the worker closes them under those moves)
+      targets: JSON.stringify(
+        request.solvableWith?.length
+          ? { targets: request.targets.map((target) => target.patternData), solvableWith: request.solvableWith }
+          : request.targets.map((target) => target.patternData),
+      ),
       moves: request.moves,
       maxDepth: request.maxDepth,
       maxAnswers: request.maxAnswers,
@@ -645,6 +799,8 @@ interface Answer {
 async function stepCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
   const keep = options.keep;
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  // Moves that may finish the goal later ([] = none)
+  const solvableWith = options.solvableWith ?? [];
   // Offsets the goal may be reached up to (an empty list means no offset), in groups that share one table
   const groups = offsetGroups(options.offsets?.length ? options.offsets : [""], generatorMoves);
   // Last error seen (shown if no combo finds anything)
@@ -697,8 +853,9 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
           targets.push(target);
         }
         if (!targets.length) return [];
-        // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total)
-        const scores = targets.map((target) => estimate(held, start, target, goal, tables));
+        // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total);
+        // with solvable-with moves a piece may end on other spots too, so no score (the worker's measure ranks the combos)
+        const scores = solvableWith.length ? [{ bound: 0, total: 0 }] : targets.map((target) => estimate(held, start, target, goal, tables));
         const bound = Math.min(...scores.map((score) => score.bound));
         const total = Math.min(...scores.map((score) => score.total));
         return [{ alternative, rotation, done, goal, gripMatters, covered, fresh, held, start, offsets, targets, bound, total }];
@@ -727,6 +884,7 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
         movesKey(rotation, generatorMoves),
         gripMatters ? rotation : "",
         combo.offsets.map((offset) => movesKey(rotation, [offset])).join("&"),
+        solvableWith.length ? movesKey(rotation, solvableWith) : "",
       ].join("/"),
     ];
     // Skip a combo that asks for the same thing as an earlier one (still noting its keys, so later repeats are caught too)
@@ -748,7 +906,7 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
   const measured = await Promise.all(
     candidates.map(async (combo) => {
       try {
-        const { bound, exact } = await askWorker({ kind: "measure", start: combo.start, targets: combo.targets, moves: generatorMoves }, options.onProgress);
+        const { bound, exact } = await askWorker({ kind: "measure", start: combo.start, targets: combo.targets, moves: generatorMoves, solvableWith }, options.onProgress);
         return { ...combo, bound: exact ? (bound ?? Infinity) : Math.max(bound ?? 0, combo.bound) };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -780,7 +938,7 @@ async function searchCombos(queue: Combo[], options: StepOptions, lastError: unk
     try {
       // Search, passing the depth limit only when there is one (the worker only finds answers shorter than its maxDepth, hence + 1)
       const reply = await askWorker(
-        { kind: "search", start, targets, moves: options.generatorMoves ?? FACE_MOVES, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
+        { kind: "search", start, targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
         options.onProgress,
       );
       const moves = reply.moves ?? "";
@@ -803,11 +961,20 @@ async function searchCombos(queue: Combo[], options: StepOptions, lastError: unk
   return { answer: best, searches };
 }
 
-// A step's result for one answer: the grip rotation and moves, and the offset it reached (the target the cube matches after it)
-function stepResult({ combo, moves }: Answer, searches: number): StepResult {
+// A step's result for one answer: the grip rotation and moves, the offset it reached (the target the cube matches after it, or with solvable-with moves
+// the one those moves reach; a lone target needs no check), and the pieces it left for good
+function stepResult({ combo, moves }: Answer, searches: number, solvableWith: string[] = []): StepResult {
   const end = maskPattern(combo.held.applyAlg(moves), combo.goal);
-  const offset = combo.offsets[Math.max(0, combo.targets.findIndex((target) => end.isIdentical(target)))];
-  return { solution: new Alg(joinMoves(combo.rotation, moves)), rotation: combo.rotation, offset, pieces: goalToText(combo.goal), alternative: combo.alternative, searches };
+  const reached = !solvableWith.length
+    ? combo.targets.findIndex((target) => end.isIdentical(target))
+    : combo.targets.length > 1
+      ? solvableIndex(end, combo.targets, solvableWith)
+      : 0;
+  const offset = combo.offsets[Math.max(0, reached)];
+  // Pieces it solved, and the ones later steps may keep (the solvable-with moves may still move the others)
+  const pieces = goalToText(combo.goal);
+  const settled = solvableWith.length ? goalToText(settledGoal(combo.goal, solvableWith)) : pieces;
+  return { solution: new Alg(joinMoves(combo.rotation, moves)), rotation: combo.rotation, offset, pieces, settled, alternative: combo.alternative, searches };
 }
 
 // Solve only the goal pieces (a step like the cross), trying each alternative × grip (each with all its offsets at once) and keeping the shortest answer
@@ -816,7 +983,7 @@ function stepResult({ combo, moves }: Answer, searches: number): StepResult {
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const { queue, lastError } = await stepCombos(scramble, pieces, options);
   const { answer, searches } = await searchCombos(queue, options, lastError);
-  return stepResult(answer, searches);
+  return stepResult(answer, searches, options.solvableWith);
 }
 
 // Most answers stepCandidates gives by default (each one costs a run of the next steps when a method looks ahead)
@@ -852,7 +1019,7 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       try {
         // Every answer of this combo up to the longest (the worker only lists answers shorter than its maxDepth, hence + 1)
         const reply = await askWorker(
-          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, maxDepth: longest + 1, maxAnswers: most },
+          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, maxDepth: longest + 1, maxAnswers: most },
           options.onProgress,
         );
         for (const moves of reply.answers ?? []) {
@@ -869,7 +1036,7 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   }
   // Shortest first, then the ones adding more new pieces, then the closest combos (the sort keeps each list's own order on ties)
   found.sort((a, b) => a.length - b.length || b.answer.combo.fresh - a.answer.combo.fresh || a.order - b.order);
-  return [answer, ...found.slice(0, most - 1).map((entry) => entry.answer)].map((entry) => stepResult(entry, searches + lists));
+  return [answer, ...found.slice(0, most - 1).map((entry) => entry.answer)].map((entry) => stepResult(entry, searches + lists, options.solvableWith));
 }
 
 // Solve the whole cube, judged by its centers in the grip it's held in
@@ -877,9 +1044,9 @@ export async function solveFull(scramble: string, done = ""): Promise<Alg> {
   return experimentalSolve3x3x3IgnoringCenters(heldPattern(joinMoves(scramble, done)));
 }
 
-// Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in,
-// up to any of the step's offsets; with alternatives, any one counts (pieces = null means the whole cube, where offsets don't apply)
-export function reachesGoal(scramble: string, done: string, pieces: string | null, offsets = [""]): boolean {
+// Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in, up to any of the step's offsets
+// (and with solvable-with moves, up to what those moves can still do); with alternatives, any one counts (pieces = null means the whole cube, where neither applies)
+export function reachesGoal(scramble: string, done: string, pieces: string | null, offsets = [""], solvableWith: string[] = []): boolean {
   // Full goal: every piece home, judged by the centers
   if (pieces === null) {
     return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
@@ -889,7 +1056,9 @@ export function reachesGoal(scramble: string, done: string, pieces: string | nul
   return splitAlternatives(pieces).some((text) => {
     const goal = goalFromText(text);
     const reached = maskPattern(held, goal);
-    return (offsets.length ? offsets : [""]).some((offset) => reached.isIdentical(maskedTarget(goal, offset)));
+    const targets = (offsets.length ? offsets : [""]).map((offset) => maskedTarget(goal, offset));
+    // With solvable-with moves, a target those moves can reach from here counts too
+    return solvableWith.length ? solvableIndex(reached, targets, solvableWith) >= 0 : targets.some((target) => reached.isIdentical(target));
   });
 }
 
@@ -905,7 +1074,7 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
-// Read one step's data, filling defaults (D bottom, face turns, no offsets, no limit, no lookahead) and checking pieces, grips, offsets, moves and lookahead
+// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, no limit, no lookahead) and checking pieces, grips, offsets, solvable-with moves, moves and lookahead
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
@@ -921,6 +1090,8 @@ function readStep(data: unknown, index: number): StepConfig {
     // Offsets text (checked by reading it)
     const offsets = String(step.offsets ?? "").trim();
     offsetsFromText(offsets);
+    // Solvable-with moves (checked by reading them, written back one space apart)
+    const solvableWith = solvableFromText(String(step.solvableWith ?? "")).join(" ");
     // Allowed moves: one real move per entry, no whole-cube turns
     const moves = (step.moves ?? FACE_MOVES).map((move) => parseMoves(String(move)));
     if (!moves.length || moves.some((move) => !move || /\s/.test(move) || rotationsIn(move))) {
@@ -933,7 +1104,7 @@ function readStep(data: unknown, index: number): StepConfig {
     const lookahead = Number(step.lookahead ?? 0);
     const extraMoves = Number(step.extraMoves ?? 0);
     if (![lookahead, extraMoves].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Lookahead and extra moves must be whole numbers (0 = none).");
-    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, moves, maxDepth, firstFound: Boolean(step.firstFound), lookahead, extraMoves };
+    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, solvableWith, moves, maxDepth, firstFound: Boolean(step.firstFound), lookahead, extraMoves };
   } catch (error) {
     // Say which step is wrong (by number, plus its name when it has one)
     throw new Error(`Step ${index + 1}${typed ? ` (${typed})` : ""}: ${(error as Error).message}`);
@@ -948,6 +1119,7 @@ function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProg
     rotations: gripRotations(step.grips.bottom, step.grips.anyFront),
     done,
     offsets: offsetsFromText(step.offsets),
+    solvableWith: solvableFromText(step.solvableWith ?? ""),
     firstFound: step.firstFound,
     keep: step.keep ? earlier : undefined,
     earlier,
@@ -955,9 +1127,10 @@ function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProg
   };
 }
 
-// Earlier pieces after a step: they follow its grip turn, then its pieces join them (later roles win)
+// Earlier pieces after a step: they follow its grip turn, then the pieces it left for good join them (later roles win; with solvable-with moves,
+// pieces those moves would still move stay out, so a later step that keeps earlier pieces doesn't hold them in place)
 function piecesAfter(earlier: Goal, result: StepResult): Goal {
-  return mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.pieces));
+  return mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.settled));
 }
 
 // Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done).
@@ -998,6 +1171,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
   };
   for (const [index, step] of method.steps.entries()) {
     const offsets = offsetsFromText(step.offsets);
+    const solvableWith = solvableFromText(step.solvableWith ?? "");
     const started = performance.now();
     // Later steps that judge this step's answers (none past the last step)
     const ahead = Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
@@ -1036,9 +1210,10 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       name: step.name,
       done,
       offsets,
+      solvableWith,
       moves: countMoves(solution),
       ms,
-      ok: reachesGoal(scramble, after, result.pieces, offsets),
+      ok: reachesGoal(scramble, after, result.pieces, offsets, solvableWith),
       lookahead,
     };
     steps.push(finished);

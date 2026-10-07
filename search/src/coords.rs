@@ -707,7 +707,7 @@ impl OrbitCoord {
 }
 
 // Tracked pieces of some orbits, one entry per piece: its moving spot and twist (orbit by orbit, classes in order, each class's pieces by spot)
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Units {
     pub spot: [u8; MAX_UNITS],
     pub twist: [u8; MAX_UNITS],

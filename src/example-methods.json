@@ -28,6 +28,15 @@
     ]
   },
   {
+    "name": "ZZ (left block + CP, then R U only)",
+    "steps": [
+      { "name": "EOLine", "pieces": "UF:o UR:o UB:o UL:o DF DR:o DB DL:o FR:o FL:o BR:o BL:o", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
+      { "name": "Left block + CP", "pieces": "DL FL BL DFL DBL UFR:p UBR:p UBL:p UFL:p DFR:p DBR:p", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "R U", "moves": ["U", "R", "L"], "maxDepth": null, "firstFound": false, "lookahead": 1, "extraMoves": 1 },
+      { "name": "Right block", "pieces": "DR FR BR DFR DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["R", "U"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
+      { "name": "Last layer", "pieces": "UF UR UB UL UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["R", "U"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 }
+    ]
+  },
+  {
     "name": "Pseudo-slotting (CFOP up to ADF, lookahead)",
     "steps": [
       { "name": "Pseudo cross", "pieces": "DF DR DB DL", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 1, "extraMoves": 1 },

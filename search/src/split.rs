@@ -1,5 +1,6 @@
 // Goals too big for one exact table: split into sub-tables that each fit (the goal with some pieces, or their twists, left out), then IDA* guided by the largest of their distances
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use cubing::alg::Move;
@@ -7,6 +8,7 @@ use cubing::kpuzzle::{KPatternData, KPatternOrbitData, KPuzzle, KPuzzleOrbitName
 use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
+use crate::solvable::{close, read_targets, table_targets};
 use crate::table::{DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
@@ -200,7 +202,7 @@ pub(crate) fn move_pruning(kpuzzle: &KPuzzle, turns: &[Turn]) -> (Vec<bool>, usi
 // What an IDA* run checks answers with: the whole goal's numbering, each target's state in it, and the move pruning
 pub(crate) struct GoalCheck<'a> {
     pub full: &'a Coords,
-    pub goals: &'a [(Units, Units)],
+    pub goals: &'a HashSet<(Units, Units)>,
     pub follow: &'a [bool],
     pub groups: usize,
 }
@@ -300,7 +302,7 @@ pub struct SplitSearch {
     // Every tracked piece of the goal, to check an answer really reaches it
     full: Coords,
     // Each target's tracked pieces (outer, inner)
-    goals: Vec<(Units, Units)>,
+    goals: HashSet<(Units, Units)>,
     subs: Vec<Sub>,
     // Move pruning: may a turn of group b follow one of group a ([a * groups + b])
     follow: Vec<bool>,
@@ -316,22 +318,18 @@ impl SplitSearch {
     pub fn new(kpuzzle_json: &str, targets_json: &str, moves_json: &str, max_states: f64) -> Result<SplitSearch, String> {
         // Show Rust panics in the browser console instead of a bare "unreachable"
         console_error_panic_hook::set_once();
-        // Puzzle, targets and allowed turns, read like DistanceTable does
+        // Puzzle, allowed turns and targets as sent (with their "solvable with" moves), read like DistanceTable does, and the targets closed under those moves
         let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
-        let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(|target| pattern_data(&kpuzzle, &target.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        if targets.is_empty() {
-            return Err("No target".to_owned());
-        }
         let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
         let turns = enumerate_turns(&kpuzzle, &moves)?;
+        let (sent, free) = read_targets(&kpuzzle, targets_json)?;
+        let closed = close(&kpuzzle, &sent, &free, &turns)?;
         // Numbering of the whole goal (too big for a table, but it tracks every piece for the goal check)
-        let full = Coords::new(&kpuzzle, &targets, turns)?;
-        // Each target's pieces in that numbering, to compare answers with
-        let goals = targets.iter().map(|target| full.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<Vec<_>, _>>()?;
+        let full = Coords::new(&kpuzzle, &closed, turns)?;
+        // Each closed target's pieces in that numbering, to compare answers with
+        let goals = closed.iter().map(|target| full.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<HashSet<_>, _>>()?;
+        // Sub-tables relabel the targets as sent (a sub-goal closed under the moves is the closed goal relabeled, so each table closes its own)
+        let targets = sent;
         // The goal's items, orbit by orbit in the puzzle's order (classes in spot order)
         let mut items = vec![];
         for (o, info) in kpuzzle.orbit_info_iter().enumerate() {
@@ -348,13 +346,25 @@ impl SplitSearch {
             let relaxed: Vec<KPatternData> = targets.iter().map(|target| relabel.apply(target)).collect();
             estimate_size(&kpuzzle, &relaxed, &full.turns).is_ok_and(|size| size as f64 <= max_states)
         };
+        // Planned sub-tables (the items each one keeps)
+        let mut plans = plan(&items, &fits);
+        // With "solvable with" moves, also one table per orbit holding every item's position (no twists) when it fits: the moves usually allow
+        // only some layouts of those pieces as a whole (a 2-gen corner permutation), which tables of a few pieces can't see
+        if !free.is_empty() {
+            for o in 0..kpuzzle.orbit_info_iter().count() {
+                let kept: Kept = (0..items.len()).filter(|&item| items[item].orbit == o).map(|item| (item, false)).collect();
+                if kept.len() > 1 && fits(&kept) {
+                    plans.push(kept);
+                }
+            }
+        }
         let mut subs: Vec<Sub> = vec![];
-        for kept in plan(&items, fits) {
-            // This sub-table's targets, its size, and its cache key
+        for kept in plans {
+            // This sub-table's targets, its size, and its cache key (with the goal's moves when they add targets to this sub-goal)
             let relabel = Relabel::new(&kpuzzle, &targets, &full, &items, &kept);
             let relaxed: Vec<KPatternData> = targets.iter().map(|target| relabel.apply(target)).collect();
             let states = estimate_size(&kpuzzle, &relaxed, &full.turns)?;
-            let targets = format!("[{}]", relaxed.iter().map(|target| pattern_json(&kpuzzle, target)).collect::<Vec<_>>().join(","));
+            let targets = table_targets(&kpuzzle, &relaxed, &free, &full.turns, |target| pattern_json(&kpuzzle, target))?;
             if !subs.iter().any(|sub| sub.targets == targets) {
                 subs.push(Sub { relabel, targets, states, table: None });
             }
@@ -449,7 +459,7 @@ impl SplitSearch {
 struct Ida<'a> {
     tables: &'a [Rc<TableCore>],
     full: &'a Coords,
-    goals: &'a [(Units, Units)],
+    goals: &'a HashSet<(Units, Units)>,
     whole: (Units, Units),
     follow: &'a [bool],
     groups: usize,
@@ -551,7 +561,7 @@ impl Ida<'_> {
         (0..self.tables.len()).all(|t| self.bounds[here + t] == 0 || self.tables[t].distance(&self.outer[here + t], self.inner[here + t]) == 0) && self.is_goal()
     }
 
-    // Replay the moves so far on the whole start and compare with every target
+    // Replay the moves so far on the whole start and look it up among the targets
     fn is_goal(&self) -> bool {
         let (mut outer, mut inner) = self.whole;
         for &turn in &self.path {
@@ -561,6 +571,6 @@ impl Ida<'_> {
             self.full.inner.apply(&inner, turn, &mut next_inner);
             (outer, inner) = (next_outer, next_inner);
         }
-        self.goals.iter().any(|goal| goal.0 == outer && goal.1 == inner)
+        self.goals.contains(&(outer, inner))
     }
 }

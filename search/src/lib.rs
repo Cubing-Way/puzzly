@@ -8,6 +8,8 @@ pub use table::{table_format, DistanceTable};
 // Goals too big for one table: sub-tables + IDA* (SplitSearch)
 mod split;
 pub use split::SplitSearch;
+// Goals that also count when some moves alone could finish them (targets closed under those moves)
+mod solvable;
 
 use cubing::alg::Move;
 use cubing::kpuzzle::{KPattern, KPuzzle};
@@ -17,6 +19,9 @@ use twips::_internal::search::iterative_deepening::iterative_deepening_search::{
     ImmutableSearchData, IterativeDeepeningSearch,
 };
 use wasm_bindgen::prelude::*;
+
+// Most targets a twips search takes (a goal closed under its "solvable with" moves may have thousands; split tables handle those)
+const MAX_TWIPS_TARGETS: usize = 1_000;
 
 // One goal (one or more targets) + move set, with its prune table kept between searches
 #[wasm_bindgen]
@@ -32,14 +37,18 @@ impl Searcher {
     pub fn new(kpuzzle_json: &str, targets_json: &str, moves_json: &str) -> Result<Searcher, String> {
         // Show Rust panics in the browser console instead of a bare "unreachable"
         console_error_panic_hook::set_once();
-        // Puzzle, target patterns and allowed moves, from the JSON the worker sends
+        // Puzzle, allowed moves and target patterns (closed under their "solvable with" moves), from the JSON the worker sends
         let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
-        let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(|target| KPattern::try_from_json(&kpuzzle, target.to_string().as_bytes()).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
         let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
+        let turns = coords::enumerate_turns(&kpuzzle, &moves)?;
+        let targets = solvable::closed_targets(&kpuzzle, targets_json, &turns)?
+            .iter()
+            .map(|target| KPattern::try_from_data(&kpuzzle, target).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        // Twips compares a state with its targets one by one, so a goal with many end states would never finish
+        if targets.len() > MAX_TWIPS_TARGETS {
+            return Err(format!("Solvable with: {} end states is too many without tables (at most {})", targets.len(), MAX_TWIPS_TARGETS));
+        }
         let generators = Generators::Custom { moves, algs: vec![] };
         // Same setup as twips's own wasmTwips, but kept instead of dropped after one search
         let data = ImmutableSearchData::try_from_common_options_with_auto_search_generators(

@@ -102,6 +102,16 @@
                         <button type="button" data-offsets="D D2 D'">ADF</button>
                     </div>
                     <p id="offsets-error" class="error"></p>
+
+                    <!-- Solvable with: the goal also counts when only these moves are needed to finish it later (e.g. R U: corners a 2-gen finish can solve) -->
+                    <label for="solvable-input" class="label">Solvable with <small>goal also counts when these moves alone can finish it</small></label>
+                    <div class="row offsets">
+                        <input id="solvable-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. R U)" />
+                        <!-- Quick picks -->
+                        <button type="button" class="quiet" data-solvable="">None</button>
+                        <button type="button" data-solvable="R U">R U</button>
+                    </div>
+                    <p id="solvable-error" class="error"></p>
                     <!-- Searches a step solve may run -->
                     <p id="search-count" class="hint"></p>
 

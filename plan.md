@@ -14,7 +14,9 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 5c — Rank combos by exact distance + table lifecycle (IndexedDB, idle stop)
 - [ ] Part 5d — Table files: option to download (export) a method's tables and load them back
 - [x] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
-- [ ] Part 7 — Named whole-state checks (later, one check per chat)
+- [x] Part 7a — Whole-state check "Solvable with" moves (2-gen CP, any "these moves can finish it" goal)
+- [ ] Part 7b — Pieces solved relative to each other anywhere (pair joined anywhere, FMC pseudo-blocks)
+- [ ] Part 7c — BLD parity
 
 ## Goal of the project
 
@@ -177,6 +179,19 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Page: method panel "Lookahead [n] steps, up to [n] extra moves" (`step-lookahead`, `step-extra`); results table "Lookahead" column `candidates → total` (details on hover); status "lookahead compared N candidates", live " · looking ahead".
   Testing: `harness/la.ts` style runs (fake Worker; env `LA`, `EXTRA`, `ONLY` = step index set the steps' lookahead), and a direct-wasm list check (each answer reaches a target, never passes one, within the limit, once, shortest first;
   exact-table list = forced-split list on cross / pseudo cross / XCross / pseudo XCross; a start already at the goal lists `[""]`). TypeScript isn't in node_modules: `npm install typescript` in a scratch folder for `tsc --noEmit`.
+- Solvable with (Part 7a): `StepConfig.solvableWith` (moves text, `readStep` tidies it with `solvableFromText`, key placed after `offsets`; x/y/z refused), `StepOptions.solvableWith` (moves). The goal also counts when only those moves are needed to finish it = its targets closed under them.
+  The engine sends targets as `{"targets": [...], "solvableWith": ["R", "U"]}` (a plain list when there are none; the worker treats it as opaque text, so cache and IndexedDB keys include the moves; `TABLE_FORMAT` unchanged).
+  Rust `search/src/solvable.rs`: `read_targets` (list or object), `close` (breadth-first on flat bytes from every target, targets first so the first target stays first; cap `MAX_TARGETS` 100k; every closed target must match on spots no allowed turn touches,
+  else a clear error), `closed_targets` (used by `DistanceTable` setup / `fromBytes` and `Searcher`), `table_targets` (a sub-table's JSON: a plain list when the moves add nothing, so it shares keys with ordinary goals).
+  `Searcher` refuses more than `MAX_TWIPS_TARGETS` (1,000) closed targets: twips compares them one by one (29,160 targets: no answer after 7 min). `SplitSearch` numbers and goal-checks the closed targets, but its sub-tables relabel the targets as sent
+  (relabeling commutes with the moves) and close their own; with moves it also adds one positions-only table per orbit that fits (all 8 corners = 40,320 states), the only kind of sub-table that sees a 2-gen corner permutation.
+  Goal checks (`GoalCheck.goals`, `TableCore.goals`) are `HashSet<(Units, Units)>` now (`Units` derives `Eq`, `Hash`). Engine: the per-piece `estimate` gives 0 / 0 with these moves (pieces may end on other spots, so it's no lower bound);
+  the repeat key adds `movesKey(rotation, solvableWith)`; `solvableIndex` (breadth-first in "cells" = piece × 256 + mod × 16 + twist per spot, cap 100k, earliest target wins so a redundant U offset reports none) serves `reachesGoal(…, offsets, solvableWith)`
+  and the offset reached; `StepResult.settled` = goal pieces every mix of the moves leaves alone (`keepsCell`: a per-spot walk over (source spot, twist gained), no closure needed), and `piecesAfter` keeps `settled` instead of `pieces`
+  (CP line → `DL DFL DBL`; `:o` edges under R U stay). `MethodStepResult.solvableWith`. Page: "Solvable with" field under Offsets (picks None / R U), in the step form, summary, runs and method rows.
+  Numbers (Node): CP line `DL DFL DBL UFR:p UBR:p UBL:p UFL:p DFR:p DBR:p` + R U: 120 closed targets, one table of 8.7M states (depth 8, 1.7 s), answers 4–6 moves in ~0.1 ms; split 1M / 10M and twips give the same lengths.
+  Same goal with corners solved (not `:p`): 29,160 closed targets, too big for one table, split 7 / 6 tables, ≤ 2 ms, same lengths. Whole cube + R U: refused (> 100k).
+  Testing: `harness/solvable.ts` (fake worker; `ONLY` = sections 1–5) checks each CP line by solving all corners + DL with R U alone afterwards; `harness/direct.ts` compares table / split / twips lengths on the wasm API.
 ---
 
 ## Part 1 — Groups + centers
@@ -379,3 +394,14 @@ Not done: beam search (keeping several partial solves); candidates are only judg
 - Pieces solved relative to each other anywhere (F2L pair joined anywhere, FMC pseudo-blocks).
 
 **Do:** each becomes a built-in named check a user can tick in a step. Twips takes one target pattern, so each check needs its own search (Part 5b's IDA* with a check function) or a precomputed table (Part 5a). Still no method code: these are new building blocks, not methods.
+
+**Done (7a, "Solvable with"):** see "Solvable with (Part 7a)" in Facts. Instead of a check named "2-gen CP", one generic step field: *Solvable with* moves (e.g. `R U`), the goal counting when those moves alone can finish it.
+That covers 2GR / ZZ-d CP (`DL DFL DBL` + the other corners `:p`, solvable with R U), "solvable with M U" style goals, and any other "finish with these moves" goal whose closed targets stay ≤ 100k, with the same tables and IDA* (still shortest answers).
+Checked: each CP line on 8 scrambles leaves corners that R U alone solve (the plain line did on 5 of 8 by luck); any front / any bottom grips; U offsets (within the moves: offset none) and D offsets (CP line up to a D turn, 2–4 moves instead of 5–6);
+errors (x in the field, M with face turns while centers are kept, whole cube + R U). The 4 example methods × 4 scrambles give identical solutions, offsets and search counts to before.
+New example "ZZ (left block + CP, then R U only)": EOLine, left block + CP (U R L, solvable with R U, lookahead 1 + 1), right block and last layer with R U only. On 8 scrambles 36–43 moves, first run 0.9 s (table builds), then 20–170 ms;
+without the CP check, 5 of 6 scrambles fail at the R U last layer ("No solution found!"); lookahead on the CP step made 2 of 6 runs shorter. Built page (the built-in browser opened localhost this time): CP line step 6 moves in 1.55 s with its one table build;
+the example method 41 moves in 1.46 s (15 tables built), after a reload 709 ms (12 loaded from IndexedDB, 3 small ones rebuilt).
+Limits: later steps only keep the pieces the moves can't disturb (`settled`), so a later step that uses other moves can undo a CP; that's the method's choice, as in real 2GR / ZZ-d.
+For 7b (pieces relative to each other anywhere): the same closure with x y z would do it, but goal text can't drop all centers yet (no center typed = all six kept), and kept centers under x y z fail the "spots the moves never touch" check; that needs a way to say "no centers" first.
+For 7c (BLD parity): not a closure of a few moves (half of all states), so it needs a parity coordinate in the numbering or a check function in IDA*.

@@ -1,5 +1,6 @@
 // Exact distance tables: every state of a goal's tracked pieces with its fewest-moves distance, so a goal that fits needs no search
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use cubing::alg::Move;
@@ -7,6 +8,7 @@ use cubing::kpuzzle::{KPatternData, KPuzzle};
 use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
+use crate::solvable::closed_targets;
 use crate::split::{answer_list, deepen, move_pruning, read_options, GoalCheck, NO_SOLUTION};
 
 // Version of a table's saved bytes: bump it whenever coords.rs numbers states differently (or the layout below changes), so tables saved by older code are rebuilt, never misread
@@ -48,7 +50,7 @@ pub struct TableCore {
     // Deepest distance in the table
     depth: u8,
     // Each target's state, and the move pruning, for listing answers
-    goals: Vec<(Units, Units)>,
+    goals: HashSet<(Units, Units)>,
     follow: Vec<bool>,
     groups: usize,
 }
@@ -67,26 +69,19 @@ fn set(nibbles: &mut [u8], index: u64, value: u8) {
     *byte = (*byte & !(15 << shift)) | (value << shift);
 }
 
-// Puzzle, targets (a JSON list of patterns) and allowed moves from the JSON the worker sends, with the state numbering they give
+// Puzzle, targets (a JSON list of patterns, or one with "solvable with" moves: closed under them) and allowed moves from the JSON the worker sends, with the state numbering they give
 fn setup(kpuzzle_json: &str, targets_json: &str, moves_json: &str) -> Result<(KPuzzle, Vec<KPatternData>, Coords), String> {
     let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
-    let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
-        .map_err(|e| e.to_string())?
-        .iter()
-        .map(|target| pattern_data(&kpuzzle, &target.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    if targets.is_empty() {
-        return Err("No target".to_owned());
-    }
     let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
     let turns = enumerate_turns(&kpuzzle, &moves)?;
+    let targets = closed_targets(&kpuzzle, targets_json, &turns)?;
     let coords = Coords::new(&kpuzzle, &targets, turns)?;
     Ok((kpuzzle, targets, coords))
 }
 
-// What listing answers needs besides the distances: each target's state in the numbering, and the move pruning
-fn listing_parts(kpuzzle: &KPuzzle, targets: &[KPatternData], coords: &Coords) -> Result<(Vec<(Units, Units)>, Vec<bool>, usize), String> {
-    let goals = targets.iter().map(|target| coords.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<Vec<_>, _>>()?;
+// What listing answers needs besides the distances: each target's state in the numbering (a set: closed targets may be many), and the move pruning
+fn listing_parts(kpuzzle: &KPuzzle, targets: &[KPatternData], coords: &Coords) -> Result<(HashSet<(Units, Units)>, Vec<bool>, usize), String> {
+    let goals = targets.iter().map(|target| coords.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<HashSet<_>, _>>()?;
     let (follow, groups) = move_pruning(kpuzzle, &coords.turns);
     Ok((goals, follow, groups))
 }
