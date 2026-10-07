@@ -43,6 +43,15 @@ export interface StepOptions {
   keep?: Goal;
   // Pieces earlier steps already did, named in the grip the step starts in (with or without keep), so no grip turn can pass them off as this step's pieces (default: keep)
   earlier?: Goal;
+  // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
+  onProgress?: (progress: TableProgress) => void;
+}
+
+// What the search worker is doing with a table: building one, or loading one stored in this browser (finished = false when it starts, true when it's done)
+export interface TableProgress {
+  action: "build" | "load";
+  finished: boolean;
+  states?: number; // once finished: the table's size (0 = it couldn't be built or loaded, e.g. a goal too big for one table, which gets split instead)
 }
 
 // Best answer of a step search
@@ -52,7 +61,7 @@ export interface StepResult {
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
   pieces: string; // goal text it solved (the winning alternative plus kept pieces), named in the grip it ends in
   alternative: number; // which of the step's alternatives won (0 = the first, or the only one)
-  searches: number; // searches actually run (alternative × grip × offset combos asking for the same thing are skipped)
+  searches: number; // searches actually run (combos asking for the same thing, or whose measured distance can't beat the best, are skipped)
 }
 
 // One step of a method, as plain data (what users edit and save as JSON)
@@ -98,6 +107,7 @@ export interface MethodResult {
 export interface MethodOptions {
   done?: string; // moves already done after the scramble, before the first step
   onStep?: (step: MethodStepResult, index: number) => void; // hears about each step as it finishes
+  onProgress?: (progress: TableProgress) => void; // hears when the search worker builds or loads a table
 }
 
 // Face turns used when a step search isn't given its own moves
@@ -365,6 +375,22 @@ export function invertMoves(moves: string): string {
   return new Alg(moves).invert().toString();
 }
 
+// Offsets in groups searched together: the ones the allowed moves can make (each move allowed, or a power of an allowed quarter turn) share one table with no offset,
+// any other offset (e.g. D when only U R are allowed) gets its own group, since its target differs on spots the moves never touch
+function offsetGroups(offsets: string[], moves: string[]): string[][] {
+  const leaves = (text: string) => Array.from(new Alg(text).experimentalLeafMoves());
+  // Faces the allowed moves turn by a quarter (every power of those is allowed too), and the exact allowed moves
+  const quarter = new Set(moves.flatMap(leaves).filter((move) => Math.abs(move.amount) === 1).map((move) => move.family));
+  const exact = new Set(moves.flatMap(leaves).map((move) => move.toString()));
+  const shared: string[] = [];
+  const alone: string[][] = [];
+  for (const offset of offsets) {
+    if (leaves(offset).every((move) => quarter.has(move.family) || exact.has(move.toString()))) shared.push(offset);
+    else alone.push([offset]);
+  }
+  return shared.length ? [shared, ...alone] : alone;
+}
+
 // Read offset text into a step's offsets list, no offset first: spaces split one-move offsets ("D D2 D'"),
 // commas split offsets of several moves ("U, U D"); throws a clear error on a bad move or a whole-cube turn
 export function offsetsFromText(text: string): string[] {
@@ -496,67 +522,107 @@ function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal,
   return { bound, total };
 }
 
-/// One search worker for the whole session, so each target's tables (exact, split, or twips's prune table) are built once and reused
+// One answer from the search worker: a search's moves, a measure's distance (bound, exact or a lower bound; null = unknown), an error,
+// or table progress for the request it's working on (the answer comes later)
+interface WorkerReply {
+  id: number;
+  moves?: string;
+  bound?: number | null;
+  exact?: boolean;
+  error?: string;
+  progress?: TableProgress;
+}
+
+// One request to the search worker: measure how far the start is from the targets (any one counts), or search for the moves
+interface WorkerRequest {
+  kind: "measure" | "search";
+  start: KPattern;
+  targets: KPattern[];
+  moves: string[];
+  maxDepth?: number; // search only: answers shorter than this (twips style)
+}
+
+// Stop the search worker after this long without requests, so its memory goes back to the system (WebAssembly memory never shrinks);
+// the next request starts a fresh worker, which loads the tables stored in this browser
+const WORKER_IDLE_MS = 60_000;
+
+// One search worker at a time, so each goal's tables (exact, split, or twips's prune table) are built once and reused
 let searchWorker: Worker | null = null;
-// Searches waiting for the worker's answer, by request number
-const waiting = new Map<number, { resolve: (moves: string) => void; reject: (error: Error) => void }>();
+// Requests waiting for the worker's answer, by request number, with who hears about their table progress
+const waiting = new Map<number, { resolve: (reply: WorkerReply) => void; reject: (error: Error) => void; onProgress?: (progress: TableProgress) => void }>();
 // Number for the next request
 let nextRequest = 0;
+// Timer that stops the worker once it's idle
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+// The puzzle definition as JSON, without its check function (which JSON can't carry), made on first use
+let puzzleJson = "";
+
+// Stop the search worker, freeing its memory (the next request starts a fresh one)
+function stopSearchWorker(): void {
+  clearTimeout(idleTimer);
+  searchWorker?.terminate();
+  searchWorker = null;
+}
 
 // Start the search worker on first use (search-worker.js is built next to the page, so the path is page-relative)
 function getSearchWorker(): Worker {
   if (searchWorker) return searchWorker;
   const worker = new Worker("search-worker.js", { type: "module" });
-  // Hand each answer or error to the search that asked for it
-  worker.onmessage = ({ data }: MessageEvent<{ id: number; moves?: string; error?: string }>) => {
+  // Hand each answer or error to the request that asked for it, and table progress to its listener
+  worker.onmessage = ({ data }: MessageEvent<WorkerReply>) => {
     const entry = waiting.get(data.id);
+    if (data.progress) {
+      entry?.onProgress?.(data.progress);
+      return;
+    }
     waiting.delete(data.id);
     if (data.error !== undefined) entry?.reject(new Error(data.error));
-    else entry?.resolve(data.moves ?? "");
+    else entry?.resolve(data);
+    // Nothing left to answer: stop the worker unless another request comes soon
+    if (!waiting.size) idleTimer = setTimeout(stopSearchWorker, WORKER_IDLE_MS);
   };
-  // A crashed worker fails every waiting search, and the next search starts a fresh one
+  // A crashed worker fails every waiting request, and the next request starts a fresh one
   worker.onerror = (event) => {
     for (const entry of waiting.values()) entry.reject(new Error(event.message || "Search worker failed."));
     waiting.clear();
-    worker.terminate();
-    searchWorker = null;
+    stopSearchWorker();
   };
   searchWorker = worker;
   return worker;
 }
 
-/// Run one search in the shared worker: an exact table, split tables + IDA*, or twips (same inputs as cubing.js's experimentalSolveTwips)
-async function searchTwips(
-  kpuzzle: KPuzzle,
-  start: KPattern,
-  options: { targetPattern: KPattern; generatorMoves: string[]; maxDepth?: number },
-): Promise<Alg> {
-  // The puzzle definition without its check function, which JSON can't carry
-  const definition: Record<string, unknown> = { ...kpuzzle.definition };
-  delete definition.experimentalIsPatternSolved;
-  // Send the request and wait for its answer
+// Send one request to the shared worker (an exact table, split tables + IDA*, or twips answer it) and wait for its answer
+function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress) => void): Promise<WorkerReply> {
+  // A request keeps the worker alive
+  clearTimeout(idleTimer);
+  if (!puzzleJson) {
+    const definition: Record<string, unknown> = { ...kpuzzle.definition };
+    delete definition.experimentalIsPatternSolved;
+    puzzleJson = JSON.stringify(definition);
+  }
   const id = nextRequest++;
-  const moves = await new Promise<string>((resolve, reject) => {
-    waiting.set(id, { resolve, reject });
+  return new Promise<WorkerReply>((resolve, reject) => {
+    waiting.set(id, { resolve, reject, onProgress });
     getSearchWorker().postMessage({
       id,
-      kpuzzle: JSON.stringify(definition),
-      start: JSON.stringify(start.patternData),
-      target: JSON.stringify(options.targetPattern.patternData),
-      moves: options.generatorMoves,
-      maxDepth: options.maxDepth,
+      kind: request.kind,
+      kpuzzle: puzzleJson,
+      start: JSON.stringify(request.start.patternData),
+      targets: JSON.stringify(request.targets.map((target) => target.patternData)),
+      moves: request.moves,
+      maxDepth: request.maxDepth,
     });
   });
-  return new Alg(moves);
 }
 
-// Solve only the goal pieces (a step like the cross), trying each alternative × grip × offset and keeping the shortest answer
-// (on a tie, the alternative adding more new pieces wins, so "cross | XCross" takes the XCross when it costs no extra move)
+// Solve only the goal pieces (a step like the cross), trying each alternative × grip (each with all its offsets at once) and keeping the shortest answer
+// (on a tie, the alternative adding more new pieces wins, so "cross | XCross" takes the XCross when it costs no extra move).
+// The worker first measures every combo (exact distance from one table, or a lower bound from split tables), so only combos that can still win are searched
 export async function solveStep(scramble: string, pieces: string, options: StepOptions = {}): Promise<StepResult> {
   const keep = options.keep;
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
-  // Offsets the goal may be reached up to (an empty list means no offset)
-  const offsets = options.offsets?.length ? options.offsets : [""];
+  // Offsets the goal may be reached up to (an empty list means no offset), in groups that share one table
+  const groups = offsetGroups(options.offsets?.length ? options.offsets : [""], generatorMoves);
   // Best answer so far, how many new pieces it adds, and the last search error (shown if no combo finds anything)
   let best: StepResult | null = null;
   let bestLength = Infinity;
@@ -589,18 +655,33 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
       .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
     // Orientation is judged from the grip, so orient-group goals can't be shared between grips
     const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
-    // Every grip with every offset
+    // Every grip with every offset group
     const combos = grips.flatMap(({ rotation, done, held, before }) => {
       // Start = cube held in this grip, with the goal's hidden pieces masked
       const goal = goalFor(rotation);
       const start = maskPattern(held, goal);
       // How many of its pieces earlier steps already cover in this grip (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
       const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
-      // Target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
-      return offsets.map((offset) => {
-        const target = maskedTarget(goal, offset);
-        const fresh = ownPieces.length - covered;
-        return { alternative, rotation, offset, done, goal, gripMatters, covered, fresh, start, target, ...estimate(held, start, target, goal, tables) };
+      const fresh = ownPieces.length - covered;
+      // Targets already used in this grip (an offset the goal can't see repeats one, so it's dropped)
+      const seen: KPattern[] = [];
+      return groups.flatMap((group) => {
+        // Each offset's target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
+        const offsets: string[] = [];
+        const targets: KPattern[] = [];
+        for (const offset of group) {
+          const target = maskedTarget(goal, offset);
+          if (seen.some((other) => other.isIdentical(target))) continue;
+          seen.push(target);
+          offsets.push(offset);
+          targets.push(target);
+        }
+        if (!targets.length) return [];
+        // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total)
+        const scores = targets.map((target) => estimate(held, start, target, goal, tables));
+        const bound = Math.min(...scores.map((score) => score.bound));
+        const total = Math.min(...scores.map((score) => score.total));
+        return [{ alternative, rotation, done, goal, gripMatters, covered, fresh, held, start, offsets, targets, bound, total }];
       });
     });
     // Only the grips where earlier steps cover the fewest of its pieces (a grip turn can't trade its pieces for ones already done)
@@ -613,48 +694,74 @@ export async function solveStep(scramble: string, pieces: string, options: StepO
   const adding = perAlternative.filter((entry) => !entry.nothingNew);
   const combos = adding.length ? adding.flatMap((entry) => entry.combos) : perAlternative.flatMap((entry) => entry.combos.filter((combo) => combo.rotation === ""));
   if (!combos.length) throw new Error(NOTHING_NEW);
-  // Easiest-looking first (ties keep alternative and grip order, no offset first)
-  const queue = combos.sort((a, b) => a.total - b.total || a.bound - b.bound);
-  for (const { alternative, rotation, offset, done, goal, gripMatters, fresh, start, target, bound } of queue) {
-    // Same grip and same hidden target (an offset the goal can't see), or the same pieces, turns and offset as the cube itself turns them
+  // Easiest-looking first (ties keep alternative and grip order), keeping only combos worth measuring
+  const candidates: typeof combos = [];
+  for (const combo of combos.sort((a, b) => a.total - b.total || a.bound - b.bound)) {
+    const { rotation, done, goal, gripMatters, start } = combo;
+    // Same grip and same hidden targets (offsets the goal can't see), or the same pieces, turns and offsets as the cube itself turns them
     const keys = [
-      `target/${rotation}/${JSON.stringify(target.patternData)}`,
+      `target/${rotation}/${combo.targets.map((target) => JSON.stringify(target.patternData)).join("|")}`,
       [
         "cube",
         JSON.stringify(goalOnCube(goal, scramble, done)),
         movesKey(rotation, generatorMoves),
         gripMatters ? rotation : "",
-        movesKey(rotation, [offset]),
+        combo.offsets.map((offset) => movesKey(rotation, [offset])).join("&"),
       ].join("/"),
     ];
-    // Skip a combo that asks for the same thing as one already searched (still noting its keys, so later repeats are caught too)
+    // Skip a combo that asks for the same thing as an earlier one (still noting its keys, so later repeats are caught too)
     const repeat = keys.some((key) => asked.has(key));
     for (const key of keys) asked.add(key);
     if (repeat) continue;
-    // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
-    const maxDepth = Math.min(options.maxDepth ?? Infinity, fresh > bestFresh ? bestLength : bestLength - 1);
-    if (maxDepth < 0) continue;
-    // Skip a combo whose hardest piece alone needs more moves than allowed: no search there can beat the best so far
-    if (bound > maxDepth) continue;
-    // Skip a grip whose goal centers the allowed moves can't bring home (that search would never end)
-    if (!centersReachable(start, target, generatorMoves)) {
+    // Skip a combo whose hardest piece alone needs more moves than the user's limit
+    if (combo.bound > (options.maxDepth ?? Infinity)) continue;
+    // Keep only the targets whose centers the allowed moves can bring home (a search for the others would never end)
+    const reachable = combo.targets.map((target) => centersReachable(start, target, generatorMoves));
+    if (!reachable.includes(true)) {
       lastError ??= new Error(CENTERS_OUT);
       continue;
     }
+    candidates.push({ ...combo, offsets: combo.offsets.filter((_, index) => reachable[index]), targets: combo.targets.filter((_, index) => reachable[index]) });
+  }
+  // Ask the worker how far each combo is (it builds or loads the tables first): exact from one table, a lower bound from split tables,
+  // unknown with twips (then the hardest piece's moves stand in)
+  const measured = await Promise.all(
+    candidates.map(async (combo) => {
+      try {
+        const { bound, exact } = await askWorker({ kind: "measure", start: combo.start, targets: combo.targets, moves: generatorMoves }, options.onProgress);
+        return { ...combo, bound: exact ? (bound ?? Infinity) : Math.max(bound ?? 0, combo.bound) };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        return { ...combo, bound: Infinity };
+      }
+    }),
+  );
+  // Combos no allowed moves can solve are left out
+  if (measured.some((combo) => combo.bound === Infinity)) lastError ??= new Error("No solution found!");
+  // Closest first; on a tie the one adding more new pieces, then the easiest-looking (the sort keeps the order above)
+  const queue = measured.filter((combo) => combo.bound !== Infinity).sort((a, b) => a.bound - b.bound || b.fresh - a.fresh);
+  for (const { alternative, rotation, goal, fresh, held, start, offsets, targets, bound } of queue) {
+    // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
+    const maxDepth = Math.min(options.maxDepth ?? Infinity, fresh > bestFresh ? bestLength : bestLength - 1);
+    // Skip a combo whose distance (or lower bound) is already too long: no search there can beat the best so far
+    if (bound > maxDepth) continue;
     searches++;
     try {
-      // Search, passing the depth limit only when there is one (twips only finds answers shorter than its maxDepth, hence + 1)
-      const moves = await searchTwips(kpuzzle, start, {
-        targetPattern: target,
-        generatorMoves,
-        ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}),
-      });
+      // Search, passing the depth limit only when there is one (the worker only finds answers shorter than its maxDepth, hence + 1)
+      const reply = await askWorker(
+        { kind: "search", start, targets, moves: generatorMoves, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
+        options.onProgress,
+      );
+      const moves = reply.moves ?? "";
       // Keep it if it's shorter than the best so far, or as short with more new pieces
-      const length = countMoves(moves.toString());
+      const length = countMoves(moves);
       if (length < bestLength || (length === bestLength && fresh > bestFresh)) {
         bestLength = length;
         bestFresh = fresh;
-        best = { solution: new Alg(joinMoves(rotation, moves.toString())), rotation, offset, pieces: goalToText(goal), alternative, searches };
+        // Offset the answer reached: the target the cube matches after it
+        const end = maskPattern(held.applyAlg(moves), goal);
+        const offset = offsets[Math.max(0, targets.findIndex((target) => end.isIdentical(target)))];
+        best = { solution: new Alg(joinMoves(rotation, moves)), rotation, offset, pieces: goalToText(goal), alternative, searches };
       }
       // First-answer mode: any answer within the limit will do, so skip the remaining combos
       if (options.firstFound) break;
@@ -754,6 +861,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
         firstFound: step.firstFound,
         keep: step.keep ? earlier : undefined,
         earlier,
+        onProgress: options.onProgress,
       });
     } catch (error) {
       // Say which step found nothing

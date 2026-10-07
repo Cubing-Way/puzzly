@@ -25,6 +25,7 @@ import {
   type Role,
   type Method,
   type StepConfig,
+  type TableProgress,
 } from "./engine";
 // Example, saved and file methods
 import { exampleMethods, savedMethods, saveMethod, deleteSavedMethod, downloadMethod, readMethodFile } from "./method-store";
@@ -152,6 +153,28 @@ function formatMs(ms: number): string {
 // Count with its word, e.g. "1 grip" or "4 grips"
 function plural(count: number, word: string, many = `${word}s`): string {
   return `${count} ${count === 1 ? word : many}`;
+}
+
+// Follows the search worker's table work during one solve: a note for the live status while a table is built or loaded, and counts for the final status
+function tableTracker() {
+  let note = "";
+  let built = 0;
+  let loaded = 0;
+  return {
+    // Progress listener for solveStep / runMethod
+    onProgress(progress: TableProgress): void {
+      if (!progress.finished) note = progress.action === "build" ? " · building tables…" : " · loading stored tables…";
+      else {
+        note = "";
+        if (progress.states && progress.action === "build") built++;
+        if (progress.states && progress.action === "load") loaded++;
+      }
+    },
+    // Note for the live status line ("" when no table is being built or loaded)
+    note: () => note,
+    // Counts for the final status, e.g. ", built 2 tables"
+    summary: () => (built ? `, built ${plural(built, "table")}` : "") + (loaded ? `, loaded ${plural(loaded, "stored table")}` : ""),
+  };
 }
 
 // Goal mode picked in the form
@@ -355,8 +378,10 @@ function showSearchCount(offsets: string[] | null): void {
   const alternatives = splitAlternatives(piecesInput.value).length;
   // Alternatives are only mentioned when there are several
   const each = alternatives > 1 ? `${plural(alternatives, "alternative")} × ` : "";
+  // One search per alternative × grip covers every offset (they share one table)
+  const allOffsets = offsets && offsets.length > 1 ? `, each covering all ${offsets.length} offsets (counting none)` : "";
   searchCount.textContent = offsets
-    ? `Up to ${plural(alternatives * grips * offsets.length, "search", "searches")}: ${each}${plural(grips, "grip")} × ${plural(offsets.length, "offset")} (counting none). Repeats are skipped.`
+    ? `Up to ${plural(alternatives * grips, "search", "searches")}: ${each}${plural(grips, "grip")}${allOffsets}. Repeats, and grips whose distance can't beat the best, are skipped.`
     : "";
 }
 
@@ -545,9 +570,10 @@ async function solve(): Promise<void> {
 
   setBusy(true);
   showResult(null);
-  // Live timer in the status line while the solver works
+  // Live timer in the status line while the solver works (noting table builds and loads)
   const started = performance.now();
-  const tick = () => setStatus(`Solving ${goal}… ${formatMs(performance.now() - started)}`);
+  const tables = tableTracker();
+  const tick = () => setStatus(`Solving ${goal}… ${formatMs(performance.now() - started)}${tables.note()}`);
   tick();
   const timer = setInterval(tick, 100);
   try {
@@ -560,7 +586,7 @@ async function solve(): Promise<void> {
     let searches = 1;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, firstFound });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, firstFound, onProgress: tables.onProgress });
       solution = result.solution.toString();
       solved = result.pieces;
       alternative = result.alternative;
@@ -580,7 +606,7 @@ async function solve(): Promise<void> {
     const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
     const offsetNote = offset ? `, offset ${offset}` : "";
     setStatus(
-      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}).` : `${goal}: the solution doesn't reach the goal!`,
+      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}${tables.summary()}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
     );
   } catch (error) {
@@ -807,17 +833,19 @@ async function runWholeMethod(): Promise<void> {
   showResult(null);
   methodRows = [];
   renderMethodRows();
-  // Live status: which step is searching, and the time so far
+  // Live status: which step is searching, the time so far, and table builds or loads
   const started = performance.now();
+  const tables = tableTracker();
   const tick = () => {
     const index = methodRows.length;
-    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})… ${formatMs(performance.now() - started)}`);
+    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})… ${formatMs(performance.now() - started)}${tables.note()}`);
   };
   tick();
   const timer = setInterval(tick, 100);
   try {
     const result = await runMethod(scramble, running, {
       done,
+      onProgress: tables.onProgress,
       // Add each step's row as soon as it finishes
       onStep: (step, index) => {
         const run: Run = {
@@ -861,7 +889,7 @@ async function runWholeMethod(): Promise<void> {
     showResult(total);
     setStatus(
       result.ok
-        ? `${running.name} done in ${plural(result.moves, "move")} over ${plural(result.steps.length, "step")} (${formatMs(total.ms)}).`
+        ? `${running.name} done in ${plural(result.moves, "move")} over ${plural(result.steps.length, "step")} (${formatMs(total.ms)}${tables.summary()}).`
         : `${running.name}: a step's solution doesn't reach its goal!`,
       result.ok ? "ok" : "error",
     );

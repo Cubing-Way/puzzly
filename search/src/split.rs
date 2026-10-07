@@ -296,6 +296,24 @@ impl SplitSearch {
         self.nodes
     }
 
+    // Largest sub-table distance from a start pattern: a sure lower bound on its answer, found without searching (Infinity when some sub-table can't reach a target)
+    pub fn measure(&self, start_json: &str) -> Result<f64, String> {
+        let start = pattern_data(&self.kpuzzle, start_json)?;
+        // An untouched spot that's wrong can't be fixed by any turn
+        if self.full.read(&start).is_none() {
+            return Ok(f64::INFINITY);
+        }
+        let mut bound = 0;
+        for sub in &self.subs {
+            let table = sub.table.as_ref().ok_or("A sub-table isn't attached")?;
+            match table.read(&sub.relabel.apply(&start)).map(|(outer, inner)| table.distance(&outer, inner)) {
+                Some(distance) if distance != UNSEEN => bound = bound.max(distance),
+                _ => return Ok(f64::INFINITY),
+            }
+        }
+        Ok(bound as f64)
+    }
+
     // Shortest answer from a start pattern, with twips's contract ({"maxDepth": 9} only finds answers shorter than 9, or {} for no limit);
     // {"maxNodes": n} gives up with NODE_LIMIT after n search nodes
     pub fn search(&mut self, start_json: &str, options_json: &str) -> Result<String, String> {

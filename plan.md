@@ -11,7 +11,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Rust search worker (one worker per session, twips tables kept between searches; done outside the numbered parts)
 - [x] Part 5a — Exact distance tables (Rust): goals that fit one table, answered without searching
 - [x] Part 5b — Split tables + IDA* (Rust): goals too big for one table
-- [ ] Part 5c — Rank combos by exact distance + table lifecycle (IndexedDB, idle stop)
+- [x] Part 5c — Rank combos by exact distance + table lifecycle (IndexedDB, idle stop)
 - [ ] Part 5d — Table files: option to download (export) a method's tables and load them back
 - [ ] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
 - [ ] Part 7 — Named whole-state checks (later, one check per chat)
@@ -142,6 +142,27 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Same move counts as twips on every step. Built page: first-layer preset 561 ms (9.7 s before), pseudo-slotting first run 1.13 s then 115 ms, CFOP 33–36 ms after it (shared tables).
   Slowest left: the first, unlimited combo of a pseudo last pair (~100k nodes on small tables) until that goal switches to big tables.
   Testing: `bench.ts` style scripts call the wasm API directly (`initSync`, masked start/target from `maskPattern`), check answers with cubing.js, and print nodes; method runs use the fake-Worker harness above.
+- Ranking + table lifecycle (Part 5c): worker requests are `{ id, kind: "measure" | "search", kpuzzle, start, targets /* JSON list, one per offset */, moves, maxDepth? }`; a measure answers `{ bound, exact }`
+  (`DistanceTable.measure(start)` = exact distance, `SplitSearch.measure(start)` = largest sub-table distance, `null` for twips, `Infinity` = unreachable); progress comes as `{ id, progress: { action: "build" | "load", finished, states? } }`
+  (`states` 0 = couldn't build, e.g. the instant "too big" try before a split). Engine: `askWorker(request, onProgress)` replaced `searchTwips`; `StepOptions.onProgress` / `MethodOptions.onProgress` get `TableProgress`.
+  `solveStep` combos = alternative × grip × offset group: `offsetGroups(offsets, moves)` folds every offset the allowed moves can make (each move allowed, or a power of an allowed quarter turn) with no offset into one
+  targets list; any other offset is its own group (its target differs on spots the moves never touch, which `Coords::new` rejects: "Targets differ on spots the moves never touch"). Targets an offset can't change are dropped per grip.
+  Flow: estimate order → repeat keys (now over the targets list / offsets list) → user-limit and centers filters → measure all (`Promise.all`) → sort by (bound, more fresh pieces) keeping estimate order on ties → search with the old
+  depth tightening, skipping `bound > maxDepth`. The offset reached = the target `maskPattern(held.applyAlg(moves), goal)` matches. Twips `Searcher` now takes a targets list too (twips supports several; checked).
+  Folding measured (Node, wasm, 6 scrambles, folded vs per-offset with tightening): pseudo XCross 0.1–1.3 ms vs 0.2–1.3 ms and 2 tables instead of 7; pseudo XXCross 0.5–11.5 ms vs 2.3–15 ms; pseudo XXXCross 11 ms–1.7 s vs 90 ms–4 s
+  (folded usually 2–8× fewer nodes, at worst ~1.3× more); same move counts everywhere.
+  Saved tables: `table.toBytes()` / `DistanceTable.fromBytes(kpuzzle, targets, moves, bytes)` (header: magic `PZT\0`, `TABLE_FORMAT` u32, states u64, depth u8, then the 4-bit distances; refused when the rebuilt numbering's size differs),
+  `tableFormat()` exported — bump `TABLE_FORMAT` in `table.rs` whenever `coords.rs` numbers states differently. Load = numbering + inner turn table: 1–40 ms vs 46–800 ms to build (EO 4k … Roux block 5.3M states).
+  IndexedDB (worker): database `puzzly-tables`, store `tables`, key `${tableFormat()}/${moves}/${targets}` (same moves + targets text as the cache key), value = bytes; tables with ≥ `STORE_MIN_STATES` (100k, ~50 KB) are stored
+  (the plan's ~1 MB threshold stored nothing: shallow methods never leave the 1M-state small plans). On start the worker lists stored keys (they count as built for the small/big switch, so a fully stored big plan
+  is used at once) and deletes keys of other formats. No IndexedDB (Node, private window) = everything still works, nothing stored. Requests run one at a time through a promise queue (loads are async).
+  Idle stop: `WORKER_IDLE_MS` 60 s after the last answer `stopSearchWorker()` terminates it; any request clears the timer, the next one starts a fresh worker.
+  Numbers (Node fake-Worker harness, 4 scrambles, first run / later runs; before 5c in brackets): pseudo-slotting 0.87 s / 52–69 ms (1.43 s / 95–861 ms), searches 38 (180); pseudo cross any bottom + any front 0.22 s / 35–48 ms
+  (0.54 s / 62–78 ms), searches 4 (82); CFOP, ZZ, CFOP + OLL, XXCross any front about the same time, CFOP searches 38 (43). After a "reload" (new process, file-backed fake IndexedDB): XXCross any front 549 → 228 ms,
+  pseudo-slotting 1009 → 370 ms, CFOP 554 → 205 ms, CFOP + OLL 3.26 → 0.69 s (13 tables loaded, 0 built); stored set after those 4: 33 tables, 6.1 MB.
+  Testing: the fake Worker must use `setImmediate`, not `setTimeout` (Windows' ~15 ms timer tick added ~30 ms per round trip and made the 2-request flow look slow). A replay mode (solve each step from the old run's
+  state) compares move counts when ties pick other answers. `harness/fakeidb.ts` style: a tiny file-backed `indexedDB` (open / transaction / objectStore get, put, delete, getAllKeys) set before importing the worker.
+  On 2026-10-07 the built-in browser refused to open localhost, so storage and idle stop were checked in Node only (see 5c's Done).
 ---
 
 ## Part 1 — Groups + centers
@@ -271,6 +292,19 @@ big tables should survive a reload, and memory should go back to Windows when no
 **Test:** method runs give the same solutions as before 5c with fewer searches (report search counts); after a reload the first solve uses stored tables (time before / after);
 the worker disappears from DevTools → Threads after the idle time and the next solve still works.
 
+**Done:** see "Ranking + table lifecycle (Part 5c)" in Facts. Every combo is measured first (exact distance or split lower bound), searched closest first, and skipped when it can't beat the best; a grip's offsets
+share one table and one search. Replaying the new engine from the old runs' states gave the **same move count on all 112 steps** (7 methods × 4 scrambles: the 4 examples, CFOP + OLL, XXCross any front, pseudo cross
+any bottom), with fewer searches (pseudo-slotting 180 → 43, pseudo cross any bottom 82 → 4, CFOP 43 → 38). Methods without offsets give identical solutions; with offsets, equal-length ties between offsets may now
+pick another offset (the folded table's descent heads for whichever target comes first), so pseudo-slotting runs differ from before after the first tie (totals 29/23/27/… vs 33/22/30/…, either way).
+Possible follow-up (fits Part 6): on equal length prefer no offset (saves the final ADF), e.g. a shortest-path walk in the folded table that tries the first target first.
+Tables of 100k states and up are stored in IndexedDB and load after a reload or idle stop (CFOP + OLL 3.26 s → 0.69 s); the worker stops after 60 s idle and the next solve starts a new one (checked with a
+fake Worker in Node: terminated once after 61 s, the next solve worked). First-found mode now stops at the closest combo (e.g. a 6-move cross where it used to stop at a 7-move one).
+**Not done, on purpose:** "one table for every grip". With keep, a step's goal in each grip is a different physical goal (the new pair goes in another slot relative to the kept pieces), so turning the cube
+into the start grip's frame only moves which pieces look fixed; it doesn't reduce tables. Without keep (or with a symmetric keep: cross, F2L, first layer) the grip-frame target is already one table for every grip,
+and 5b's canonical sub-tables are already shared across grips and steps (a whole CFOP run built the cross table + 8 "cross + one slot piece" tables). The covered-pieces filter and `NOTHING_NEW` are unchanged (checked).
+Not checked in a real browser (the browser pane refused localhost this time): run the built page, watch the status line say *building tables…* on a first XCross, reload, see *loaded N stored tables*, and check
+DevTools → Threads after 60 s idle.
+
 ## Part 5d — Table files (export / import option)
 
 **Why:** tables depend only on the goal (masked targets) and the allowed moves, never on the scramble, so a table built once can be saved and loaded anywhere. Big ones take seconds
@@ -279,7 +313,8 @@ which tables to prebuild, host or hand out is up to an app that uses the engine 
 
 **Do:**
 - Table file format (Rust): a header (magic, table-format version, puzzle name, allowed moves, masked targets, state count, layout numbers that must match the numbering code) + the 4-bit distances.
-  `DistanceTable.to_bytes()` and `DistanceTable.from_bytes(kpuzzle, targets, moves, bytes)`: rebuild the numbering from the same inputs (cheap), check the header matches, attach the distances.
+  5c already added `table.toBytes()` and `DistanceTable.fromBytes(kpuzzle, targets, moves, bytes)` (header: magic, `TABLE_FORMAT`, states, depth; the numbering is rebuilt and its size checked) and `tableFormat()`;
+  a file wraps those with the extra header fields (moves and targets, so a file can be imported without knowing them first).
   Any change to `coords.rs` numbering bumps the format version, so old files are refused (rebuilt instead), never misread. One file may hold several tables (a method's whole set; with 5b, its sub-tables).
 - Key: the same (masked targets, moves, format version) key as 5c's IndexedDB store; loaded tables go into that store, so the worker finds them like self-built ones.
 - Engine API (no page code): `methodTables(method)` lists the table keys a method needs (every step × alternative × grip × offset target, 5c's dry run, no search) and which are built;

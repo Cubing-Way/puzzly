@@ -8,6 +8,19 @@ use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
 
+// Version of a table's saved bytes: bump it whenever coords.rs numbers states differently (or the layout below changes), so tables saved by older code are rebuilt, never misread
+pub const TABLE_FORMAT: u32 = 1;
+// First bytes of a saved table, to recognise one
+const MAGIC: &[u8; 4] = b"PZT\0";
+// Saved table header: magic, format (u32), states (u64), depth (u8); the 4-bit distances follow
+const HEADER: usize = 4 + 4 + 8 + 1;
+
+// Version of saved table bytes (the worker keys stored tables with it, so a new version never meets old bytes)
+#[wasm_bindgen(js_name = tableFormat)]
+pub fn table_format() -> u32 {
+    TABLE_FORMAT
+}
+
 // Table value for a state not reached (yet): distances 0..14 fit in the other 4-bit values
 pub const UNSEEN: u8 = 15;
 // Same error text as twips, so the engine treats both the same
@@ -51,6 +64,39 @@ fn set(nibbles: &mut [u8], index: u64, value: u8) {
     *byte = (*byte & !(15 << shift)) | (value << shift);
 }
 
+// Puzzle, targets (a JSON list of patterns) and allowed moves from the JSON the worker sends, with the state numbering they give
+fn setup(kpuzzle_json: &str, targets_json: &str, moves_json: &str) -> Result<(KPuzzle, Vec<KPatternData>, Coords), String> {
+    let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
+    let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|target| pattern_data(&kpuzzle, &target.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if targets.is_empty() {
+        return Err("No target".to_owned());
+    }
+    let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
+    let turns = enumerate_turns(&kpuzzle, &moves)?;
+    let coords = Coords::new(&kpuzzle, &targets, turns)?;
+    Ok((kpuzzle, targets, coords))
+}
+
+// Inner turn table: every inner value through every turn
+fn inner_turns(coords: &Coords) -> Vec<u16> {
+    let turn_count = coords.turns.len();
+    let inner_size = coords.inner.size;
+    let mut inner_next = vec![0u16; turn_count * inner_size as usize];
+    let (mut units, mut moved) = (Units::new(), Units::new());
+    for inner in 0..inner_size {
+        coords.inner.unrank(inner, &coords.binomials, &mut units);
+        for turn in 0..turn_count {
+            coords.inner.apply(&units, turn, &mut moved);
+            inner_next[turn * inner_size as usize + inner as usize] = coords.inner.rank(&moved, &coords.binomials) as u16;
+        }
+    }
+    inner_next
+}
+
 #[wasm_bindgen]
 impl DistanceTable {
     // Build the table by breadth-first search from every target at once; fails (so the caller can use twips) when it has more than max_states states
@@ -58,38 +104,15 @@ impl DistanceTable {
     pub fn new(kpuzzle_json: &str, targets_json: &str, moves_json: &str, max_states: f64) -> Result<DistanceTable, String> {
         // Show Rust panics in the browser console instead of a bare "unreachable"
         console_error_panic_hook::set_once();
-        // Puzzle, targets (a JSON list of patterns) and allowed moves
-        let kpuzzle = KPuzzle::try_from_json(kpuzzle_json.as_bytes()).map_err(|e| e.to_string())?;
-        let targets = serde_json::from_str::<Vec<serde_json::Value>>(targets_json)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(|target| pattern_data(&kpuzzle, &target.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        if targets.is_empty() {
-            return Err("No target".to_owned());
-        }
-        let moves: Vec<Move> = serde_json::from_str(moves_json).map_err(|e| e.to_string())?;
-        let turns = enumerate_turns(&kpuzzle, &moves)?;
-        // State numbering, and the size check before anything big is allocated
-        let mut coords = Coords::new(&kpuzzle, &targets, turns)?;
+        // Puzzle, targets, moves and state numbering, with the size check before anything big is allocated
+        let (kpuzzle, targets, mut coords) = setup(kpuzzle_json, targets_json, moves_json)?;
         let size = coords.size();
         if size as f64 > max_states || size >= u32::MAX as u64 {
             return Err(format!("Too big for one table ({} states)", size));
         }
         // Turn tables for the outer part, so each block's neighbours are lookups
         coords.build_tables();
-        // Inner turn table: every inner value through every turn
-        let turn_count = coords.turns.len();
-        let inner_size = coords.inner.size;
-        let mut inner_next = vec![0u16; turn_count * inner_size as usize];
-        let (mut units, mut moved) = (Units::new(), Units::new());
-        for inner in 0..inner_size {
-            coords.inner.unrank(inner, &coords.binomials, &mut units);
-            for turn in 0..turn_count {
-                coords.inner.apply(&units, turn, &mut moved);
-                inner_next[turn * inner_size as usize + inner as usize] = coords.inner.rank(&moved, &coords.binomials) as u16;
-            }
-        }
+        let inner_next = inner_turns(&coords);
         let mut table = TableCore { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0 };
         table.fill(&targets)?;
         // The outer turn tables only speed up the fill; answers unpack pieces instead
@@ -97,9 +120,50 @@ impl DistanceTable {
         Ok(DistanceTable { core: Rc::new(table) })
     }
 
+    // A table saved earlier with toBytes, for the same targets and moves: the numbering is rebuilt (cheap) and must match the saved header, else it fails (rebuild it instead)
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(kpuzzle_json: &str, targets_json: &str, moves_json: &str, bytes: &[u8]) -> Result<DistanceTable, String> {
+        // Show Rust panics in the browser console instead of a bare "unreachable"
+        console_error_panic_hook::set_once();
+        let (kpuzzle, _, coords) = setup(kpuzzle_json, targets_json, moves_json)?;
+        // Header: same magic, same format, same state count, and exactly that many distances after it
+        let size = coords.size();
+        let fits = bytes.len() == HEADER + (size as usize).div_ceil(2)
+            && &bytes[..4] == MAGIC
+            && bytes[4..8] == TABLE_FORMAT.to_le_bytes()
+            && bytes[8..16] == size.to_le_bytes();
+        if !fits {
+            return Err("Saved table doesn't match this goal or table format".to_owned());
+        }
+        let inner_next = inner_turns(&coords);
+        Ok(DistanceTable { core: Rc::new(TableCore { kpuzzle, coords, nibbles: bytes[HEADER..].to_vec(), inner_next, depth: bytes[16] }) })
+    }
+
+    // The table as bytes (header + 4-bit distances), to save and load later with fromBytes
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let core = &self.core;
+        let mut bytes = Vec::with_capacity(HEADER + core.nibbles.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&TABLE_FORMAT.to_le_bytes());
+        bytes.extend_from_slice(&core.coords.size().to_le_bytes());
+        bytes.push(core.depth);
+        bytes.extend_from_slice(&core.nibbles);
+        bytes
+    }
+
     // Shortest moves from a start pattern to a target; options_json is like twips's ({"maxDepth": 9} only finds answers shorter than 9, or {})
     pub fn search(&self, start_json: &str, options_json: &str) -> Result<String, String> {
         self.core.search(start_json, options_json)
+    }
+
+    // Fewest moves from a start pattern to a target, without listing them (Infinity when the allowed moves can't get there)
+    pub fn measure(&self, start_json: &str) -> Result<f64, String> {
+        let start = pattern_data(&self.core.kpuzzle, start_json)?;
+        Ok(match self.core.read(&start).map(|(outer, inner)| self.core.distance(&outer, inner)) {
+            Some(distance) if distance != UNSEEN => distance as f64,
+            _ => f64::INFINITY,
+        })
     }
 
     // Number of states in the table
