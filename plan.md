@@ -18,8 +18,8 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 7b — Pieces solved relative to each other anywhere (pair joined anywhere, FMC pseudo-blocks)
 - [x] Part 7c — BLD: untouched pieces, buffer tracing, parity, repeated steps
 - [x] Part 8a — Benchmark harness + faster search nodes
-- [ ] Part 8b — Spot classes, exact size estimates, twist parity (sharper tables)
-- [ ] Part 8c — Inverse and symmetric lookups on the same tables
+- [x] Part 8b — Spot classes, exact size estimates, twist parity (sharper tables)
+- [x] Part 8c — Inverse and symmetric lookups on the same tables (rotated copies share one table; inverse lookups measured, not kept)
 - [ ] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
 - [ ] Part 8e — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
 - [ ] Part 8f — Symmetry-reduced numbering (only if still needed)
@@ -266,6 +266,38 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
     pseudo-lookahead search + list 0.52 → 0.30 s, bld-flip 214 → 88 s (14.0 → 5.7, 15.3M); whole replay 441 → 203 s. Tables: 62, 300M states, 143 MB, 75 s to build once.
     Bound gap (avg / max): bld-flip 6.3 / 7, xxxcross 4.0 / 5, dr-finish 3.4 / 7, cfop-oll-pll 2.4 / 6, pseudo 1.3–1.5 / 5: the tables are now the limit (8b, 8c).
     Method runs (record.js, old → new, same moves in all 30 runs): first pass 739 → 297 s, warm pass dr-finish 24.0 → 12.2 s, xxxcross 27.6 → 6.3 s, cfop-oll-pll 230 → 99 s (PLL 8–53 s per scramble), pseudo 6.4 → 4.6 s, bld-flip 48 → 24 s.
+- Spot sets + twist parity (Part 8b): `orbit_coords` (coords.rs) splits an orbit's moving spots into the sets the turns connect (union-find over each turn's permutation) and makes one `OrbitCoord` per set
+  (same orbit name; the first one keeps the untouched-spot checks). When the targets hold different pieces in some set (e.g. relative-group placements across sets) the orbit stays one pool, as before.
+  - Per set: its own classes, left-out class (`OrbitCoord.implicit`), frozen twists and per-spot twists. `Part::read` now checks exact class counts and that every spot holds the set's own ids, so a start with a piece in another set reads as unreachable (`None`).
+  - Twist parity: a per-spot set whose turns keep the twist sum (Σ `add` ≡ 0 for every turn) and whose targets share one sum leaves out the last spot's digit (`parity`, `twist_sum`, `spot_digits`, `last_twist`); `read` refuses a start with another sum.
+  - split.rs: items come from every set of an orbit (sets by first spot, one item per id), Relabel's moving ids from every set. `estimate_size` multiplies the same sets (still no reachable-layout walk while sizing). `TABLE_FORMAT` 2.
+  - Sizes (old → new): EO 4,096 → 2,048, CO 6,561 → 2,187, EOLine 540,672 → 270,336; DR's two sub-tables EO + E-slice 2.03M → 1.01M and CO + E-slice positions 3.25M → 1.08M (same plan, same nodes);
+    R U finish (whole cube, R U) 441M → 147M (5,040 · 120 · 243), split plan unchanged (5 × 5.4M); DR phase 2 (whole cube, `U D R2 L2 F2 B2`) 19.3 trillion → 39.0B (8! · 8! · 4!), its plan 12 tables of 7 edges, or a corner + 6 edges
+    (57M states) → 7 tables "all 12 edges + one corner" (7.7M each, 54M). Face-turn goals without per-spot twists (cross, F2L, OLL / PLL with keep, BLD) number exactly as before.
+  - Replay (1,356 requests, 10M plans, 8a → 8b): every answer identical (move text: IDA* takes the first shortest answer in move order, whatever its tables). dr-finish searches 3.5 s → 0.18 s (845k → 40k nodes, bound gap avg 3.38 → 2.75, max 7 → 6).
+    Other scenarios: identical nodes and time within noise (3 alternating runs: xxxcross 5.9–6.8 s → 5.2–6.0 s; the same old code varies ~10% between runs). Tables 62 (300M states, 143 MB) → 57 (294M, 140 MB), ~72 s to build once.
+  - Example methods (all 6, 4 scrambles each, BLD 3): identical solutions and offsets. DR + finish (12 scrambles, fake worker, first / second pass): 37.7 / 27.2 s → 11.1 / 12.3 s, identical solutions.
+    The worker searches on the small (1M) tables until it has spent the big plan's cost in nodes (54M / `STATES_PER_NODE` = 2.7M), so the switch came in the second pass (one 15-move finish 9.7 s, building the 7 big tables);
+    on small tables 12–13 move finishes 15–91 ms, 14–15 moves 0.3–2.4 s; after the switch 7–204 ms (Facts before: 14–131 ms and 0.4–4.7 s).
+  - `bench/compare.mjs` counts bound changes apart (higher / lower) instead of as answer differences.
+- Rotated tables (Part 8c): `search/src/symmetry.rs`. `Symmetry::new(kpuzzle, closed targets, turns)` only for identity goals: one closed target, and per orbit either every piece its own id (twists all counted and 0, or none counted)
+  or one shared id with no twist (whole cube: PLL / finish with keep, every relabeled BLD goal, DR finish). Rotations = the group x and y generate (24 on the cube), kept when R⁻¹ · turn · R is an allowed turn
+  for every turn (compared on tracked orbits, twists as far as the goal counts them): face turns 24, DR moves 8, R U 2.
+  - `SplitSearch.slots` = (sub, rotation). A planned table whose pieces (`Shape` = (orbit, home, twist), plus a set's left-out piece when every other item of the set is held) are a rotation's image of an
+    earlier table's becomes a slot on that table, not a new sub-table (`tables()` counts sub-tables only, so the worker builds fewer). A slot reads its table on `symmetry.rotate(start, r)` (R⁻¹ · state · R)
+    and maps turns through `Rotation.turns`; IDA* `Slot { table, turns: Option<Vec<u8>> }` (None = plain; rotated turns are mapped into a small buffer first, so the lookup loop keeps one inlined call:
+    a two-branch version was ~10% slower on XXXCross). `measure` reads every slot. `TABLE_FORMAT` unchanged (same numbering).
+  - Tables: PLL with keep and BLD flips 16 "4 U edges + one piece" → 4 (U corner, D corner, E edge, D edge), DR finish 7 "12 edges + one corner" → 1.
+    Replay (1,356 requests, 8b → 8c): identical answers, nodes and start bounds; tables 57 → 39 (294M → 202M states, 140 → 96 MB); times within noise (XXXCross, 3 alternating runs: 6.3–7.0 s before, 6.3 s after).
+  - Example methods (all 6, 4 scrambles, BLD 3): identical solutions; 3-style BLD first run 59 → 33 s (fewer builds). DR + finish (12 scrambles, fake worker) identical solutions, first / second pass
+    11.1 / 12.3 s → 6.4 / 1.1 s: the big plan is now one 7.7M table, so the worker switches to it after a few solves (first solves 1.2–1.6 s, then 6–263 ms).
+  - Measured, not kept (subset: 8 DR finishes / one PLL with keep, 1.39M nodes / one BLD flip, 0.83M nodes; 8b: 171 ms / 6.8 s / 4.4 s):
+    - Inverse lookups (every slot also read on the inverse state, worked out from the whole state kept spot by spot per depth; an inverse distance can jump by more than one per move, so no carried
+      bounds and every child left is read): nodes −7% / −37% / −22%, µs per node ×1.8–3, so slower (280 ms / 13.3 s / 10.3 s). Only the view that ruled last checked per node: nodes −1–4%, still slower
+      (keeping the whole state per depth alone costs ~40% per node). The fast inverse index matched cubing's `invert` (then rotated) on ~290k random states per goal, 0 mismatches.
+    - Extra rotated lookups (each table on every rotated copy whose pieces no slot reads yet; PLL / BLD 16 → 96 slots, DR 7 → 8): nodes −8% / −50% / −51%, ×1.2–2.8 per node (189 ms / 9.7 s / 4.9 s).
+      Both together: nodes −60% / −66%, 4–5× slower.
+    - Lookups are random reads in 2–8 MB tables (this PC: 3 MB L3), so each extra lookup costs about what it saves. No start bound rose (a PLL's inverse is a PLL, a 2-edge flip is its own inverse).
 ---
 
 ## Part 1 — Groups + centers
@@ -508,9 +540,9 @@ Limits:
 Hand-written tables (Kociemba's coordinates) would bend the "engine never knows a step" rule, so first get everything generic out of the tables and the search; Part 9 only for the gap the benchmark still shows.
 
 Checked while planning (2026-10-08):
-- `OrbitCoord::new` (coords.rs) numbers all of an orbit's moving spots as one pool, so under DR moves the 8 U/D edges count as if they could reach all 12 spots.
-- `estimate_size` is an upper bound: the reachable-layout walk (`keep_reachable`) only runs for orbits of ≤ `REACH_LIMIT` (65,536) layouts, and never while sizing.
-- No parity trick, no symmetry; 4-bit distances; outer turn tables are freed after the fill, so the search steps outer coordinates from spot lists (~3–4 µs per IDA* node).
+- `OrbitCoord::new` (coords.rs) numbers all of an orbit's moving spots as one pool, so under DR moves the 8 U/D edges count as if they could reach all 12 spots. (8b: one numbering per spot set now.)
+- `estimate_size` is an upper bound: the reachable-layout walk (`keep_reachable`) only runs for orbits of ≤ `REACH_LIMIT` (65,536) layouts, and never while sizing. (8b: exact per spot set, the walk still never runs while sizing.)
+- No parity trick, no symmetry; 4-bit distances; outer turn tables are freed after the fill, so the search steps outer coordinates from spot lists (~3–4 µs per IDA* node). (8b: twist parity; no permutation parity, no symmetry. 8c: rotated copies of a table share it; inverse lookups measured, not kept.)
 
 **Order:** 8a → 8b → 8c → 8d are the core (Kociemba-like methods). Re-run 8a's benchmark after each part; do 8e–8g only when its numbers point at them.
 
@@ -542,6 +574,11 @@ Not done: per-orbit turn tables kept for searches (a 5-edge orbit needs ~14 MB o
 
 **Test:** same move counts as before 8b on 8a's set and the example methods; DR phase 2 times vs the Facts numbers; table sizes for DR phase 2, R U finish, EO, CO.
 
+**Done:** see "Spot sets + twist parity (Part 8b)" in Facts. Identical answers on all 1,356 replayed requests, the 6 example methods and 12 DR + finish runs. DR phase 2 searches are 19× faster (21× fewer nodes) on big tables;
+EO, CO, EOLine and DR's sub-tables are a half to a third of their old size with the same distances; every other goal numbers exactly as before.
+The planner doesn't find Kociemba's two phase-2 tables by itself: it fills each table edges first, so it finds "all edges" (plus one corner) and repeats it once per corner, never seeing the corners together (moved to 8e).
+Not checked in a real browser: with `TABLE_FORMAT` 2 the worker deletes every stored format-1 table on its next start and rebuilds what it needs, once.
+
 ### Part 8c — Inverse and symmetric lookups
 
 **Do:**
@@ -551,6 +588,12 @@ Not done: per-orbit turn tables kept for searches (a 5-edge orbit needs ~14 MB o
   conjugated states too, and build fewer distinct tables (whole cube: one "4 U edges + one piece" table serves several).
 
 **Test:** same move counts; bound gap and nodes on PLL with keep, DR phase 2 and BLD flips (Facts: 3.5–53 s).
+
+**Done:** see "Rotated tables (Part 8c)" in Facts. The symmetric part as planned: a planned sub-table that is a rotated copy of another (by a rotation that keeps the moves) is read through it, so whole-cube goals
+build far fewer tables (PLL with keep and BLD 4 instead of 16, DR finish 1 instead of 7, 140 → 96 MB on the replay) with identical answers, nodes and speed; first runs got faster (BLD example 59 → 33 s,
+DR + finish 11 → 6 s, then ~1 s warm). The lookups that would sharpen bounds (inverse, and rotated copies no planned table covers) did cut nodes (up to 37% and 51%) but cost more per node than they saved
+on every heavy goal, so neither is kept; the bound gap is unchanged (bld-flip 6.3 / 7, cfop-oll-pll 2.35 / 6, dr-finish 2.75 / 6). Detection works from the targets only (one target, each piece its own id).
+Not checked in a real browser (`TABLE_FORMAT` is unchanged, so stored tables still load; the worker just asks for fewer).
 
 ### Part 8d — Anytime method search
 
@@ -572,6 +615,10 @@ CFOP F2L and pseudo-slotting: time to the first improvement and to the proof (re
 **Do:**
 - 2-bit tables: distance mod 3; the exact distance is recovered once at the start, children follow from parent ± 1 (`deepen` already tracks each table's last exact distance). 2× states per MB.
 - Planner tries a few candidate splits (whole-orbit groups, per piece, mixed) and keeps the best mean bound on a small sample of random states.
+  From 8b: DR phase 2 gets 7 tables "all 12 edges + one corner" (edges first, then whatever fits), so the corners are never seen together. One candidate to try: fill a table with its seed's own orbit first
+  (counted by hand, not built: all edges + UFR 7.7M, then all corners + UF UR FR 9.0M, 2 tables instead of 7); it also changes first layer, XXCross… plans, hence the sampling.
+- From 8c: extra rotated lookups (a table read on rotated copies no planned table covers) halve PLL / BLD-flip nodes, but all 80 of them cost ~2.5× per node; keeping the few that raise the bound most on the sample
+  could pay off. Inverse lookups cut nodes 7–37% at ~2–3× per node (the whole state per depth is the fixed cost); worth a retry only if lookups get cheaper (8f / 8g).
 - Budget from `navigator.deviceMemory` instead of a fixed 10M.
 
 **Test:** same move counts; bound gap and nodes vs 8c.

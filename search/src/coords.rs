@@ -64,7 +64,7 @@ pub fn pattern_data(kpuzzle: &KPuzzle, json: &str) -> Result<KPatternData, Strin
 }
 
 // Twist values that count for a piece: its orientation mod (0 = all of the orbit's orientations)
-fn twist_factor(mod_value: u8, num_orientations: u8) -> u8 {
+pub(crate) fn twist_factor(mod_value: u8, num_orientations: u8) -> u8 {
     if mod_value == 0 { num_orientations } else { mod_value }
 }
 
@@ -130,19 +130,24 @@ struct OrbitTables {
     twist_next: Vec<u32>,
 }
 
-// One orbit's share of the state: value = positions (which class sits on each moving spot) × twists (the twist digits that count)
+// One set of an orbit's moving spots (all of them, or the ones the turns connect) as a share of the state: value = positions (which class sits on each spot) × twists (the twist digits that count)
 pub struct OrbitCoord {
     pub(crate) name: KPuzzleOrbitName,
-    // Orbit spot number of each moving spot (moving spots are numbered 0..m in this order)
+    // Orbit spot number of each spot of the set (they are numbered 0..m in this order)
     pub(crate) spots: Vec<u8>,
-    // Spots no allowed turn touches, with what every target has there
+    // Spots no allowed turn touches, with what every target has there (kept by the orbit's first set only)
     fixed: Vec<Fixed>,
     // Classes written into the index, in index order (the biggest twist-free class is left out: it fills the free spots)
     pub(crate) classes: Vec<Class>,
-    // Twist values a tracked twist can take (the same for every twisted class of the orbit)
+    // Id of the class left out, if any (with the tracked ids, the only ids the set's spots may hold)
+    pub(crate) implicit: Option<u8>,
+    // Twist values a tracked twist can take (the same for every twisted class of the set)
     twists: u8,
-    // Twist digits are per spot (every moving spot holds a twisted piece) instead of per tracked piece
+    // Twist digits are per spot (every spot holds a twisted piece) instead of per tracked piece
     per_spot: bool,
+    // Per-spot twists whose sum no turn changes (face turns): the last spot's digit is left out, it follows from the others and twist_sum
+    parity: bool,
+    twist_sum: u8,
     // Every class is one piece and twists are per piece, so a turn never re-sorts pieces (a child's value can be ranked straight from its parent)
     singles: bool,
     // Value counts: positions, twist digits, and their product
@@ -162,37 +167,99 @@ pub struct OrbitCoord {
     frozen_factor: u8,
 }
 
+// One orbit's numbering: one coordinate per set of moving spots the turns connect (a piece never leaves its set: under DR moves the 8 U/D edges and the 4 E-slice edges),
+// or one pool of every moving spot when the targets don't hold the same pieces in each set; the first coordinate also keeps the untouched-spot checks
+fn orbit_coords(kpuzzle: &KPuzzle, name: &KPuzzleOrbitName, targets: &[KPatternData], turns: &[Turn], binomials: &Binomials, reach: bool) -> Result<Vec<OrbitCoord>, String> {
+    let info = kpuzzle.lookup_orbit(name).ok_or("Unknown orbit")?;
+    let num_pieces = info.num_pieces as usize;
+    let num_orientations = info.num_orientations;
+    // A spot moves when some turn brings another piece there or twists it in a way that counts (center twists don't, so face turns leave centers fixed)
+    let first = &targets[0][name];
+    let first_mods = first.orientation_mod.clone().unwrap_or_else(|| vec![0; num_pieces]);
+    let moving: Vec<bool> = (0..num_pieces)
+        .map(|spot| {
+            let factor = twist_factor(first_mods[spot], num_orientations);
+            turns.iter().any(|turn| {
+                let orbit = &turn.data[name];
+                orbit.permutation[spot] as usize != spot || orbit.orientation_delta[spot] % factor != 0
+            })
+        })
+        .collect();
+    let spots: Vec<u8> = (0..num_pieces).filter(|&spot| moving[spot]).map(|spot| spot as u8).collect();
+    if spots.len() > MAX_SPOTS {
+        return Err(format!("Orbit {} has too many pieces for an exact table", name));
+    }
+    // Untouched spots: what the first target has there, and every other target must have the same (no turn can change it)
+    let fixed: Vec<Fixed> = (0..num_pieces)
+        .filter(|&spot| !moving[spot])
+        .map(|spot| {
+            let factor = twist_factor(first_mods[spot], num_orientations);
+            Fixed { spot, id: first.pieces[spot], factor, twist: first.orientation[spot] % factor }
+        })
+        .collect();
+    for target in &targets[1..] {
+        let orbit = &target[name];
+        if fixed.iter().any(|f| orbit.pieces[f.spot] != f.id || orbit.orientation[f.spot] % f.factor != f.twist) {
+            return Err("Targets differ on spots the moves never touch".to_owned());
+        }
+    }
+    // Sets of moving spots: each spot joins the spot every turn brings its piece from (union-find, roots as low as possible)
+    let mut root: Vec<usize> = (0..num_pieces).collect();
+    // Root of a spot's set (the spot is pointed straight at it for next time)
+    fn find(root: &mut [usize], spot: usize) -> usize {
+        let mut top = spot;
+        while root[top] != top {
+            top = root[top];
+        }
+        root[spot] = top;
+        top
+    }
+    for turn in turns {
+        let orbit = &turn.data[name];
+        for &spot in &spots {
+            let (a, b) = (find(&mut root, spot as usize), find(&mut root, orbit.permutation[spot as usize] as usize));
+            root[a.max(b)] = a.min(b);
+        }
+    }
+    // Spots grouped by set, sets in order of their first spot
+    let mut sets: Vec<Vec<u8>> = vec![];
+    let mut set_of = vec![usize::MAX; num_pieces];
+    for &spot in &spots {
+        let top = find(&mut root, spot as usize);
+        if set_of[top] == usize::MAX {
+            set_of[top] = sets.len();
+            sets.push(vec![]);
+        }
+        sets[set_of[top]].push(spot);
+    }
+    // Every target must hold the same pieces in each set (offsets made of allowed moves always do); otherwise one pool, as if every moving spot were connected
+    let holds = |target: &KPatternData, set: &[u8]| {
+        let mut ids: Vec<u8> = set.iter().map(|&spot| target[name].pieces[spot as usize]).collect();
+        ids.sort_unstable();
+        ids
+    };
+    if sets.len() > 1 && targets[1..].iter().any(|target| sets.iter().any(|set| holds(target, set) != holds(&targets[0], set))) {
+        sets = vec![spots.clone()];
+    }
+    // An orbit without moving spots still keeps its untouched-spot checks
+    if sets.is_empty() {
+        sets.push(vec![]);
+    }
+    // One coordinate per set, the first one with the untouched spots
+    let mut fixed = Some(fixed);
+    sets.into_iter().map(|set| OrbitCoord::new(kpuzzle, name, targets, turns, binomials, reach, set, fixed.take().unwrap_or_default())).collect()
+}
+
 impl OrbitCoord {
-    // Read one orbit's numbering from the targets (all of them must agree on ids, twists that count, and untouched spots)
-    fn new(kpuzzle: &KPuzzle, name: &KPuzzleOrbitName, targets: &[KPatternData], turns: &[Turn], binomials: &Binomials, reach: bool) -> Result<Self, String> {
+    // Read one set's numbering from the targets (all of them must agree on ids and twists that count; the set's spots are closed under the turns)
+    #[allow(clippy::too_many_arguments)]
+    fn new(kpuzzle: &KPuzzle, name: &KPuzzleOrbitName, targets: &[KPatternData], turns: &[Turn], binomials: &Binomials, reach: bool, spots: Vec<u8>, fixed: Vec<Fixed>) -> Result<Self, String> {
         let info = kpuzzle.lookup_orbit(name).ok_or("Unknown orbit")?;
         let num_pieces = info.num_pieces as usize;
         let num_orientations = info.num_orientations;
-        // A spot moves when some turn brings another piece there or twists it in a way that counts (center twists don't, so face turns leave centers fixed)
         let first = &targets[0][name];
         let first_mods = first.orientation_mod.clone().unwrap_or_else(|| vec![0; num_pieces]);
-        let moving: Vec<bool> = (0..num_pieces)
-            .map(|spot| {
-                let factor = twist_factor(first_mods[spot], num_orientations);
-                turns.iter().any(|turn| {
-                    let orbit = &turn.data[name];
-                    orbit.permutation[spot] as usize != spot || orbit.orientation_delta[spot] % factor != 0
-                })
-            })
-            .collect();
-        let spots: Vec<u8> = (0..num_pieces).filter(|&spot| moving[spot]).map(|spot| spot as u8).collect();
-        if spots.len() > MAX_SPOTS {
-            return Err(format!("Orbit {} has too many pieces for an exact table", name));
-        }
-        // Untouched spots: what the first target has there, and every other target must have the same (no turn can change it)
-        let fixed: Vec<Fixed> = (0..num_pieces)
-            .filter(|&spot| !moving[spot])
-            .map(|spot| {
-                let factor = twist_factor(first_mods[spot], num_orientations);
-                Fixed { spot, id: first.pieces[spot], factor, twist: first.orientation[spot] % factor }
-            })
-            .collect();
-        // Classes from the first target's moving spots: count per id, and whether its twist counts
+        // Classes from the first target's spots in this set: count per id, and whether its twist counts
         let mut classes: Vec<Class> = vec![];
         let mut twists = 1u8;
         for &spot in &spots {
@@ -216,13 +283,10 @@ impl OrbitCoord {
                 twists = factor;
             }
         }
-        // Every target must match the first one on untouched spots and on the class counts (offsets only move pieces around)
+        // Every target must match the first one on the class counts in this set (offsets only move pieces around)
         for target in &targets[1..] {
             let orbit = &target[name];
             let mods = orbit.orientation_mod.clone().unwrap_or_else(|| vec![0; num_pieces]);
-            if fixed.iter().any(|f| orbit.pieces[f.spot] != f.id || orbit.orientation[f.spot] % f.factor != f.twist) {
-                return Err("Targets differ on spots the moves never touch".to_owned());
-            }
             for class in &classes {
                 let count = spots.iter().filter(|&&spot| orbit.pieces[spot as usize] == class.id).count();
                 let twisted = spots.iter().any(|&spot| orbit.pieces[spot as usize] == class.id && twist_factor(mods[spot as usize], num_orientations) > 1);
@@ -256,16 +320,35 @@ impl OrbitCoord {
             twists = 1;
         }
         // Leave out the biggest class whose twist doesn't count: its spots are whatever the others leave free
-        let implicit = (0..classes.len()).filter(|&i| !classes[i].twisted).max_by_key(|&i| classes[i].count);
-        if let Some(biggest) = implicit {
-            classes.remove(biggest);
-        }
+        let left_out = (0..classes.len()).filter(|&i| !classes[i].twisted).max_by_key(|&i| classes[i].count);
+        let implicit = left_out.map(|biggest| classes.remove(biggest).id);
         // With no class left out every spot holds a tracked piece, so twists can be kept per spot when all of them count
         let per_spot = implicit.is_none() && classes.iter().all(|class| class.twisted);
-        // Value counts: one combination per class among the spots still free, and one twist digit per tracked twist
+        // Where each turn sends the piece on each spot of the set (turn data: new[i] = old[permutation[i]], twisted by orientation_delta[i]; the set is closed under the turns)
+        let m = spots.len();
+        let mut compact = vec![u8::MAX; num_pieces];
+        for (index, &spot) in spots.iter().enumerate() {
+            compact[spot as usize] = index as u8;
+        }
+        let mut dest = vec![0u8; turns.len() * m];
+        let mut add = vec![0u8; turns.len() * m];
+        for (t, turn) in turns.iter().enumerate() {
+            let orbit = &turn.data[name];
+            for &to in &spots {
+                let from = compact[orbit.permutation[to as usize] as usize] as usize;
+                dest[t * m + from] = compact[to as usize];
+                add[t * m + from] = orbit.orientation_delta[to as usize] % twists;
+            }
+        }
+        // Twist parity: per-spot twists whose sum no turn changes, and every target with the same sum, so the last spot's twist follows from the others (EO 2,048, CO 2,187)
+        let sum_of = |target: &KPatternData| (spots.iter().map(|&spot| (target[name].orientation[spot as usize] % twists) as u32).sum::<u32>() % twists as u32) as u8;
+        let keeps_sum = per_spot && twists > 1 && m > 0 && (0..turns.len()).all(|t| add[t * m..(t + 1) * m].iter().map(|&gain| gain as u32).sum::<u32>() % twists as u32 == 0);
+        let parity = keeps_sum && targets.iter().all(|target| sum_of(target) == sum_of(&targets[0]));
+        let twist_sum = if parity { sum_of(&targets[0]) } else { 0 };
+        // Value counts: one combination per class among the spots still free, and one twist digit per tracked twist (one less with twist parity)
         let mut positions: u64 = 1;
         let mut twist_space: u64 = 1;
-        let mut free = spots.len();
+        let mut free = m;
         for class in &mut classes {
             class.free = free;
             positions = positions.checked_mul(binomials.get(free, class.count)).ok_or("Too many states")?;
@@ -276,27 +359,33 @@ impl OrbitCoord {
                 }
             }
         }
+        if parity {
+            twist_space /= twists as u64;
+        }
         let size = positions.checked_mul(twist_space).ok_or("Too many states")?;
-        // Where each turn sends the piece on each moving spot (turn data: new[i] = old[permutation[i]], twisted by orientation_delta[i])
-        let mut compact = vec![u8::MAX; num_pieces];
-        for (index, &spot) in spots.iter().enumerate() {
-            compact[spot as usize] = index as u8;
-        }
-        let mut dest = vec![0u8; turns.len() * spots.len()];
-        let mut add = vec![0u8; turns.len() * spots.len()];
-        for (t, turn) in turns.iter().enumerate() {
-            let orbit = &turn.data[name];
-            for to in 0..num_pieces {
-                if !moving[to] {
-                    continue;
-                }
-                let from = compact[orbit.permutation[to] as usize] as usize;
-                dest[t * spots.len() + from] = compact[to];
-                add[t * spots.len() + from] = orbit.orientation_delta[to] % twists;
-            }
-        }
         let singles = (!per_spot || classes.is_empty()) && classes.iter().all(|class| class.count == 1);
-        let mut orbit = OrbitCoord { name: name.clone(), spots, fixed, classes, twists, per_spot, singles, positions, twist_space, size, dest, add, tables: None, to_dense: vec![], to_full: vec![], frozen, frozen_factor };
+        let mut orbit = OrbitCoord {
+            name: name.clone(),
+            spots,
+            fixed,
+            classes,
+            implicit,
+            twists,
+            per_spot,
+            parity,
+            twist_sum,
+            singles,
+            positions,
+            twist_space,
+            size,
+            dest,
+            add,
+            tables: None,
+            to_dense: vec![],
+            to_full: vec![],
+            frozen,
+            frozen_factor,
+        };
         // Sizing only (planning sub-tables) skips this walk: the full count is an upper bound
         if reach {
             orbit.keep_reachable(targets, turns.len(), binomials);
@@ -478,17 +567,31 @@ impl OrbitCoord {
         }
     }
 
+    // Per-spot twist digits written into the value (the last spot's is left out with twist parity)
+    #[inline]
+    fn spot_digits(&self) -> usize {
+        self.spots.len() - self.parity as usize
+    }
+
+    // Twist parity: the last spot's twist, which brings the set's twist sum to twist_sum
+    #[inline]
+    fn last_twist(&self, digits: &[u8]) -> u8 {
+        let base = self.twists as u32;
+        let sum: u32 = digits.iter().map(|&digit| digit as u32).sum::<u32>() % base;
+        ((self.twist_sum as u32 + base - sum) % base) as u8
+    }
+
     // Twists value: one digit per spot (per_spot) or per twisted piece in piece order
     fn rank_twists(&self, spots: &[u8], twists: &[u8]) -> u64 {
         let base = self.twists as u64;
         let mut index: u64 = 0;
         if self.per_spot {
-            // Twist of the piece on each spot, spot by spot
+            // Twist of the piece on each spot, spot by spot (with twist parity, the last spot's is left out)
             let mut at = [0u8; MAX_SPOTS];
             for u in 0..self.unit_count() {
                 at[spots[u] as usize] = twists[u];
             }
-            for &twist in &at[..self.spots.len()] {
+            for &twist in &at[..self.spot_digits()] {
                 index = index * base + twist as u64;
             }
         } else {
@@ -510,11 +613,15 @@ impl OrbitCoord {
     fn unrank_twists(&self, mut index: u64, spots: &[u8], twists: &mut [u8]) {
         let base = self.twists as u64;
         if self.per_spot {
-            // Digits per spot, last spot first, then handed to the piece on each spot
+            // Digits per spot, last spot first (the left-out one follows from the others), then handed to the piece on each spot
             let mut at = [0u8; MAX_SPOTS];
-            for spot in (0..self.spots.len()).rev() {
+            let digits = self.spot_digits();
+            for spot in (0..digits).rev() {
                 at[spot] = (index % base) as u8;
                 index /= base;
+            }
+            if self.parity {
+                at[digits] = self.last_twist(&at[..digits]);
             }
             for u in 0..self.unit_count() {
                 twists[u] = at[spots[u] as usize];
@@ -677,22 +784,26 @@ impl OrbitCoord {
                 tables.row[turn * positions + position] = id;
             }
         }
-        // Per-spot twists: each turn moves the digits to their new spots and adds each spot's twist
+        // Per-spot twists: each turn moves the digits to their new spots and adds each spot's twist (with twist parity, the left-out digit comes from the others)
         if self.per_spot && space > 1 {
             tables.twist_next = vec![0; turn_count * space];
+            let digits = self.spot_digits();
             for twists in 0..space {
-                let mut at = [0usize; MAX_SPOTS];
+                let mut at = [0u8; MAX_SPOTS];
                 let mut rest = twists;
-                for spot in (0..m).rev() {
-                    at[spot] = rest % base;
+                for spot in (0..digits).rev() {
+                    at[spot] = (rest % base) as u8;
                     rest /= base;
+                }
+                if self.parity {
+                    at[digits] = self.last_twist(&at[..digits]);
                 }
                 for turn in 0..turn_count {
                     let mut after = [0usize; MAX_SPOTS];
                     for spot in 0..m {
-                        after[self.dest[turn * m + spot] as usize] = (at[spot] + self.add[turn * m + spot] as usize) % base;
+                        after[self.dest[turn * m + spot] as usize] = (at[spot] as usize + self.add[turn * m + spot] as usize) % base;
                     }
-                    tables.twist_next[turn * space + twists] = after[..m].iter().fold(0usize, |value, &digit| value * base + digit) as u32;
+                    tables.twist_next[turn * space + twists] = after[..digits].iter().fold(0usize, |value, &digit| value * base + digit) as u32;
                 }
             }
         }
@@ -851,12 +962,13 @@ impl Part {
                     return None;
                 }
             }
-            // Each class's pieces in spot order, with their twists
+            // Each class's pieces in spot order, with their twists (exactly its count of them)
             let mut u = self.offsets[o];
             for class in &orbit.classes {
+                let end = u + class.count;
                 for (index, &spot) in orbit.spots.iter().enumerate() {
                     if data.pieces[spot as usize] == class.id {
-                        if u == self.offsets[o + 1] {
+                        if u == end {
                             return None;
                         }
                         units.spot[u] = index as u8;
@@ -864,8 +976,16 @@ impl Part {
                         u += 1;
                     }
                 }
+                if u != end {
+                    return None;
+                }
             }
-            if u != self.offsets[o + 1] {
+            // Every other spot holds the left-out class (a piece of another set, or an id the targets never have, can't be reached)
+            if orbit.spots.iter().any(|&spot| Some(data.pieces[spot as usize]) != orbit.implicit && !orbit.classes.iter().any(|class| class.id == data.pieces[spot as usize])) {
+                return None;
+            }
+            // Twist parity: a twist sum no turn can change must already be right
+            if orbit.parity && orbit.last_twist(&units.twist[self.offsets[o]..u]) != 0 {
                 return None;
             }
             // A layout the turns can't reach (e.g. centers no allowed move brings home)
@@ -992,7 +1112,7 @@ impl Coords {
         let binomials = Binomials::new();
         let mut orbits = vec![];
         for info in kpuzzle.orbit_info_iter() {
-            orbits.push(OrbitCoord::new(kpuzzle, &info.name, targets, &turns, &binomials, true)?);
+            orbits.extend(orbit_coords(kpuzzle, &info.name, targets, &turns, &binomials, true)?);
         }
         // Smallest orbits go in the inner part while it stays under the limit, the rest make the outer part
         orbits.sort_by_key(|orbit| orbit.size);
@@ -1036,12 +1156,14 @@ impl Coords {
     }
 }
 
-// Table size these targets would need (an upper bound: layouts the turns can't reach still count), without building anything
+// Table size these targets would need (exact per set of spots, except that layouts the turns can't reach still count), without building anything
 pub fn estimate_size(kpuzzle: &KPuzzle, targets: &[KPatternData], turns: &[Turn]) -> Result<u64, String> {
     let binomials = Binomials::shared();
     let mut size: u64 = 1;
     for info in kpuzzle.orbit_info_iter() {
-        size = size.saturating_mul(OrbitCoord::new(kpuzzle, &info.name, targets, turns, binomials, false)?.size);
+        for orbit in orbit_coords(kpuzzle, &info.name, targets, turns, binomials, false)? {
+            size = size.saturating_mul(orbit.size);
+        }
     }
     Ok(size)
 }

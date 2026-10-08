@@ -1,5 +1,6 @@
 // Goals too big for one exact table: split into sub-tables that each fit (the goal with some pieces, or their twists, left out), then IDA* guided by the largest of their distances
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -9,6 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
 use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
+use crate::symmetry::{Shape, Symmetry};
 use crate::table::{DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
@@ -50,11 +52,12 @@ impl Relabel {
         let mut orbits = vec![];
         for (o, info) in kpuzzle.orbit_info_iter().enumerate() {
             let first = &targets[0][&info.name];
-            // Ids on spots some turn moves (pieces on untouched spots are always checked, so they keep their ids)
-            let moving = full.orbits().find(|orbit| orbit.name == info.name).map_or(&[][..], |orbit| &orbit.spots[..]);
+            // Ids on spots some turn moves, in any of the orbit's sets (pieces on untouched spots are always checked, so they keep their ids)
             let mut on_moving = [false; 256];
-            for &spot in moving {
-                on_moving[first.pieces[spot as usize] as usize] = true;
+            for orbit in full.orbits().filter(|orbit| orbit.name == info.name) {
+                for &spot in &orbit.spots {
+                    on_moving[first.pieces[spot as usize] as usize] = true;
+                }
             }
             // Temporary ids: kept or untouched-only ids stay, other ids become REST
             let mut temporary = [UNKNOWN; 256];
@@ -227,10 +230,23 @@ fn path_text(full: &Coords, path: &[usize]) -> String {
     path.iter().map(|&turn| full.turns[turn].name.clone()).collect::<Vec<_>>().join(" ")
 }
 
+// One table lookup of the IDA*: a table, and for a table that reads a rotated state, the table's turn for each allowed turn (its rotated copy)
+pub(crate) struct Slot {
+    pub table: Rc<TableCore>,
+    pub turns: Option<Vec<u8>>,
+}
+
+impl Slot {
+    // A table read as it is (each turn is itself)
+    pub(crate) fn plain(table: &Rc<TableCore>) -> Slot {
+        Slot { table: Rc::clone(table), turns: None }
+    }
+}
+
 // IDA* over these tables from their start states (`whole` = the start in the whole goal's numbering), for answers shorter than `limit`:
 // the first shortest answer, or with `list` every answer, shortest first, up to that many (an answer never passes through the goal on its way);
 // gives the answers as turn lists (or NO_SOLUTION / NODE_LIMIT) and the nodes visited
-pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, limit: u64, max_nodes: u64, list: Option<usize>) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
+pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, limit: u64, max_nodes: u64, list: Option<usize>) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
     // Never deeper than MAX_LENGTH (the search state has room for that many moves)
     let limit = limit.min(MAX_LENGTH as u64 + 1);
     // Search state: room for every depth up to MAX_LENGTH
@@ -251,6 +267,7 @@ pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (
         moved: Units::new(),
         children: vec![0; depths * turn_count],
         looked_up: vec![0; depths * count * turn_count],
+        rotated: vec![0; turn_count],
         indices: vec![0; turn_count],
         distances: vec![0; turn_count],
         order: (0..count).collect(),
@@ -268,7 +285,7 @@ pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (
     // Each table's start state; the largest distance is the first bound
     let mut bound = 0;
     for (t, &(outer, inner)) in starts.iter().enumerate() {
-        let distance = tables[t].distance(&outer, inner);
+        let distance = tables[t].table.distance(&outer, inner);
         if distance == UNSEEN {
             return (Err(NO_SOLUTION), 0);
         }
@@ -314,6 +331,10 @@ pub struct SplitSearch {
     // Each target's tracked pieces (outer, inner)
     goals: HashSet<(Units, Units)>,
     subs: Vec<Sub>,
+    // Lookups per node: (sub-table, rotation), a sub-table read on the state as it is (rotation 0) or on a rotated copy (a planned table that is a rotated copy of another)
+    slots: Vec<(usize, usize)>,
+    // Identity goals (one target, each piece its own id): the rotations that keep the moves
+    symmetry: Option<Symmetry>,
     // Move pruning: may a turn of group b follow one of group a ([a * groups + b])
     follow: Vec<bool>,
     groups: usize,
@@ -340,11 +361,16 @@ impl SplitSearch {
         let goals = closed.iter().map(|target| full.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<HashSet<_>, _>>()?;
         // Sub-tables relabel the targets as sent (a sub-goal closed under the moves is the closed goal relabeled, so each table closes its own)
         let targets = sent;
-        // The goal's items, orbit by orbit in the puzzle's order (classes in spot order)
-        let mut items = vec![];
+        // The goal's items, orbit by orbit in the puzzle's order (an orbit's sets by first spot, classes in spot order; a class in several sets is one item)
+        let mut items: Vec<Item> = vec![];
         for (o, info) in kpuzzle.orbit_info_iter().enumerate() {
-            if let Some(orbit) = full.orbits().find(|orbit| orbit.name == info.name) {
-                items.extend(orbit.classes.iter().map(|class| Item { orbit: o, id: class.id, twisted: class.twisted }));
+            let mut sets: Vec<_> = full.orbits().filter(|orbit| orbit.name == info.name).collect();
+            sets.sort_by_key(|orbit| orbit.spots.first().copied());
+            for class in sets.iter().flat_map(|orbit| orbit.classes.iter()) {
+                match items.iter_mut().find(|item| item.orbit == o && item.id == class.id) {
+                    Some(item) => item.twisted |= class.twisted,
+                    None => items.push(Item { orbit: o, id: class.id, twisted: class.twisted }),
+                }
             }
         }
         if items.is_empty() {
@@ -386,14 +412,42 @@ impl SplitSearch {
                 }
             }
         }
+        // Identity goals (one target, each piece its own id): the rotations that keep the moves, and each table's pieces as (orbit, home spot, twist counted);
+        // a table holding every item of a spot set also knows where the set's left-out piece is, so that piece counts as held too (DR finish: all 12 edges)
+        let symmetry = Symmetry::new(&kpuzzle, &closed, &full.turns);
+        let orbit_index = |name: &KPuzzleOrbitName| kpuzzle.orbit_info_iter().position(|info| info.name == *name).unwrap_or(0);
+        let shape_of = |kept: &Kept, symmetry: &Symmetry| -> Shape {
+            let mut shape: Shape = kept.iter().map(|&(item, twist)| (items[item].orbit as u8, symmetry.home(items[item].orbit, items[item].id), twist)).collect();
+            for set in full.orbits() {
+                let o = orbit_index(&set.name);
+                let holds = |id: u8| shape.iter().any(|&(orbit, home, _)| orbit as usize == o && home == symmetry.home(o, id));
+                if let Some(left_out) = set.implicit.filter(|_| set.classes.iter().all(|class| holds(class.id))) {
+                    shape.push((o as u8, symmetry.home(o, left_out), false));
+                }
+            }
+            shape.sort_unstable();
+            shape
+        };
         let mut subs: Vec<Sub> = vec![];
+        let mut shapes: Vec<Shape> = vec![];
+        let mut slots: Vec<(usize, usize)> = vec![];
         for kept in plans {
+            // A rotated copy of a table already planned (whole cube: "4 U edges + UFR" and "+ UBR") reads that table on the rotated state instead of being built
+            if let Some(symmetry) = &symmetry {
+                let shape = shape_of(&kept, symmetry);
+                if let Some(found) = (0..subs.len()).find_map(|s| (1..symmetry.rotations.len()).find(|&r| symmetry.turned(&shapes[s], r) == shape).map(|r| (s, r))) {
+                    slots.push(found);
+                    continue;
+                }
+            }
             // This sub-table's targets, its size, and its cache key (with the goal's moves when they add targets to this sub-goal)
             let relabel = Relabel::new(&kpuzzle, &targets, &full, &items, &kept);
             let relaxed: Vec<KPatternData> = targets.iter().map(|target| relabel.apply(target)).collect();
             let states = estimate_size(&kpuzzle, &relaxed, &full.turns)?;
             let targets = table_targets(&kpuzzle, &relaxed, &free, &full.turns, |target| pattern_json(&kpuzzle, target))?;
             if !subs.iter().any(|sub| sub.targets == targets) {
+                shapes.push(symmetry.as_ref().map_or(vec![], |symmetry| shape_of(&kept, symmetry)));
+                slots.push((subs.len(), 0));
                 subs.push(Sub { relabel, targets, states, table: None });
             }
         }
@@ -402,7 +456,7 @@ impl SplitSearch {
         }
         // Move pruning: never two turns of one move in a row, and of two moves that commute only the lower-numbered one first
         let (follow, groups) = move_pruning(&kpuzzle, &full.turns);
-        Ok(SplitSearch { kpuzzle, full, goals, subs, follow, groups, nodes: 0.0 })
+        Ok(SplitSearch { kpuzzle, full, goals, subs, slots, symmetry, follow, groups, nodes: 0.0 })
     }
 
     // Number of sub-tables
@@ -430,7 +484,7 @@ impl SplitSearch {
         self.nodes
     }
 
-    // Largest sub-table distance from a start pattern: a sure lower bound on its answer, found without searching (Infinity when some sub-table can't reach a target)
+    // Largest lookup distance from a start pattern: a sure lower bound on its answer, found without searching (Infinity when some sub-table can't reach a target)
     pub fn measure(&self, start_json: &str) -> Result<f64, String> {
         let start = pattern_data(&self.kpuzzle, start_json)?;
         // An untouched spot that's wrong can't be fixed by any turn
@@ -438,9 +492,10 @@ impl SplitSearch {
             return Ok(f64::INFINITY);
         }
         let mut bound = 0;
-        for sub in &self.subs {
+        for &(s, r) in &self.slots {
+            let sub = &self.subs[s];
             let table = sub.table.as_ref().ok_or("A sub-table isn't attached")?;
-            match table.read(&sub.relabel.apply(&start)).map(|(outer, inner)| table.distance(&outer, inner)) {
+            match table.read(&sub.relabel.apply(&self.rotated(&start, r))).map(|(outer, inner)| table.distance(&outer, inner)) {
                 Some(distance) if distance != UNSEEN => bound = bound.max(distance),
                 _ => return Ok(f64::INFINITY),
             }
@@ -471,21 +526,37 @@ impl SplitSearch {
         self.nodes = 0.0;
         let start = pattern_data(&self.kpuzzle, start_json)?;
         let (limit, max_nodes, max_answers) = read_options(options_json)?;
-        let tables: Vec<Rc<TableCore>> = self.subs.iter().map(|sub| sub.table.clone().ok_or("A sub-table isn't attached")).collect::<Result<_, _>>()?;
-        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each sub-table's start state
+        let tables: Vec<Slot> = self
+            .slots
+            .iter()
+            .map(|&(s, r)| {
+                let table = self.subs[s].table.clone().ok_or("A sub-table isn't attached")?;
+                let turns = self.symmetry.as_ref().filter(|_| r > 0).map(|symmetry| symmetry.rotations[r].turns.clone());
+                Ok(Slot { table, turns })
+            })
+            .collect::<Result<_, String>>()?;
+        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each lookup's start state (rotated for rotated lookups)
         let whole = self.full.read(&start).ok_or(NO_SOLUTION)?;
-        let starts = self.subs.iter().zip(&tables).map(|(sub, table)| table.read(&sub.relabel.apply(&start))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
+        let starts = self.slots.iter().zip(&tables).map(|(&(s, r), slot)| slot.table.read(&self.subs[s].relabel.apply(&self.rotated(&start, r)))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
         // Deepen, checking answers on the whole goal
         let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
         let (answers, nodes) = deepen(&tables, &starts, whole, &check, limit, max_nodes, list.then_some(max_answers));
         self.nodes = nodes as f64;
         answers.map_err(|error| error.to_owned())
     }
+
+    // A pattern as a lookup with this rotation reads it (rotation 0: as it is)
+    fn rotated<'p>(&self, pattern: &'p KPatternData, r: usize) -> Cow<'p, KPatternData> {
+        match &self.symmetry {
+            Some(symmetry) if r > 0 => Cow::Owned(symmetry.rotate(pattern, r)),
+            _ => Cow::Borrowed(pattern),
+        }
+    }
 }
 
 // One IDA* run: sub-table states per depth (depth * tables + table) with their distance (or a bound above it), the moves so far, and whether the bound cut anything
 struct Ida<'a> {
-    tables: &'a [Rc<TableCore>],
+    tables: &'a [Slot],
     full: &'a Coords,
     goals: &'a HashSet<(Units, Units)>,
     whole: (Units, Units),
@@ -501,7 +572,8 @@ struct Ida<'a> {
     // Children still in at each depth (their turns, in turn order: depth * turns + k), and each looked-up child distance (depth, table, turn)
     children: Vec<u8>,
     looked_up: Vec<u8>,
-    // One node's child table indices and their distances (filled and read before going deeper)
+    // One node's child turns as a rotated lookup makes them, child table indices and their distances (filled and read before going deeper)
+    rotated: Vec<u8>,
     indices: Vec<u64>,
     distances: Vec<u8>,
     // Sub-tables in the order they are checked (the ones that ruled children out at the last node go first), which ones did, and room to reorder them
@@ -564,10 +636,20 @@ impl Ida<'_> {
             }
             self.ensure(depth, t);
             let tables = self.tables;
-            let table = &*tables[t];
+            let table = &*tables[t].table;
+            // The children's turns as this table makes them (a rotated lookup turns them first)
+            let own = match &tables[t].turns {
+                None => &self.children[first..first + alive],
+                Some(map) => {
+                    for k in 0..alive {
+                        self.rotated[k] = map[self.children[first + k] as usize];
+                    }
+                    &self.rotated[..alive]
+                }
+            };
             // Each child's table index (ranked from this state, the child's pieces aren't kept), then all their distances (independent memory reads, so they overlap)
             for k in 0..alive {
-                self.indices[k] = table.child_index(&self.outer[here + t], self.inner[here + t], self.children[first + k] as usize, &mut self.moved);
+                self.indices[k] = table.child_index(&self.outer[here + t], self.inner[here + t], own[k] as usize, &mut self.moved);
             }
             for k in 0..alive {
                 self.distances[k] = table.distance_at(self.indices[k]);
@@ -619,7 +701,7 @@ impl Ida<'_> {
                 continue;
             }
             self.ensure(depth, t);
-            if self.tables[t].distance(&self.outer[here + t], self.inner[here + t]) != 0 {
+            if self.tables[t].table.distance(&self.outer[here + t], self.inner[here + t]) != 0 {
                 return false;
             }
         }
@@ -635,7 +717,9 @@ impl Ida<'_> {
         }
         for d in from..depth {
             let (before, after) = self.outer.split_at_mut((d + 1) * count + t);
-            self.inner[(d + 1) * count + t] = self.tables[t].step(&before[d * count + t], self.inner[d * count + t], self.path[d], &mut after[0]);
+            let slot = &self.tables[t];
+            let turn = slot.turns.as_ref().map_or(self.path[d], |map| map[self.path[d]] as usize);
+            self.inner[(d + 1) * count + t] = slot.table.step(&before[d * count + t], self.inner[d * count + t], turn, &mut after[0]);
             self.current[(d + 1) * count + t] = true;
         }
     }

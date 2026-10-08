@@ -10,6 +10,8 @@ mod split;
 pub use split::SplitSearch;
 // Goals that also count when some moves alone could finish them (targets closed under those moves)
 mod solvable;
+// Goals with every piece home: rotated copies of a sub-table read through one table
+mod symmetry;
 
 use cubing::alg::Move;
 use cubing::kpuzzle::{KPattern, KPuzzle};

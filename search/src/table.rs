@@ -9,10 +9,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, pattern_data, Coords, Units};
 use crate::solvable::closed_targets;
-use crate::split::{answer_list, deepen, move_pruning, read_options, GoalCheck, NO_SOLUTION};
+use crate::split::{answer_list, deepen, move_pruning, read_options, GoalCheck, Slot, NO_SOLUTION};
 
 // Version of a table's saved bytes: bump it whenever coords.rs numbers states differently (or the layout below changes), so tables saved by older code are rebuilt, never misread
-pub const TABLE_FORMAT: u32 = 1;
+pub const TABLE_FORMAT: u32 = 2;
 // First bytes of a saved table, to recognise one
 const MAGIC: &[u8; 4] = b"PZT\0";
 // Saved table header: magic, format (u32), states (u64), depth (u8); the 4-bit distances follow
@@ -176,7 +176,7 @@ impl DistanceTable {
         let inner = core.coords.inner.rank(&whole.1, &core.coords.binomials);
         // Deepen with this one table, checking answers on its own numbering
         let check = GoalCheck { full: &core.coords, goals: &core.goals, follow: &core.follow, groups: core.groups };
-        let (answers, _) = deepen(&[Rc::clone(core)], &[(whole.0, inner)], whole, &check, limit, u64::MAX, Some(max_answers));
+        let (answers, _) = deepen(&[Slot::plain(core)], &[(whole.0, inner)], whole, &check, limit, u64::MAX, Some(max_answers));
         Ok(answer_list(&core.coords, &answers?))
     }
 
