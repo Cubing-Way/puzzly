@@ -12,8 +12,10 @@ import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 import { KPattern, type KPuzzle } from "cubing/kpuzzle";
 
 // What a step checks on a goal piece: solve = home and turned right, place = home with any turn,
-// orientN = turned right anywhere on group N's spots, swapN = anywhere on group N's spots with any turn
-export type Role = "solve" | "place" | `orient${number}` | `swap${number}`;
+// orientN = turned right anywhere on group N's spots, swapN = anywhere on group N's spots with any turn,
+// relativeN = solved relative to the other pieces of relative group N, wherever the group sits (the group turned as a whole),
+// free = its spot may change (in a step that keeps every other piece untouched; anywhere else it's the same as not listing it)
+export type Role = "solve" | "place" | "free" | `orient${number}` | `swap${number}` | `relative${number}`;
 
 // Goal pieces by type and piece number, each with its role, e.g. { EDGES: { 4: "solve", 0: "orient1" } }
 export type Goal = Record<string, Record<number, Role>>;
@@ -45,6 +47,15 @@ export interface StepOptions {
   keep?: Goal;
   // Pieces earlier steps already did, named in the grip the step starts in (with or without keep), so no grip turn can pass them off as this step's pieces (default: keep)
   earlier?: Goal;
+  // Every piece the goal doesn't list stays exactly as it is now (same spot, same twist): the goal's pieces go home, the pieces they push out fill the spots they leave,
+  // and :x spots may take any piece; for BLD steps and finding algs (default: false, unlisted pieces are ignored)
+  untouched?: boolean;
+  // BLD: the buffer piece ("UF", "UFR"…): the step's goal is the next targets of the buffer's cycle (its pieces text stays empty), everything else untouched
+  buffer?: string;
+  // BLD: targets per step, e.g. 2 for a 3-cycle (default 2); a cycle break counts as a target
+  targetsPerStep?: number;
+  // BLD: pieces that may also swap when the targets left can't be done alone (an odd number of them), e.g. "UFR UBR" for edges (default: none)
+  parity?: string;
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
@@ -65,21 +76,27 @@ export interface StepResult {
   settled: string; // the goal pieces it left for good, for later steps to keep: pieces, minus those the solvable-with moves would still move
   alternative: number; // which of the step's alternatives won (0 = the first, or the only one)
   searches: number; // searches actually run (combos asking for the same thing, or whose measured distance can't beat the best, are skipped)
+  changed?: string; // steps that keep every other piece untouched: the spots it may change (pieces text, named in the grip it ends in); every other piece stays as it was
 }
 
 // One step of a method, as plain data (what users edit and save as JSON)
 export interface StepConfig {
   name: string;
-  pieces: string; // goal text, e.g. "DFR FR" or "UF:o UR:o…"; alternatives split by " | " (any one counts, e.g. "DF DR DB DL | DF DR DB DL DFR FR")
+  pieces: string; // goal text, e.g. "DFR FR", "UF:o UR:o…" or "DFR:r FR:r" (that pair joined anywhere); alternatives split by " | " (any one counts, e.g. "DF DR DB DL | DF DR DB DL DFR FR")
   keep?: boolean; // also keep every earlier step's pieces solved
   grips: { bottom: string[]; anyFront: boolean }; // faces that may go on the bottom, and whether y turns pick the front too
   offsets: string; // offsets text, e.g. "D D2 D'" ("" = none)
   solvableWith?: string; // moves that may finish the goal later, e.g. "R U" ("" = none: the goal itself)
+  untouched?: boolean; // every piece the goal doesn't list stays as it is now (always on with a buffer)
+  buffer?: string; // BLD buffer piece, e.g. "UF" ("" = none): the step solves the next targets of its cycle
+  targetsPerStep?: number; // BLD: targets per step (2 = 3-cycles)
+  parity?: string; // BLD: pieces that may swap too when the targets left are odd, e.g. "UFR UBR" ("" = none)
   moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
   lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way), fewest moves in total wins (0 = none, the step's own shortest)
   extraMoves?: number; // with lookahead: candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
+  repeat?: boolean; // run the step again and again until it has nothing left to do (e.g. one BLD 3-cycle per round, or "the easiest pair" until F2L is done)
 }
 
 // A whole method: steps run in order, each from where the last one left the cube
@@ -115,6 +132,7 @@ export interface MethodResult {
 export interface MethodOptions {
   done?: string; // moves already done after the scramble, before the first step
   onStep?: (step: MethodStepResult, index: number) => void; // hears about each step as it finishes
+  onStart?: (index: number, round: number) => void; // hears when a step starts (round 1, 2… for a repeated step)
   onProgress?: (progress: TableProgress) => void; // hears when the search worker builds or loads a table
 }
 
@@ -151,6 +169,29 @@ const CENTERS_OUT =
 const NOTHING_NEW =
   "In every allowed grip, this step's pieces are ones earlier steps already did, so a grip turn alone would count: allow other bottom faces, or check the step's pieces.";
 
+// Message when a step that keeps every other piece untouched also has offsets or solvable-with moves
+const UNTOUCHED_MIX = "A step that keeps every other piece untouched can't have offsets or solvable-with moves.";
+
+// Message when an untouched step's pieces use a role other than solved, :p or :x
+const UNTOUCHED_ROLES = "With every other piece untouched, list pieces as solved, :p (in place, any twist) or :x (its spot may change).";
+
+// Message when an untouched goal can't be reached with everything else kept (e.g. a lone swap or a lone twist)
+const UNTOUCHED_OUT =
+  "With every other piece untouched, the allowed moves can't do this (a lone swap or a lone twist): add pieces, or mark spots that may change with :x.";
+
+// Message when a BLD step's targets left are odd and it has no parity pieces
+const PARITY_NEEDED =
+  "The targets left are odd (a lone swap), which no moves can do with everything else untouched: give the step parity pieces, e.g. UFR UBR (two corners a parity alg swaps too).";
+
+// Most states of a whole-orbit sub-table that BLD steps ask the worker for (all 8 corners = 88M states, ~44 MB, a few seconds to build once)
+const ORBIT_TABLE_STATES = 100_000_000;
+
+// Most ways an untouched step's spots that may change can be filled (each one is searched as its own goal)
+const MAX_UNTOUCHED_TARGETS = 5_000;
+
+// Most rounds of a repeated method step (a BLD solve needs about 6–10 per piece type)
+const MAX_REPEATS = 60;
+
 // Sort a name's letters so "UR", "RU" and "ur" all mean the same piece
 export function normalizeName(name: string): string {
   return name.toUpperCase().split("").sort().join("");
@@ -161,29 +202,39 @@ export function joinMoves(...parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
-// Read a role suffix: "" = solve, ":p" = place, ":o" / ":o2"… = oriented in group 1 / 2…, ":s" / ":s2"… = swap group (null if it isn't one)
+// Group role for each suffix letter: oriented, swap group, relative group
+const GROUP_ROLES: Record<string, string> = { o: "orient", s: "swap", r: "relative" };
+
+// Read a role suffix: "" = solve, ":p" = place, ":x" = free, ":o" / ":o2"… = oriented in group 1 / 2…, ":s" / ":s2"… = swap group, ":r" / ":r2"… = relative group (null if it isn't one)
 export function roleFromSuffix(suffix: string): Role | null {
   const tag = suffix.toLowerCase();
   if (tag === "") return "solve";
   if (tag === ":p") return "place";
+  if (tag === ":x") return "free";
   // Group roles: letter, then an optional group number (1 when left out)
-  const group = /^:([os])([1-9]\d*)?$/.exec(tag);
+  const group = /^:([osr])([1-9]\d*)?$/.exec(tag);
   if (!group) return null;
-  return `${group[1] === "o" ? "orient" : "swap"}${Number(group[2] ?? 1)}` as Role;
+  return `${GROUP_ROLES[group[1]]}${Number(group[2] ?? 1)}` as Role;
 }
 
-// Suffix that writes a role in goal text ("" for solve, ":o" for group 1, ":o2" for group 2…)
+// Suffix that writes a role in goal text ("" for solve, ":o" for group 1, ":o2" for group 2, ":r" for relative group 1…)
 export function roleSuffix(role: Role): string {
   if (role === "solve") return "";
   if (role === "place") return ":p";
+  if (role === "free") return ":x";
   // Group roles: first letter, plus the group number unless it's 1
   const group = role.replace(/^\D+/, "");
   return `:${role[0]}${group === "1" ? "" : group}`;
 }
 
-// True for roles whose pieces share one id per group (orient and swap groups)
+// True for roles whose pieces share one id per group (orient and swap groups; relative pieces keep their own ids)
 function isGroupRole(role: Role): boolean {
   return role.startsWith("orient") || role.startsWith("swap");
+}
+
+// Group number of a relative role (0 for any other role)
+function relativeGroup(role: Role): number {
+  return role.startsWith("relative") ? Number(role.slice("relative".length)) : 0;
 }
 
 // Read goal text like "DF DR UF:o FR:o2 UFR:p L" into pieces with roles; throws a clear error on a typo
@@ -202,7 +253,7 @@ export function parseGoalText(text: string): GoalPiece[] {
       const index = list ? list.findIndex((n) => normalizeName(n) === normalizeName(name)) : -1;
       // Stop with a clear message on a typo
       if (!orbit || index === -1) throw new Error(`Unknown piece: "${name}"`);
-      if (!role) throw new Error(`Unknown role in "${word}" (use :o, :o2…, :s, :s2… or :p)`);
+      if (!role) throw new Error(`Unknown role in "${word}" (use :o, :o2…, :s, :s2…, :r, :r2…, :p or :x)`);
       return { orbit, index, role };
     });
 }
@@ -252,27 +303,48 @@ export function goalToText(goal: Goal): string {
     .join(" ");
 }
 
-// True when a kept role already asks at least as much as a step's role (solved covers every role, in place covers swap groups)
+// True when a kept role already asks at least as much as a step's role (solved covers every role, in place covers swap groups, any relative group covers a relative role)
 function covers(kept: Role | undefined, role: Role): boolean {
-  return kept === role || kept === "solve" || (kept === "place" && role.startsWith("swap"));
+  return kept === role || kept === "solve" || (kept === "place" && role.startsWith("swap")) || (relativeGroup(role) > 0 && relativeGroup(kept ?? "solve") > 0);
 }
 
 
-// Combine two goals into a new one; `over`'s role wins for a piece in both
+// Combine two goals into a new one; `over`'s role wins for a piece in both. Relative groups stay apart: `base`'s are renumbered past `over`'s
+// (a pair joined anywhere earlier and one joined now each keep their own group, rather than having to sit together)
 export function mergeGoals(base: Goal, over: Goal): Goal {
+  // Highest relative group number in `over` (0 = none)
+  let shift = 0;
+  for (const roles of Object.values(over)) for (const role of Object.values(roles)) shift = Math.max(shift, relativeGroup(role));
   const merged: Goal = {};
-  for (const goal of [base, over]) for (const [orbit, roles] of Object.entries(goal)) Object.assign((merged[orbit] ??= {}), roles);
+  // Base roles first (its relative groups moved up past over's), then over's on top
+  for (const [orbit, roles] of Object.entries(base)) {
+    const copy: Record<number, Role> = (merged[orbit] = { ...roles });
+    if (shift) for (const [piece, role] of Object.entries(roles)) if (relativeGroup(role)) copy[Number(piece)] = `relative${relativeGroup(role) + shift}`;
+  }
+  for (const [orbit, roles] of Object.entries(over)) Object.assign((merged[orbit] ??= {}), roles);
   return merged;
 }
 
-// Hide what the goal doesn't check: each group (and the ignored pieces) shares one id, place / swap / ignored pieces may be turned any way
+// The goal without its :x pieces (outside untouched steps, a spot that may change is the same as a piece the goal doesn't list)
+export function dropFree(goal: Goal): Goal {
+  const kept: Goal = {};
+  for (const [orbit, roles] of Object.entries(goal)) {
+    kept[orbit] = Object.fromEntries(Object.entries(roles).filter(([, role]) => role !== "free"));
+  }
+  return kept;
+}
+
+// Hide what the goal doesn't check: each orient / swap group (and the ignored pieces) shares one id, place / swap / ignored pieces may be turned any way
+// (relative pieces stay as they are, like solved ones: goalTargets puts their groups where they may sit)
 export function maskPattern(pattern: KPattern, goal: Goal): KPattern {
   // Copy the data so the original pattern isn't changed
   const data = structuredClone(pattern.patternData);
+  // :x pieces count as ignored
+  const listed = dropFree(goal);
   // Go through each piece type: EDGES, CORNERS, CENTERS
   for (const [orbitName, orbit] of Object.entries(data)) {
     // Role of each goal piece of this type (not listed = ignored)
-    const roles = goal[orbitName] ?? {};
+    const roles = listed[orbitName] ?? {};
     // Shared id per group and for ignored pieces: the first piece number with that role,
     // picked from the goal (not from where pieces sit) so start and target agree, and never the same for two groups
     const sharedIds = new Map<string, number>();
@@ -466,6 +538,155 @@ function maskedTarget(goal: Goal, offset = ""): KPattern {
   return maskPattern(kpuzzle.defaultPattern().applyAlg(offset), goal);
 }
 
+// Most targets a goal's relative groups may give per offset (every mix of the groups' placements; the worker gets them all in one request)
+const MAX_RELATIVE_TARGETS = 10_000;
+
+// One relative group's pieces moved as a whole: each piece's type, number, and the spot and twist it lands on
+type Placement = { orbit: string; piece: number; spot: number; twist: number }[];
+
+// Every order of some items, where items of one class are interchangeable (each distinct order of classes once)
+function arrangements<T>(items: T[], classOf: (item: T) => string): T[][] {
+  if (items.length <= 1) return [items];
+  const orders: T[][] = [];
+  const tried = new Set<string>();
+  items.forEach((item, index) => {
+    // Each class once in front, followed by every order of the rest
+    if (tried.has(classOf(item))) return;
+    tried.add(classOf(item));
+    for (const rest of arrangements(items.filter((_, other) => other !== index), classOf)) orders.push([item, ...rest]);
+  });
+  return orders;
+}
+
+// The solved cube with some goal pieces moved (placement): the pieces they push off their spots (ignored ones, or :o / :s group pieces) fill the spots
+// the moved pieces left, in every distinct way; none when they'd push off a piece that must stay home (solved or :p)
+function placedPatterns(goal: Goal, placement: Placement): KPattern[] {
+  // Each piece type's ways to fill the spots left free (null = a piece that must stay home is in the way)
+  const fills = kpuzzle.definition.orbits.map(({ orbitName }) => {
+    const moved = placement.filter((entry) => entry.orbit === orbitName);
+    const roles = goal[orbitName] ?? {};
+    const movedPieces = new Set(moved.map((entry) => entry.piece));
+    const taken = new Set(moved.map((entry) => entry.spot));
+    // Pieces pushed off their home spot (the solved cube holds piece n on spot n), and the spots the moved pieces left
+    const pushed = moved.map((entry) => entry.spot).filter((spot) => !movedPieces.has(spot));
+    const free = moved.map((entry) => entry.piece).filter((home) => !taken.has(home));
+    if (pushed.some((piece) => roles[piece] === "solve" || roles[piece] === "place")) return null;
+    return { orbitName, moved, free, orders: arrangements(pushed, (piece) => roles[piece] ?? "ignored") };
+  });
+  if (fills.includes(null)) return [];
+  // Every mix of the piece types' orders
+  let patterns = [structuredClone(kpuzzle.defaultPattern().patternData)];
+  for (const fill of fills) {
+    if (!fill?.moved.length) continue;
+    patterns = patterns.flatMap((data) =>
+      fill.orders.map((order) => {
+        const copy = structuredClone(data);
+        const { pieces, orientation } = copy[fill.orbitName];
+        // Moved pieces on their new spots, pushed pieces on the free spots (twist 0: turned right there, which is what :o asks)
+        for (const { piece, spot, twist } of fill.moved) [pieces[spot], orientation[spot]] = [piece, twist];
+        order.forEach((piece, index) => ([pieces[fill.free[index]], orientation[fill.free[index]]] = [piece, 0]));
+        return copy;
+      }),
+    );
+  }
+  return patterns.map((data) => new KPattern(kpuzzle, data));
+}
+
+// What a step aims for, turned by an offset: maskedTarget, or with relative groups (:r, :r2…) one target per way to place them: each group turned as a whole
+// by any of the 24 grips, landing only on spots of pieces that may move (see placedPatterns), every mix of the groups' placements;
+// all groups at home comes first, so it wins a tie. The offset turns the cube after the groups are placed (the goal met, then off by that move)
+function goalTargets(goal: Goal, offset = ""): KPattern[] {
+  // Each relative group's pieces as [type, number]
+  const groups = new Map<number, [string, number][]>();
+  for (const [orbit, roles] of Object.entries(goal)) {
+    for (const [piece, role] of Object.entries(roles)) {
+      const group = relativeGroup(role);
+      if (group) groups.set(group, [...(groups.get(group) ?? []), [orbit, Number(piece)]]);
+    }
+  }
+  if (!groups.size) return [maskedTarget(goal, offset)];
+  // Where each grip takes every piece ("as held" first)
+  const turned = ALL_GRIPS.map((grip) => kpuzzle.defaultPattern().applyAlg(grip).patternData);
+  // Each group's placements: its pieces' spots and twists after each grip (each placement once)
+  const placements = [...groups.values()].map((pieces) => {
+    const seen = new Set<string>();
+    return turned.flatMap((data) => {
+      const placement = pieces.map(([orbit, piece]) => {
+        const spot = data[orbit].pieces.indexOf(piece);
+        return { orbit, piece, spot, twist: data[orbit].orientation[spot] };
+      });
+      const key = JSON.stringify(placement);
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [placement];
+    });
+  });
+  const targets: KPattern[] = [];
+  const keys = new Set<string>();
+  // Every mix of the groups' placements, skipping mixes where two groups want one spot
+  const place = (group: number, chosen: Placement, taken: Set<string>): void => {
+    if (group === placements.length) {
+      for (const pattern of placedPatterns(goal, chosen)) {
+        const target = maskPattern(pattern.applyAlg(offset), goal);
+        const key = cellsKey(cellsOf(target));
+        if (keys.has(key)) continue;
+        keys.add(key);
+        targets.push(target);
+        if (targets.length > MAX_RELATIVE_TARGETS) {
+          throw new Error(`Relative groups: more than ${MAX_RELATIVE_TARGETS.toLocaleString("en")} ways to place them; use fewer :r groups.`);
+        }
+      }
+      return;
+    }
+    for (const placement of placements[group]) {
+      const spots = placement.map(({ orbit, spot }) => `${orbit}/${spot}`);
+      if (spots.some((spot) => taken.has(spot))) continue;
+      place(group + 1, [...chosen, ...placement], new Set([...taken, ...spots]));
+    }
+  };
+  place(0, [], new Set());
+  return targets;
+}
+
+// The targets the allowed moves could reach, as the search worker judges it: same as the first target on every spot no allowed move changes, and in a
+// piece type no allowed move twists (edges under U R L) the same twist per piece. The worker refuses target lists that differ there, so goalTargets'
+// other placements (e.g. a relative pair in a slot R U never touch) are dropped
+function reachableTargets(targets: KPattern[], moves: string[]): KPattern[] {
+  if (targets.length < 2) return targets;
+  const turns = moves.map((move) => kpuzzle.moveToTransformation(move).transformationData);
+  const first = targets[0].patternData;
+  // Per piece type, from the first target: spots no move changes (with what's there), and each piece's twist when no move twists that type
+  const checks = kpuzzle.definition.orbits.map(({ orbitName, numPieces, numOrientations }) => {
+    const { pieces, orientation, orientationMod } = first[orbitName];
+    // Twist values that count on a spot
+    const factor = (spot: number) => orientationMod?.[spot] || numOrientations;
+    const moving = Array.from({ length: numPieces }, (_, spot) =>
+      turns.some((turn) => turn[orbitName].permutation[spot] !== spot || turn[orbitName].orientationDelta[spot] % factor(spot) !== 0),
+    );
+    const fixed = moving.flatMap((moves, spot) => (moves ? [] : [{ spot, piece: pieces[spot], factor: factor(spot), twist: orientation[spot] % factor(spot) }]));
+    // Frozen twists: no allowed move twists a moving spot of this type, so each piece keeps its twist wherever it goes
+    const frozen = new Map<number, number>();
+    if (numOrientations > 1 && turns.every((turn) => moving.every((moves, spot) => !moves || turn[orbitName].orientationDelta[spot] % numOrientations === 0))) {
+      moving.forEach((moves, spot) => {
+        if (moves && factor(spot) > 1 && !frozen.has(pieces[spot])) frozen.set(pieces[spot], orientation[spot] % numOrientations);
+      });
+    }
+    return { orbitName, numOrientations, moving, fixed, frozen };
+  });
+  return targets.filter((target) =>
+    checks.every(({ orbitName, numOrientations, moving, fixed, frozen }) => {
+      const { pieces, orientation, orientationMod } = target.patternData[orbitName];
+      // Untouched spots hold the same piece, turned the same way
+      if (fixed.some(({ spot, piece, factor, twist }) => pieces[spot] !== piece || orientation[spot] % factor !== twist)) return false;
+      // Pieces whose twist no move changes keep the first target's twist
+      return moving.every((moves, spot) => {
+        const twisted = (orientationMod?.[spot] || numOrientations) > 1;
+        return !moves || !twisted || !frozen.has(pieces[spot]) || orientation[spot] % numOrientations === frozen.get(pieces[spot]);
+      });
+    }),
+  );
+}
+
 // Most patterns a "solvable with" check walks through (the search worker refuses goals with more end states than this too)
 const MAX_SOLVABLE_STATES = 100_000;
 
@@ -595,6 +816,279 @@ function settledGoal(goal: Goal, moves: string[]): Goal {
   return settled;
 }
 
+// The pattern with every piece renamed after the spot it has in `by` (its twist counted from its twist there), so `by` itself becomes the solved cube.
+// Moves act on spots, not on names, so the moves from `pattern` to `by` are the same as from the renamed pattern to solved: every untouched step (a BLD
+// 3-cycle, a parity) becomes "solve the whole cube" from a cube that's solved but for a few pieces, and they all share one set of tables
+function relabel(pattern: KPattern, by: KPattern): KPattern {
+  const data = structuredClone(pattern.patternData);
+  for (const { orbitName, numOrientations } of kpuzzle.definition.orbits) {
+    const want = by.patternData[orbitName];
+    // Each piece's new name (its spot in `by`) and the twist it has there
+    const name: number[] = [];
+    const twist: number[] = [];
+    want.pieces.forEach((piece, spot) => {
+      name[piece] = spot;
+      twist[piece] = want.orientation[spot];
+    });
+    // Rename every piece, counting its twist from the one it should end with
+    const orbit = data[orbitName];
+    orbit.pieces.forEach((piece, spot) => {
+      const mod = orbit.orientationMod?.[spot] || numOrientations;
+      orbit.orientation[spot] = (((orbit.orientation[spot] - twist[piece]) % mod) + mod) % mod;
+      orbit.pieces[spot] = name[piece];
+    });
+  }
+  return new KPattern(kpuzzle, data);
+}
+
+// Twist values that count in a piece type: none when the puzzle ignores them (the 3x3x3's centers), else all of them
+function countedTwists(orbitName: string, numOrientations: number): number {
+  const mods = kpuzzle.defaultPattern().patternData[orbitName].orientationMod;
+  return mods?.every((mod) => mod === 1) ? 1 : numOrientations;
+}
+
+// What no move sequence can hide about going from one pattern to another: per piece type, the parity of how the pieces were permuted
+// and the sum of the twists they gained (one number each, in the puzzle's orbit order)
+function changeOf(from: KPattern, to: KPattern): number[] {
+  const orbits = kpuzzle.definition.orbits;
+  const parities = orbits.map(({ orbitName }) => {
+    const before = from.patternData[orbitName].pieces;
+    const after = to.patternData[orbitName].pieces;
+    // Spot each piece came from, then the permutation's parity from its cycles (parity = pieces − cycles, mod 2)
+    const cameFrom = after.map((piece) => before.indexOf(piece));
+    const seen = new Set<number>();
+    let cycles = 0;
+    for (let spot = 0; spot < cameFrom.length; spot++) {
+      if (seen.has(spot)) continue;
+      cycles++;
+      for (let at = spot; !seen.has(at); at = cameFrom[at]) seen.add(at);
+    }
+    return (cameFrom.length - cycles) % 2;
+  });
+  const twists = orbits.map(({ orbitName, numOrientations }) => {
+    const count = countedTwists(orbitName, numOrientations);
+    const sum = (pattern: KPattern) => pattern.patternData[orbitName].orientation.reduce((total, twist) => total + twist, 0);
+    return (((sum(to) - sum(from)) % count) + count) % count;
+  });
+  return [...parities, ...twists];
+}
+
+// Every change (as changeOf numbers) the allowed moves can make: a small group, found from each move's own change (for face turns: edge and corner parities
+// flip together, twists always sum to 0). A wanted end state whose change isn't in it can't be reached by any sequence of those moves
+function reachableChanges(moves: string[]): Set<string> {
+  const solved = kpuzzle.defaultPattern();
+  const orbits = kpuzzle.definition.orbits;
+  // Each move's change, and how each number wraps (parities at 2, twist sums at the counted twists)
+  const steps = moves.map((move) => changeOf(solved, solved.applyMove(move)));
+  const wraps = [...orbits.map(() => 2), ...orbits.map(({ orbitName, numOrientations }) => countedTwists(orbitName, numOrientations))];
+  // Breadth-first from "no change", adding one move's change at a time
+  const zero = wraps.map(() => 0);
+  const seen = new Set([zero.join()]);
+  const queue = [zero];
+  for (const change of queue) {
+    for (const step of steps) {
+      const next = change.map((value, index) => (value + step[index]) % wraps[index]);
+      if (seen.has(next.join())) continue;
+      seen.add(next.join());
+      queue.push(next);
+    }
+  }
+  return seen;
+}
+
+// What an untouched step asks for, per piece type: spots that must end holding a given piece (twist null = any twist), spots that may end holding
+// any of the pieces left over (any twist), and spots whose pieces may swap among themselves, each keeping its twist (a BLD parity); every other spot keeps what it holds now
+interface Wanted {
+  set: Record<string, Map<number, { piece: number; twist: number | null }>>;
+  free: Record<string, Set<number>>;
+  swap?: Record<string, Set<number>>;
+}
+
+// Throws unless every role of an untouched goal is solved, :p or :x
+function checkUntouchedRoles(goal: Goal): void {
+  for (const roles of Object.values(goal)) {
+    if (Object.values(roles).some((role) => role !== "solve" && role !== "place" && role !== "free")) throw new Error(UNTOUCHED_ROLES);
+  }
+}
+
+// An untouched goal on the cube held now: each listed piece goes home (turned right, or any way for :p), the pieces in its way and the :x spots
+// make up the spots that may change (the pieces pushed out fill the spots the listed ones leave); every other piece stays
+function untouchedWanted(held: KPattern, goal: Goal): Wanted {
+  checkUntouchedRoles(goal);
+  const wanted: Wanted = { set: {}, free: {} };
+  for (const { orbitName } of kpuzzle.definition.orbits) {
+    const roles = goal[orbitName] ?? {};
+    const set = (wanted.set[orbitName] = new Map());
+    const free = (wanted.free[orbitName] = new Set<number>());
+    // Listed pieces go home (the solved cube holds piece n on spot n)
+    for (const [piece, role] of Object.entries(roles)) {
+      if (role !== "free") set.set(Number(piece), { piece: Number(piece), twist: role === "solve" ? 0 : null });
+    }
+    // Spots a listed piece leaves, and :x spots, may take any piece left over
+    held.patternData[orbitName].pieces.forEach((piece, spot) => {
+      if (set.has(spot)) return;
+      if (set.has(piece) || roles[spot] === "free") free.add(spot);
+    });
+  }
+  return wanted;
+}
+
+// A BLD step's goal: follow the cycle from the buffer for `count` targets: each target sends the buffer's piece home (solved) and brings the piece there to the buffer;
+// when the buffer holds its own piece (a cycle closed), a new cycle starts at any unsolved spot (each choice is its own goal: the shortest wins), its piece taking
+// the buffer's place. The buffer then holds whatever piece is left, with any twist (the others fix it). Nothing to trace = an empty goal (the cube as it is).
+// A step starting with the buffer home may instead fix two pieces that are only twisted in place (flipped edges, twisted corners), like a BLD flip alg
+function traceWanted(held: KPattern, buffer: GoalPiece, count: number): Wanted[] {
+  const { orbit, index: home } = buffer;
+  const now = held.patternData[orbit];
+  const wanted: Wanted[] = [];
+  // Twist values that count for this piece type, and each spot's twist now
+  const twistCount = countedTwists(orbit, kpuzzle.definition.orbits.find((info) => info.orbitName === orbit)!.numOrientations);
+  const twistsNow = now.orientation.map((twist) => twist % twistCount);
+  // Pieces home but twisted (not the buffer): with the buffer home and room for two targets, each pair of them is a goal of its own
+  const twisted = now.pieces.flatMap((piece, spot) => (spot !== home && piece === spot && twistsNow[spot] !== 0 ? [spot] : []));
+  if (now.pieces[home] === home && count >= 2) {
+    twisted.forEach((first, index) => {
+      for (const second of twisted.slice(index + 1)) {
+        wanted.push({ set: { [orbit]: new Map([first, second].map((spot) => [spot, { piece: spot, twist: 0 }])) }, free: {} });
+      }
+    });
+  }
+  // pieces / twists: what each spot of the buffer's type holds as the step goes (twist null = not known yet), set: the spots the step has settled so far
+  const walk = (pieces: number[], twists: (number | null)[], set: Map<number, { piece: number; twist: number | null }>, left: number): void => {
+    if (left > 0) {
+      const piece = pieces[home];
+      // The buffer holds another piece: it goes home solved, and the piece there comes to the buffer
+      if (piece !== home) {
+        const next = [...pieces];
+        const turned = [...twists];
+        [next[home], turned[home], next[piece], turned[piece]] = [pieces[piece], null, piece, 0];
+        walk(next, turned, new Map(set).set(piece, { piece, twist: 0 }), left - 1);
+        return;
+      }
+      // Cycle closed: start a new one at any spot that isn't solved yet (the buffer's piece parks there for now)
+      const unsolved = pieces.flatMap((holds, spot) => (spot !== home && (holds !== spot || twists[spot] !== 0) ? [spot] : []));
+      if (unsolved.length) {
+        for (const spot of unsolved) {
+          const next = [...pieces];
+          const turned = [...twists];
+          [next[home], turned[home], next[spot], turned[spot]] = [pieces[spot], null, home, null];
+          walk(next, turned, new Map(set).set(spot, { piece: home, twist: null }), left - 1);
+        }
+        return;
+      }
+    }
+    // Done: the buffer ends holding the piece left there, any twist
+    const final = new Map(set);
+    if (final.size) final.set(home, { piece: pieces[home], twist: null });
+    wanted.push({ set: { [orbit]: final }, free: {} });
+  };
+  walk([...now.pieces], twistsNow, new Map(), count);
+  return wanted;
+}
+
+// The same goal where a BLD step's parity pieces may change too: swapping among themselves, each keeping its twist (like a parity alg's clean swap),
+// or with `anyTwist` ending any way (spots the goal already settles are left out)
+function withParity(wanted: Wanted, pieces: GoalPiece[], anyTwist: boolean): Wanted {
+  const spots: Record<string, Set<number>> = {};
+  for (const [orbit, free] of Object.entries(anyTwist ? wanted.free : {})) spots[orbit] = new Set(free);
+  for (const { orbit, index } of pieces) if (!wanted.set[orbit]?.has(index) && !wanted.free[orbit]?.has(index)) (spots[orbit] ??= new Set()).add(index);
+  return anyTwist ? { set: wanted.set, free: spots } : { set: wanted.set, free: wanted.free, swap: spots };
+}
+
+// Every end state an untouched goal allows: settled spots as asked, the pieces left over in every order on the spots that may change, every twist where it's free,
+// swap spots' pieces in every order with their own twists; only the ones the allowed moves could reach (same permutation parities and twist sums as some mix of the moves) are kept
+function completions(held: KPattern, wanted: Wanted, reachable: Set<string>): KPattern[] {
+  // Each piece type's ways to end, as its pieces and twists per spot
+  const perOrbit = kpuzzle.definition.orbits.map(({ orbitName, numPieces, numOrientations }) => {
+    const now = held.patternData[orbitName];
+    const set = wanted.set[orbitName] ?? new Map();
+    const free = [...(wanted.free[orbitName] ?? [])].filter((spot) => !set.has(spot)).sort((a, b) => a - b);
+    const swap = [...(wanted.swap?.[orbitName] ?? [])].filter((spot) => !set.has(spot) && !free.includes(spot)).sort((a, b) => a - b);
+    const twists = countedTwists(orbitName, numOrientations);
+    // Pieces with a spot already (settled, staying where they are, or swapping among the swap spots), and the ones left for the free spots
+    const placed = new Set([...set.values()].map((entry) => entry.piece));
+    now.pieces.forEach((piece, spot) => {
+      if (!set.has(spot) && !free.includes(spot)) placed.add(piece);
+    });
+    const left = Array.from({ length: numPieces }, (_, piece) => piece).filter((piece) => !placed.has(piece));
+    // Swap spots' pieces, each with the twist it has now
+    const swapping = swap.map((spot) => ({ piece: now.pieces[spot], twist: now.orientation[spot] }));
+    // Spots whose twist is free: settled ones without a twist, and every free spot
+    const open = [...[...set].filter(([, entry]) => entry.twist === null).map(([spot]) => spot), ...free];
+    const ways: { pieces: number[]; orientation: number[] }[] = [];
+    for (const order of arrangements(left, String)) {
+      for (const swapped of arrangements(swapping, (entry) => String(entry.piece))) {
+        const pieces = [...now.pieces];
+        const orientation = [...now.orientation];
+        for (const [spot, entry] of set) [pieces[spot], orientation[spot]] = [entry.piece, entry.twist ?? 0];
+        order.forEach((piece, index) => (pieces[free[index]] = piece));
+        swapped.forEach((entry, index) => ([pieces[swap[index]], orientation[swap[index]]] = [entry.piece, entry.twist]));
+        // Every twist of the open spots (counted like a number in base `twists`)
+        for (let code = 0; code < twists ** open.length; code++) {
+          const turned = [...orientation];
+          open.forEach((spot, index) => (turned[spot] = Math.floor(code / twists ** index) % twists));
+          ways.push({ pieces, orientation: turned });
+        }
+      }
+    }
+    return { orbitName, ways };
+  });
+  const total = perOrbit.reduce((product, { ways }) => product * ways.length, 1);
+  if (total > MAX_UNTOUCHED_TARGETS) {
+    throw new Error(`More than ${MAX_UNTOUCHED_TARGETS.toLocaleString("en")} ways to fill the spots that may change: mark fewer pieces :x (or give fewer parity pieces).`);
+  }
+  // Every mix of the piece types' ways, keeping the reachable ones
+  let patterns = [structuredClone(held.patternData)];
+  for (const { orbitName, ways } of perOrbit) {
+    patterns = patterns.flatMap((data) =>
+      ways.map((way) => {
+        const copy = structuredClone(data);
+        copy[orbitName].pieces = way.pieces;
+        copy[orbitName].orientation = way.orientation;
+        return copy;
+      }),
+    );
+  }
+  return patterns.map((data) => new KPattern(kpuzzle, data)).filter((want) => reachable.has(changeOf(held, want).join()));
+}
+
+// The goal pieces a wanted end state solves (home, turned right), and every spot it may change, as goals named like the held cube's spots
+function untouchedPieces(wanted: Wanted): { solved: Goal; changed: Goal } {
+  const solved: Goal = {};
+  const changed: Goal = {};
+  for (const [orbit, set] of Object.entries(wanted.set)) {
+    for (const [spot, { piece, twist }] of set) {
+      (changed[orbit] ??= {})[spot] = "solve";
+      if (piece === spot && twist === 0) (solved[orbit] ??= {})[spot] = "solve";
+    }
+  }
+  for (const spots of [wanted.free, wanted.swap ?? {}]) {
+    for (const [orbit, list] of Object.entries(spots)) for (const spot of list) (changed[orbit] ??= {})[spot] = "solve";
+  }
+  return { solved, changed };
+}
+
+// Every piece solved, centers included: what an untouched step aims for once relabeled (see relabel)
+function wholeGoal(): Goal {
+  return Object.fromEntries(Object.entries(PIECE_NAMES).map(([orbit, names]) => [orbit, Object.fromEntries(names.map((_, index) => [index, "solve" as Role]))]));
+}
+
+// Read a BLD buffer ("UF", "ufr"…; "" = none) into its piece name; throws a clear error unless it's one edge or corner
+export function bufferFromText(text: string): string {
+  const pieces = parseGoalText(text);
+  if (!pieces.length) return "";
+  const [piece] = pieces;
+  if (pieces.length > 1 || piece.orbit === "CENTERS" || piece.role !== "solve") throw new Error('The buffer is one edge or corner, e.g. "UF" or "UFR".');
+  return PIECE_NAMES[piece.orbit][piece.index];
+}
+
+// Read BLD parity pieces ("UFR UBR"; "" = none) into piece names; throws a clear error on a typo or a role suffix
+export function parityFromText(text: string): string {
+  const pieces = parseGoalText(text);
+  if (pieces.some((piece) => piece.role !== "solve")) throw new Error("Parity pieces are plain piece names, e.g. UFR UBR.");
+  return pieces.map((piece) => PIECE_NAMES[piece.orbit][piece.index]).join(" ");
+}
+
 
 // How one piece type moves on its own: a piece state is spot × twists + twist, and each allowed move (R, R2, R' count apart) maps every state to the next
 interface PieceMoves {
@@ -645,25 +1139,28 @@ function pieceDistance(table: PieceMoves, state: number, accepts: (state: number
   return Infinity;
 }
 
-// How easy a grip × offset looks: each goal piece's own fewest moves to a spot the goal accepts.
+// How easy a grip × offset looks: each goal piece's own fewest moves to a spot the goal accepts (in any of the offset's targets: one, or one per placement of the relative groups).
 // The largest is a sure lower bound on the answer (bound); the sum ranks how far off the goal looks overall (total)
-function estimate(held: KPattern, start: KPattern, target: KPattern, goal: Goal, tables: Record<string, PieceMoves>): { bound: number; total: number } {
+function estimate(held: KPattern, start: KPattern, targets: KPattern[], goal: Goal, tables: Record<string, PieceMoves>): { bound: number; total: number } {
   let bound = 0;
   let total = 0;
   for (const [orbitName, table] of Object.entries(tables)) {
     const roles = goal[orbitName] ?? {};
     const now = held.patternData[orbitName];
     const masked = start.patternData[orbitName];
-    const want = target.patternData[orbitName];
+    const wants = targets.map((target) => target.patternData[orbitName]);
     now.pieces.forEach((piece, spot) => {
       // Pieces the goal ignores don't count
       if (!roles[piece]) return;
-      // A state is accepted when its spot wants this piece's (shared) id, with the right twist unless the twist is ignored there
+      // A state is accepted when its spot wants this piece's (shared) id in some target, with the right twist unless the twist is ignored there
       const id = masked.pieces[spot];
       const accepts = (state: number) => {
         const at = Math.floor(state / table.twists);
-        const mod = want.orientationMod?.[at] || table.twists;
-        return want.pieces[at] === id && (state % table.twists) % mod === want.orientation[at] % mod;
+        for (const want of wants) {
+          const mod = want.orientationMod?.[at] || table.twists;
+          if (want.pieces[at] === id && (state % table.twists) % mod === want.orientation[at] % mod) return true;
+        }
+        return false;
       };
       const moves = pieceDistance(table, spot * table.twists + now.orientation[spot], accepts);
       bound = Math.max(bound, moves);
@@ -694,6 +1191,7 @@ interface WorkerRequest {
   maxDepth?: number; // search and list: answers shorter than this (twips style)
   maxAnswers?: number; // list only: most answers to give (shortest first)
   solvableWith?: string[]; // moves that may finish the goal later: the worker closes the targets under them (none = the targets as they are)
+  orbitTables?: number; // untouched (BLD) steps: split tables also get one table per piece type holding all its pieces, up to this many states (0 / none = no such tables)
 }
 
 // Stop the search worker after this long without requests, so its memory goes back to the system (WebAssembly memory never shrinks);
@@ -762,10 +1260,14 @@ function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress
       kind: request.kind,
       kpuzzle: puzzleJson,
       start: JSON.stringify(request.start.patternData),
-      // Targets as a list, or with the moves that may finish them later (the worker closes them under those moves)
+      // Targets as a list, or with the moves that may finish them later (the worker closes them under those moves) and / or the whole-orbit tables to add
       targets: JSON.stringify(
-        request.solvableWith?.length
-          ? { targets: request.targets.map((target) => target.patternData), solvableWith: request.solvableWith }
+        request.solvableWith?.length || request.orbitTables
+          ? {
+              targets: request.targets.map((target) => target.patternData),
+              ...(request.solvableWith?.length ? { solvableWith: request.solvableWith } : {}),
+              ...(request.orbitTables ? { orbitTables: request.orbitTables } : {}),
+            }
           : request.targets.map((target) => target.patternData),
       ),
       moves: request.moves,
@@ -783,9 +1285,11 @@ interface Combo {
   fresh: number; // goal pieces earlier steps don't cover yet in that grip
   held: KPattern; // cube held in that grip
   start: KPattern; // held cube with the goal's hidden pieces masked
-  offsets: string[]; // offsets the goal counts up to, one per target
-  targets: KPattern[]; // masked targets (solved cube turned by each offset)
+  offsets: string[]; // offsets the goal counts up to, one per target (repeated when relative groups give an offset several targets)
+  targets: KPattern[]; // masked targets (solved cube turned by each offset, with each placement of the relative groups)
   bound: number; // measured distance: exact from one table, a lower bound from split tables or the pieces' own moves
+  cube?: KPattern; // untouched steps: the cube held in that grip as it really is (held is it relabeled, so the wanted end state is the solved cube)
+  untouched?: { pieces: string; changed: string }; // untouched steps: the pieces it solves and every spot it may change (pieces text)
 }
 
 // One answer of a step: the combo it came from and its moves (after the grip rotation)
@@ -797,6 +1301,8 @@ interface Answer {
 // Every alternative × grip combo of a step worth searching (each with all its offsets at once), measured by the worker and sorted closest first,
 // plus the error to throw if none of them finds anything
 async function stepCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
+  // Steps that keep every other piece untouched (BLD steps) have their own goals
+  if (options.untouched || options.buffer) return untouchedCombos(scramble, pieces, options);
   const keep = options.keep;
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Moves that may finish the goal later ([] = none)
@@ -816,8 +1322,8 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
   });
   // Each alternative's combos (grips × offsets), keeping only its grips where earlier steps cover the fewest of its pieces
   const perAlternative = readAlternatives(pieces).map((text, alternative) => {
-    // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand)
-    const own = goalFromText(text, !keep);
+    // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand; :x pieces are just not checked)
+    const own = dropFree(goalFromText(text, !keep));
     // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no centers left at all = all six, like goal text)
     const goalFor = (rotation: string): Goal => {
       if (!keep) return own;
@@ -840,22 +1346,27 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
       const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
       const fresh = ownPieces.length - covered;
       // Targets already used in this grip (an offset the goal can't see repeats one, so it's dropped)
-      const seen: KPattern[] = [];
+      const seen = new Set<string>();
       return groups.flatMap((group) => {
-        // Each offset's target = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots)
+        // Each offset's targets = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots);
+        // with relative groups, one per placement the allowed moves could reach
         const offsets: string[] = [];
         const targets: KPattern[] = [];
         for (const offset of group) {
-          const target = maskedTarget(goal, offset);
-          if (seen.some((other) => other.isIdentical(target))) continue;
-          seen.push(target);
-          offsets.push(offset);
-          targets.push(target);
+          for (const target of reachableTargets(goalTargets(goal, offset), generatorMoves)) {
+            const key = cellsKey(cellsOf(target));
+            if (seen.has(key)) continue;
+            seen.add(key);
+            offsets.push(offset);
+            targets.push(target);
+          }
         }
         if (!targets.length) return [];
         // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total);
         // with solvable-with moves a piece may end on other spots too, so no score (the worker's measure ranks the combos)
-        const scores = solvableWith.length ? [{ bound: 0, total: 0 }] : targets.map((target) => estimate(held, start, target, goal, tables));
+        const scores = solvableWith.length
+          ? [{ bound: 0, total: 0 }]
+          : [...new Set(offsets)].map((offset) => estimate(held, start, targets.filter((_, index) => offsets[index] === offset), goal, tables));
         const bound = Math.min(...scores.map((score) => score.bound));
         const total = Math.min(...scores.map((score) => score.total));
         return [{ alternative, rotation, done, goal, gripMatters, covered, fresh, held, start, offsets, targets, bound, total }];
@@ -883,7 +1394,7 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
         JSON.stringify(goalOnCube(goal, scramble, done)),
         movesKey(rotation, generatorMoves),
         gripMatters ? rotation : "",
-        combo.offsets.map((offset) => movesKey(rotation, [offset])).join("&"),
+        [...new Set(combo.offsets)].map((offset) => movesKey(rotation, [offset])).join("&"),
         solvableWith.length ? movesKey(rotation, solvableWith) : "",
       ].join("/"),
     ];
@@ -901,12 +1412,22 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
     }
     candidates.push({ ...combo, offsets: combo.offsets.filter((_, index) => reachable[index]), targets: combo.targets.filter((_, index) => reachable[index]) });
   }
-  // Ask the worker how far each combo is (it builds or loads the tables first): exact from one table, a lower bound from split tables,
-  // unknown with twips (then the hardest piece's moves stand in)
+  return measureCombos(candidates, options, lastError);
+}
+
+// Ask the worker how far each combo is (it builds or loads the tables first): exact from one table, a lower bound from split tables,
+// unknown with twips (then the hardest piece's moves stand in); then sort them closest first, leaving out the ones no allowed moves can solve
+async function measureCombos(candidates: Combo[], options: StepOptions, lastError: unknown): Promise<{ queue: Combo[]; lastError: unknown }> {
   const measured = await Promise.all(
     candidates.map(async (combo) => {
+      // An untouched combo at its goal already, or answered before, needs no tables: its distance is known
+      const known = knownAnswer(combo, options.generatorMoves ?? FACE_MOVES);
+      if (known !== undefined) return { ...combo, bound: countMoves(known) };
       try {
-        const { bound, exact } = await askWorker({ kind: "measure", start: combo.start, targets: combo.targets, moves: generatorMoves, solvableWith }, options.onProgress);
+        const { bound, exact } = await askWorker(
+          { kind: "measure", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, orbitTables: orbitTables(combo) },
+          options.onProgress,
+        );
         return { ...combo, bound: exact ? (bound ?? Infinity) : Math.max(bound ?? 0, combo.bound) };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -921,6 +1442,85 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
   return { queue, lastError };
 }
 
+// Whole-orbit tables a combo's worker requests ask for: untouched (BLD) steps get them (they make parity steps ~10–50× faster), others none
+function orbitTables(combo: Combo): number | undefined {
+  return combo.untouched ? ORBIT_TABLE_STATES : undefined;
+}
+
+// Every combo of a step that keeps every other piece untouched (with a buffer, a BLD step): per grip and alternative, each end state the goal allows
+// (every cycle-break choice and free twist, the parity pieces too when the goal can't be reached without them), relabeled so it's the solved cube.
+// So every such step searches "solve the whole cube" from a cube solved but for a few pieces, with one shared set of tables; measured and sorted closest first
+async function untouchedCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
+  if ((options.offsets ?? []).some(Boolean) || options.solvableWith?.length) throw new Error(UNTOUCHED_MIX);
+  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  // Changes the allowed moves can make, the whole-cube goal and its target, and how each piece moves (for the easy-looking scores)
+  const reachable = reachableChanges(generatorMoves);
+  const whole = wholeGoal();
+  const target = maskedTarget(whole);
+  const tables = pieceMoves(generatorMoves);
+  // Buffer and parity pieces (BLD), each as a piece
+  const buffer = options.buffer ? parseGoalText(bufferFromText(options.buffer))[0] : null;
+  const parity = parseGoalText(parityFromText(options.parity ?? ""));
+  // A buffer step traces its own goal, so it has one alternative
+  const alternatives = buffer ? [""] : readAlternatives(pieces);
+  // Combos with their easy-looking total (for the order before measuring)
+  const combos: (Combo & { total: number })[] = [];
+  // Relabeled starts already queued (two end states giving the same one ask for the same thing)
+  const asked = new Set<string>();
+  let lastError: unknown = null;
+  for (const rotation of options.rotations ?? [""]) {
+    // The cube held in this grip, as it really is
+    const cube = heldPattern(scramble, joinMoves(options.done ?? "", rotation));
+    alternatives.forEach((text, alternative) => {
+      // What the step asks for: the buffer's next targets (one goal per cycle-break choice), or the alternative's pieces
+      const goals = buffer ? traceWanted(cube, buffer, Math.max(1, options.targetsPerStep ?? 2)) : [untouchedWanted(cube, goalFromText(text))];
+      for (const goal of goals) {
+        // End states the moves can reach; with none (an odd trace), let the parity pieces swap too (keeping their twists, else any way)
+        let wanted = goal;
+        let wants = completions(cube, wanted, reachable);
+        for (const anyTwist of [false, true]) {
+          if (wants.length || !buffer || !parity.length) break;
+          wanted = withParity(goal, parity, anyTwist);
+          wants = completions(cube, wanted, reachable);
+        }
+        if (!wants.length) {
+          lastError ??= new Error(buffer && !parity.length ? PARITY_NEEDED : UNTOUCHED_OUT);
+          continue;
+        }
+        const { solved, changed } = untouchedPieces(wanted);
+        for (const want of wants) {
+          // The cube renamed so this end state is the solved cube, with nothing hidden
+          const held = relabel(cube, want);
+          const start = maskPattern(held, whole);
+          const key = `${rotation}/${cellsKey(cellsOf(start))}`;
+          if (asked.has(key)) continue;
+          asked.add(key);
+          const { bound, total } = estimate(held, start, [target], whole, tables);
+          const fresh = Object.values(solved).reduce((count, roles) => count + Object.keys(roles).length, 0);
+          combos.push({
+            alternative,
+            rotation,
+            goal: whole,
+            fresh,
+            held,
+            start,
+            offsets: [""],
+            targets: [target],
+            bound,
+            total,
+            cube,
+            untouched: { pieces: goalToText(solved), changed: goalToText(changed) },
+          });
+        }
+      }
+    });
+  }
+  if (!combos.length) throw lastError ?? new Error(UNTOUCHED_OUT);
+  // Easiest-looking first (ties keep grip and alternative order), skipping the ones whose hardest piece alone needs more than the user's limit
+  const candidates = combos.sort((a, b) => a.total - b.total || a.bound - b.bound).filter((combo) => combo.bound <= (options.maxDepth ?? Infinity));
+  return measureCombos(candidates, options, lastError);
+}
+
 // Search the measured combos in turn for the shortest answer (on a tie, the alternative adding more new pieces), skipping combos that can't beat the best so far
 async function searchCombos(queue: Combo[], options: StepOptions, lastError: unknown): Promise<{ answer: Answer; searches: number }> {
   // Best answer so far, its length and how many new pieces it adds
@@ -928,20 +1528,17 @@ async function searchCombos(queue: Combo[], options: StepOptions, lastError: unk
   let bestLength = Infinity;
   let bestFresh = -1;
   let searches = 0;
-  for (const combo of queue) {
-    const { fresh, start, targets, bound } = combo;
+  // Untouched combos whose answer is known already go first: they cost nothing and bound the searches after them (other steps keep their order)
+  const known = queue.filter((combo) => knownAnswer(combo, options.generatorMoves ?? FACE_MOVES) !== undefined);
+  for (const combo of [...known, ...queue.filter((combo) => !known.includes(combo))]) {
+    const { fresh, bound } = combo;
     // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
     const maxDepth = Math.min(options.maxDepth ?? Infinity, fresh > bestFresh ? bestLength : bestLength - 1);
     // Skip a combo whose distance (or lower bound) is already too long: no search there can beat the best so far
     if (bound > maxDepth) continue;
     searches++;
     try {
-      // Search, passing the depth limit only when there is one (the worker only finds answers shorter than its maxDepth, hence + 1)
-      const reply = await askWorker(
-        { kind: "search", start, targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}) },
-        options.onProgress,
-      );
-      const moves = reply.moves ?? "";
+      const moves = await searchCombo(combo, options, maxDepth);
       // Keep it if it's shorter than the best so far, or as short with more new pieces
       const length = countMoves(moves);
       if (length < bestLength || (length === bestLength && fresh > bestFresh)) {
@@ -961,6 +1558,53 @@ async function searchCombos(queue: Combo[], options: StepOptions, lastError: unk
   return { answer: best, searches };
 }
 
+// Shortest answers of untouched steps by allowed moves + relabeled start: a relabeled BLD case (a 3-cycle, a flip, a parity) doesn't depend on the rest of the cube,
+// so the same case in a later step or scramble is answered at once (kept while the page is open, oldest dropped past the limit)
+const knownAnswers = new Map<string, string>();
+const MAX_KNOWN_ANSWERS = 5_000;
+
+// Key of an untouched combo's answer: the allowed moves and its relabeled start
+function answerKey(combo: Combo, moves: string[]): string {
+  return `${moves.join(" ")}/${cellsKey(cellsOf(combo.start))}`;
+}
+
+// What's known of an untouched combo's shortest answer without searching: "" when it's at the goal already, a remembered answer, or undefined
+function knownAnswer(combo: Combo, moves: string[]): string | undefined {
+  if (!combo.untouched) return undefined;
+  if (combo.targets.some((target) => target.isIdentical(combo.start))) return "";
+  return knownAnswers.get(answerKey(combo, moves));
+}
+
+// One combo's shortest answer within maxDepth moves (Infinity = no limit): known already, or searched by the worker (which only finds answers shorter than
+// the maxDepth it gets, hence + 1); throws "No solution found!" when there's none
+async function searchCombo(combo: Combo, options: StepOptions, maxDepth: number): Promise<string> {
+  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  const known = knownAnswer(combo, generatorMoves);
+  if (known !== undefined) {
+    if (countMoves(known) > maxDepth) throw new Error("No solution found!");
+    return known;
+  }
+  const reply = await askWorker(
+    {
+      kind: "search",
+      start: combo.start,
+      targets: combo.targets,
+      moves: generatorMoves,
+      solvableWith: options.solvableWith,
+      orbitTables: orbitTables(combo),
+      ...(Number.isFinite(maxDepth) ? { maxDepth: maxDepth + 1 } : {}),
+    },
+    options.onProgress,
+  );
+  const moves = reply.moves ?? "";
+  // An untouched combo's answer is its shortest one (the search deepens one move at a time): remember it
+  if (combo.untouched) {
+    if (knownAnswers.size >= MAX_KNOWN_ANSWERS) knownAnswers.delete(knownAnswers.keys().next().value!);
+    knownAnswers.set(answerKey(combo, generatorMoves), moves);
+  }
+  return moves;
+}
+
 // A step's result for one answer: the grip rotation and moves, the offset it reached (the target the cube matches after it, or with solvable-with moves
 // the one those moves reach; a lone target needs no check), and the pieces it left for good
 function stepResult({ combo, moves }: Answer, searches: number, solvableWith: string[] = []): StepResult {
@@ -971,10 +1615,19 @@ function stepResult({ combo, moves }: Answer, searches: number, solvableWith: st
       ? solvableIndex(end, combo.targets, solvableWith)
       : 0;
   const offset = combo.offsets[Math.max(0, reached)];
-  // Pieces it solved, and the ones later steps may keep (the solvable-with moves may still move the others)
-  const pieces = goalToText(combo.goal);
+  // Pieces it solved (an untouched step: the ones it sent home, not the whole cube it was relabeled to), and the ones later steps may keep (the solvable-with moves may still move the others)
+  const pieces = combo.untouched?.pieces ?? goalToText(combo.goal);
   const settled = solvableWith.length ? goalToText(settledGoal(combo.goal, solvableWith)) : pieces;
-  return { solution: new Alg(joinMoves(combo.rotation, moves)), rotation: combo.rotation, offset, pieces, settled, alternative: combo.alternative, searches };
+  return {
+    solution: new Alg(joinMoves(combo.rotation, moves)),
+    rotation: combo.rotation,
+    offset,
+    pieces,
+    settled,
+    alternative: combo.alternative,
+    searches,
+    ...(combo.untouched ? { changed: combo.untouched.changed } : {}),
+  };
 }
 
 // Solve only the goal pieces (a step like the cross), trying each alternative × grip (each with all its offsets at once) and keeping the shortest answer
@@ -1005,8 +1658,8 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   const most = Math.max(1, options.maxCandidates ?? MAX_CANDIDATES);
   // Longest answer that still counts: the shortest plus the extra moves, within the user's limit
   const longest = Math.min(shortest + Math.max(0, options.extraMoves ?? 0), options.maxDepth ?? Infinity);
-  // How an answer leaves the cube (grip and every piece), so answers leaving it the same way count once
-  const leaves = ({ combo, moves }: Answer) => `${combo.rotation}/${JSON.stringify(combo.held.applyAlg(moves).patternData)}`;
+  // How an answer leaves the cube (grip and every piece, as it really is: untouched steps' held cubes are relabeled), so answers leaving it the same way count once
+  const leaves = ({ combo, moves }: Answer) => `${combo.rotation}/${JSON.stringify((combo.cube ?? combo.held).applyAlg(moves).patternData)}`;
   const seen = new Set([leaves(answer)]);
   const found: { answer: Answer; length: number; order: number }[] = [];
   let lists = 0;
@@ -1019,7 +1672,16 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       try {
         // Every answer of this combo up to the longest (the worker only lists answers shorter than its maxDepth, hence + 1)
         const reply = await askWorker(
-          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, maxDepth: longest + 1, maxAnswers: most },
+          {
+            kind: "list",
+            start: combo.start,
+            targets: combo.targets,
+            moves: options.generatorMoves ?? FACE_MOVES,
+            solvableWith: options.solvableWith,
+            orbitTables: orbitTables(combo),
+            maxDepth: longest + 1,
+            maxAnswers: most,
+          },
           options.onProgress,
         );
         for (const moves of reply.answers ?? []) {
@@ -1045,20 +1707,41 @@ export async function solveFull(scramble: string, done = ""): Promise<Alg> {
 }
 
 // Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in, up to any of the step's offsets
-// (and with solvable-with moves, up to what those moves can still do); with alternatives, any one counts (pieces = null means the whole cube, where neither applies)
-export function reachesGoal(scramble: string, done: string, pieces: string | null, offsets = [""], solvableWith: string[] = []): boolean {
+// (and with solvable-with moves, up to what those moves can still do); with alternatives, any one counts (pieces = null means the whole cube, where neither applies).
+// For a step that keeps every other piece untouched, `untouched` also asks that every spot but the changed ones holds what it held before the step
+// (from = the moves before it, plus its grip rotation)
+export function reachesGoal(
+  scramble: string,
+  done: string,
+  pieces: string | null,
+  offsets = [""],
+  solvableWith: string[] = [],
+  untouched?: { from: string; changed: string },
+): boolean {
   // Full goal: every piece home, judged by the centers
   if (pieces === null) {
     return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
   }
-  // Step goal: some alternative's pieces match the solved cube turned by one of the offsets, everything else hidden
+  // Step goal: some alternative's pieces match the solved cube turned by one of the offsets (relative groups anywhere they fit), everything else hidden
   const held = heldPattern(scramble, done);
+  if (untouched && !keptOthers(heldPattern(scramble, untouched.from), held, goalFromText(untouched.changed, false))) return false;
   return splitAlternatives(pieces).some((text) => {
-    const goal = goalFromText(text);
+    const goal = dropFree(goalFromText(text));
     const reached = maskPattern(held, goal);
-    const targets = (offsets.length ? offsets : [""]).map((offset) => maskedTarget(goal, offset));
+    const targets = (offsets.length ? offsets : [""]).flatMap((offset) => goalTargets(goal, offset));
     // With solvable-with moves, a target those moves can reach from here counts too
     return solvableWith.length ? solvableIndex(reached, targets, solvableWith) >= 0 : targets.some((target) => reached.isIdentical(target));
+  });
+}
+
+// True when every spot but the changed ones holds the same piece, turned the same way (where twists count), in both patterns
+function keptOthers(before: KPattern, after: KPattern, changed: Goal): boolean {
+  return kpuzzle.definition.orbits.every(({ orbitName, numOrientations }) => {
+    const [was, now] = [before.patternData[orbitName], after.patternData[orbitName]];
+    const twists = countedTwists(orbitName, numOrientations);
+    return was.pieces.every(
+      (piece, spot) => changed[orbitName]?.[spot] !== undefined || (now.pieces[spot] === piece && now.orientation[spot] % twists === was.orientation[spot] % twists),
+    );
   });
 }
 
@@ -1074,16 +1757,20 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
-// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, no limit, no lookahead) and checking pieces, grips, offsets, solvable-with moves, moves and lookahead
+// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, no repeat)
+// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves and lookahead
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
   const name = typed || `Step ${index + 1}`;
   try {
-    // Goal pieces: alternatives written with " | " (a JSON list counts as alternatives too), no typos, and at least one piece unless the step keeps earlier ones
+    // BLD buffer (a buffer step traces its own pieces, so its pieces text stays empty)
+    const buffer = bufferFromText(String(step.buffer ?? ""));
+    // Goal pieces: alternatives written with " | " (a JSON list counts as alternatives too), no typos, and at least one piece unless the step keeps earlier ones or has a buffer
     const keep = Boolean(step.keep);
     const given: unknown = step.pieces;
-    const pieces = readAlternatives(Array.isArray(given) ? given.join("|") : String(given ?? ""), !keep).join(" | ");
+    const pieces = readAlternatives(Array.isArray(given) ? given.join("|") : String(given ?? ""), !keep && !buffer).join(" | ");
+    if (buffer && pieces) throw new Error("A step with a buffer picks its own pieces (the next targets of the buffer's cycle): leave its pieces empty.");
     // Grips: faces that may go on the bottom
     const bottom = (step.grips?.bottom ?? ["D"]).map((face) => String(face).toUpperCase());
     if (!bottom.length || !bottom.every((face) => Object.hasOwn(BOTTOM_TURNS, face))) throw new Error("Bottom faces must be some of U D F B R L.");
@@ -1092,6 +1779,14 @@ function readStep(data: unknown, index: number): StepConfig {
     offsetsFromText(offsets);
     // Solvable-with moves (checked by reading them, written back one space apart)
     const solvableWith = solvableFromText(String(step.solvableWith ?? "")).join(" ");
+    // Untouched (always with a buffer): no offsets or solvable-with moves, and only solved / :p / :x pieces
+    const untouched = Boolean(step.untouched) || Boolean(buffer);
+    if (untouched && (offsets || solvableWith)) throw new Error(UNTOUCHED_MIX);
+    if (untouched) for (const alternative of splitAlternatives(pieces)) checkUntouchedRoles(goalFromText(alternative));
+    // BLD targets per step (a whole number from 1) and parity pieces
+    const targetsPerStep = Number(step.targetsPerStep ?? 2);
+    if (!(Number.isInteger(targetsPerStep) && targetsPerStep >= 1)) throw new Error("Targets per step must be a whole number from 1 (2 = 3-cycles).");
+    const parity = parityFromText(String(step.parity ?? ""));
     // Allowed moves: one real move per entry, no whole-cube turns
     const moves = (step.moves ?? FACE_MOVES).map((move) => parseMoves(String(move)));
     if (!moves.length || moves.some((move) => !move || /\s/.test(move) || rotationsIn(move))) {
@@ -1104,7 +1799,24 @@ function readStep(data: unknown, index: number): StepConfig {
     const lookahead = Number(step.lookahead ?? 0);
     const extraMoves = Number(step.extraMoves ?? 0);
     if (![lookahead, extraMoves].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Lookahead and extra moves must be whole numbers (0 = none).");
-    return { name, pieces, keep, grips: { bottom, anyFront: Boolean(step.grips?.anyFront) }, offsets, solvableWith, moves, maxDepth, firstFound: Boolean(step.firstFound), lookahead, extraMoves };
+    return {
+      name,
+      pieces,
+      keep,
+      grips: { bottom, anyFront: Boolean(step.grips?.anyFront) },
+      offsets,
+      solvableWith,
+      untouched,
+      buffer,
+      targetsPerStep,
+      parity,
+      moves,
+      maxDepth,
+      firstFound: Boolean(step.firstFound),
+      lookahead,
+      extraMoves,
+      repeat: Boolean(step.repeat),
+    };
   } catch (error) {
     // Say which step is wrong (by number, plus its name when it has one)
     throw new Error(`Step ${index + 1}${typed ? ` (${typed})` : ""}: ${(error as Error).message}`);
@@ -1123,6 +1835,10 @@ function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProg
     firstFound: step.firstFound,
     keep: step.keep ? earlier : undefined,
     earlier,
+    untouched: step.untouched,
+    buffer: step.buffer,
+    targetsPerStep: step.targetsPerStep,
+    parity: step.parity,
     onProgress,
   };
 }
@@ -1153,72 +1869,105 @@ export async function runMethod(scramble: string, method: Method, options: Metho
     }
     return answer;
   };
-  // Moves the `count` steps after step `index` take, each its own shortest answer, from where `from` leaves the cube (Infinity when one of them finds nothing)
+  // Moves the next `count` steps after step `index` take, each its own shortest answer, from where `from` leaves the cube (Infinity when one of them finds nothing).
+  // A repeated step comes back until a round has nothing left (0 moves, or nothing new), then the step after it; those empty rounds don't count
   const movesAhead = async (index: number, count: number, from: string, before: Goal): Promise<number> => {
     let total = 0;
-    for (let next = index + 1; next <= index + count; next++) {
+    // Step that ran last, and whether it runs again next
+    let at = index;
+    let again = Boolean(method.steps[index].repeat);
+    for (let judged = 0; judged < count; ) {
+      const next = again ? at : at + 1;
+      if (next >= method.steps.length) break;
+      let result: StepResult;
       try {
-        const result = await solveOwn(next, from, before);
-        const solution = result.solution.toString();
-        total += countMoves(solution);
-        from = joinMoves(from, solution);
-        before = piecesAfter(before, result);
-      } catch {
+        result = await solveOwn(next, from, before);
+      } catch (error) {
+        // A repeated step with nothing new left is finished: go on with the next step
+        if (again && (error as Error).message === NOTHING_NEW) {
+          again = false;
+          continue;
+        }
         return Infinity;
       }
+      const solution = result.solution.toString();
+      const moves = countMoves(solution);
+      // Same when its round has nothing to do
+      if (again && !moves) {
+        again = false;
+        continue;
+      }
+      total += moves;
+      from = joinMoves(from, solution);
+      before = piecesAfter(before, result);
+      judged++;
+      at = next;
+      again = Boolean(method.steps[next].repeat) && moves > 0;
     }
     return total;
   };
   for (const [index, step] of method.steps.entries()) {
     const offsets = offsetsFromText(step.offsets);
     const solvableWith = solvableFromText(step.solvableWith ?? "");
-    const started = performance.now();
-    // Later steps that judge this step's answers (none past the last step)
-    const ahead = Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
-    let result: StepResult;
-    let lookahead: MethodStepResult["lookahead"] = null;
-    try {
-      if (ahead > 0) {
-        // Every candidate answer, judged by its own moves plus the next steps' own shortest answers (all asked at once: the worker answers them in turn)
-        const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress), extraMoves: step.extraMoves ?? 0 });
-        const totals = await Promise.all(
-          candidates.map(async (candidate) => {
-            const solution = candidate.solution.toString();
-            return countMoves(solution) + (await movesAhead(index, ahead, joinMoves(done, solution), piecesAfter(earlier, candidate)));
-          }),
-        );
-        // Fewest moves in total wins; on a tie the earlier candidate (the step's own shortest answer comes first)
-        const winner = totals.indexOf(Math.min(...totals));
-        result = candidates[winner];
-        lookahead = { candidates: candidates.length, steps: ahead, total: Number.isFinite(totals[winner]) ? totals[winner] : null };
-      } else {
-        // Search this step from where the last one ended, keeping the earlier pieces if it asks to
-        result = await solveOwn(index, done, earlier);
+    // Rounds of this step: one, or with repeat as many as it finds something to do (each listed as "name 1", "name 2"…)
+    for (let round = 1; ; round++) {
+      options.onStart?.(index, round);
+      const started = performance.now();
+      // Later steps (or rounds) that judge this step's answers (none past the last step)
+      const ahead = step.repeat ? (step.lookahead ?? 0) : Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
+      let result: StepResult;
+      let lookahead: MethodStepResult["lookahead"] = null;
+      try {
+        if (ahead > 0) {
+          // Every candidate answer, judged by its own moves plus the next steps' own shortest answers (all asked at once: the worker answers them in turn)
+          const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress), extraMoves: step.extraMoves ?? 0 });
+          const totals = await Promise.all(
+            candidates.map(async (candidate) => {
+              const solution = candidate.solution.toString();
+              return countMoves(solution) + (await movesAhead(index, ahead, joinMoves(done, solution), piecesAfter(earlier, candidate)));
+            }),
+          );
+          // Fewest moves in total wins; on a tie the earlier candidate (the step's own shortest answer comes first)
+          const winner = totals.indexOf(Math.min(...totals));
+          result = candidates[winner];
+          lookahead = { candidates: candidates.length, steps: ahead, total: Number.isFinite(totals[winner]) ? totals[winner] : null };
+        } else {
+          // Search this step from where the last one ended, keeping the earlier pieces if it asks to
+          result = await solveOwn(index, done, earlier);
+        }
+      } catch (error) {
+        // A repeated step with nothing new left is finished
+        if (round > 1 && (error as Error).message === NOTHING_NEW) break;
+        // Say which step found nothing
+        throw new Error(`${step.repeat ? `${step.name} ${round}` : step.name}: ${(error as Error).message}`);
       }
-    } catch (error) {
-      // Say which step found nothing
-      throw new Error(`${step.name}: ${(error as Error).message}`);
+      const ms = performance.now() - started;
+      const solution = result.solution.toString();
+      // A repeated step whose round has nothing to do is finished (its first round is listed even then)
+      if (round > 1 && !countMoves(solution)) break;
+      // Earlier pieces follow the step's grip turn, then this step's pieces join them (later roles win)
+      earlier = piecesAfter(earlier, result);
+      // Record the step, checked on its own goal and offsets (and, when it keeps every other piece untouched, on those pieces too)
+      const after = joinMoves(done, solution);
+      const untouched = result.changed === undefined ? undefined : { from: joinMoves(done, result.rotation), changed: result.changed };
+      const finished: MethodStepResult = {
+        ...result,
+        name: step.repeat ? `${step.name} ${round}` : step.name,
+        done,
+        offsets,
+        solvableWith,
+        moves: countMoves(solution),
+        ms,
+        ok: reachesGoal(scramble, after, result.pieces, offsets, solvableWith, untouched),
+        lookahead,
+      };
+      steps.push(finished);
+      options.onStep?.(finished, index);
+      done = after;
+      // One round only, or nothing left to do
+      if (!step.repeat || !finished.moves) break;
+      if (round >= MAX_REPEATS) throw new Error(`${step.name}: still finding something to do after ${MAX_REPEATS} rounds.`);
     }
-    const ms = performance.now() - started;
-    const solution = result.solution.toString();
-    // Earlier pieces follow the step's grip turn, then this step's pieces join them (later roles win)
-    earlier = piecesAfter(earlier, result);
-    // Record the step, checked on its own goal and offsets
-    const after = joinMoves(done, solution);
-    const finished: MethodStepResult = {
-      ...result,
-      name: step.name,
-      done,
-      offsets,
-      solvableWith,
-      moves: countMoves(solution),
-      ms,
-      ok: reachesGoal(scramble, after, result.pieces, offsets, solvableWith),
-      lookahead,
-    };
-    steps.push(finished);
-    options.onStep?.(finished, index);
-    done = after;
   }
   // Totals over all steps
   return {

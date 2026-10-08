@@ -8,7 +8,7 @@ use cubing::kpuzzle::{KPatternData, KPatternOrbitData, KPuzzle, KPuzzleOrbitName
 use wasm_bindgen::prelude::*;
 
 use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
-use crate::solvable::{close, read_targets, table_targets};
+use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
 use crate::table::{DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
@@ -340,12 +340,14 @@ impl SplitSearch {
         if items.is_empty() {
             return Err("Nothing to split".to_owned());
         }
-        // Sub-tables that fit the budget, each a relabeling of the targets (repeats dropped)
-        let fits = |kept: &[(usize, bool)]| {
+        // Sub-tables that fit a budget, each a relabeling of the targets (repeats dropped)
+        let fits_in = |kept: &[(usize, bool)], budget: f64| {
             let relabel = Relabel::new(&kpuzzle, &targets, &full, &items, kept);
             let relaxed: Vec<KPatternData> = targets.iter().map(|target| relabel.apply(target)).collect();
-            estimate_size(&kpuzzle, &relaxed, &full.turns).is_ok_and(|size| size as f64 <= max_states)
+            estimate_size(&kpuzzle, &relaxed, &full.turns).is_ok_and(|size| size as f64 <= budget)
         };
+        // Sub-tables that fit this split's budget
+        let fits = |kept: &[(usize, bool)]| fits_in(kept, max_states);
         // Planned sub-tables (the items each one keeps)
         let mut plans = plan(&items, &fits);
         // With "solvable with" moves, also one table per orbit holding every item's position (no twists) when it fits: the moves usually allow
@@ -354,6 +356,22 @@ impl SplitSearch {
             for o in 0..kpuzzle.orbit_info_iter().count() {
                 let kept: Kept = (0..items.len()).filter(|&item| items[item].orbit == o).map(|item| (item, false)).collect();
                 if kept.len() > 1 && fits(&kept) {
+                    plans.push(kept);
+                }
+            }
+        }
+        // A goal asking for whole-orbit tables (a BLD step: the whole cube, a few pieces cycled) also gets one table per orbit holding all its items, the last
+        // twisted one placed only (the other twists fix its twist), when it fits that bigger budget: all 8 corners = 88M states, which sees a corner swap or twist
+        // (parity, twisted corners) far better than tables of one corner each (12 edges don't fit; 6-edge tables were tried and barely helped edge flips)
+        let orbit_states = read_orbit_tables(targets_json)?;
+        if orbit_states > 0.0 {
+            for o in 0..kpuzzle.orbit_info_iter().count() {
+                let mut kept: Kept = (0..items.len()).filter(|&item| items[item].orbit == o).map(|item| (item, items[item].twisted)).collect();
+                // The last twisted item without its twist
+                if let Some(last) = kept.iter_mut().rev().find(|(_, twisted)| *twisted) {
+                    last.1 = false;
+                }
+                if kept.len() > 1 && fits_in(&kept, orbit_states) {
                     plans.push(kept);
                 }
             }

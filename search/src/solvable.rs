@@ -10,8 +10,8 @@ use crate::coords::{pattern_data, Turn};
 // Most targets a goal may have once closed under its moves (each one is a table seed and a goal-check entry)
 pub const MAX_TARGETS: usize = 100_000;
 
-// A goal's targets as sent: a JSON list of patterns, or {"targets": [...], "solvableWith": ["R", "U"]} when those moves may finish it later;
-// gives the patterns as sent and those moves (none for a plain list)
+// A goal's targets as sent: a JSON list of patterns, or {"targets": [...], "solvableWith": ["R", "U"], "orbitTables": 100000000} when those moves may finish it later
+// (and / or it asks for whole-orbit sub-tables, see read_orbit_tables); gives the patterns as sent and those moves (none for a plain list, or an object without them)
 pub fn read_targets(kpuzzle: &KPuzzle, targets_json: &str) -> Result<(Vec<KPatternData>, Vec<Move>), String> {
     let value: serde_json::Value = serde_json::from_str(targets_json).map_err(|e| e.to_string())?;
     // A plain list, or the list and the moves from an object
@@ -19,7 +19,8 @@ pub fn read_targets(kpuzzle: &KPuzzle, targets_json: &str) -> Result<(Vec<KPatte
         serde_json::Value::Array(list) => (list.clone(), vec![]),
         _ => {
             let list = value["targets"].as_array().ok_or("Targets must be a list of patterns")?.clone();
-            let free: Vec<Move> = serde_json::from_value(value["solvableWith"].clone()).map_err(|e| e.to_string())?;
+            // No "solvableWith" field = no moves
+            let free: Vec<Move> = if value["solvableWith"].is_null() { vec![] } else { serde_json::from_value(value["solvableWith"].clone()).map_err(|e| e.to_string())? };
             (list, free)
         }
     };
@@ -28,6 +29,12 @@ pub fn read_targets(kpuzzle: &KPuzzle, targets_json: &str) -> Result<(Vec<KPatte
         return Err("No target".to_owned());
     }
     Ok((targets, free))
+}
+
+// Most states a whole-orbit sub-table may have when the goal asks for them ({"targets": [...], "orbitTables": 100000000}); 0 = none (a plain list, or an object without it)
+pub fn read_orbit_tables(targets_json: &str) -> Result<f64, String> {
+    let value: serde_json::Value = serde_json::from_str(targets_json).map_err(|e| e.to_string())?;
+    Ok(value.get("orbitTables").and_then(|states| states.as_f64()).unwrap_or(0.0))
 }
 
 // The targets as sent, closed under their "solvable with" moves and checked against the allowed turns

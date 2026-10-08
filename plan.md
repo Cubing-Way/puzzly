@@ -15,8 +15,8 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [ ] Part 5d — Table files: option to download (export) a method's tables and load them back
 - [x] Part 6 — Lookahead across steps (pseudo-slotting, multislotting)
 - [x] Part 7a — Whole-state check "Solvable with" moves (2-gen CP, any "these moves can finish it" goal)
-- [ ] Part 7b — Pieces solved relative to each other anywhere (pair joined anywhere, FMC pseudo-blocks)
-- [ ] Part 7c — BLD parity
+- [x] Part 7b — Pieces solved relative to each other anywhere (pair joined anywhere, FMC pseudo-blocks)
+- [x] Part 7c — BLD: untouched pieces, buffer tracing, parity, repeated steps
 
 ## Goal of the project
 
@@ -196,6 +196,53 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   (and `stepToForm` dropped them). Page: a second row of move boxes `U2 … S2` (`chosenMoves()` drops `X2` when `X` is ticked too; `showMoves()` ticks `X` for `X` / `X'` and `X2` for `X2` / `X2'`) and quick picks *Face turns*, *R U*, *DR* (`U D R2 L2 F2 B2`).
   Separate U / U' boxes would mean nothing: a move's powers are always all used (U' alone = U). DR phase 2 after a DR step (every piece, keep, DR moves), Node, 12 scrambles: finishes of 11–15 moves, shortest within those moves; first solves 2–10 s
   (small, then big split tables), then 11–13 move finishes 14–131 ms and 14–15 move ones 0.4–4.7 s (generic split tables, no Kociemba-style phase 2 tables). Built page: a 10-move DR-only scramble solved in 10 moves, 1.82 s with 13 table builds.
+- Relative groups (Part 7b): role suffix `:r` / `:r2`… = role `relativeN` (`GROUP_ROLES` maps o / s / r; `relativeGroup(role)` gives N, 0 for other roles). `maskPattern` treats them like solved pieces (own id, twist counts); the targets carry the "anywhere".
+  `goalTargets(goal, offset)` (engine.ts, TS only, Rust unchanged) = `maskedTarget` when there are no groups, else one target per mix of the groups' placements: each group as `ALL_GRIPS` turns the solved cube (24, "as held" first,
+  so all groups at home is target 0 and wins ties), skipping mixes where two groups share a spot; `placedPatterns` puts the moved pieces down, refuses to push off a `solve` / `place` piece, and fills the spots they left with the
+  pushed-off pieces (ignored, `:o` twist 0, `:s`) in every distinct class order (`arrangements`); then the offset is applied (goal met, then off by the offset) and masked; cap `MAX_RELATIVE_TARGETS` 10k per offset.
+  `reachableTargets(targets, moves)` drops targets the worker would refuse (Coords::new): different from target 0 on a spot no allowed move changes, or, in a type no move twists (edges under U R L), a piece with another twist.
+  stepCombos: per offset `reachableTargets(goalTargets(…), generatorMoves)`, `Combo.offsets` has one entry per target (repeats), dedupe by `cellsKey` (was `isIdentical`, same result), `estimate` takes each offset's targets (a state counts when any target accepts it),
+  the repeat key uses each offset once. `reachesGoal` checks every offset's `goalTargets` (unfiltered). Counts: a pair 24 targets, cross + pair 16, cross + two pairs 200.
+  `mergeGoals(base, over)` renumbers base's relative groups past over's highest (keep + own, and `piecesAfter`), so each earlier group stays its own; `covers` counts any relative role as covering a relative role
+  (so "join the easiest pair" with any front skips joined pairs). Page: role picker `:r` / `:r2`, preset "Cross + front-right pair joined anywhere", relative pieces drawn in full color; chip role tags now show
+  (the CSS looked for a `data-role` the page never set; it uses `data-tag` now).
+  Testing: `harness/rel.ts` style checks (fake worker) compare with a raw-cube "rigid image of solved under one of the 24 grips" check, and `harness/twips.ts` re-solves the engine's last search request with twips `Searcher` (same lengths);
+  example methods old vs new: identical solutions, offsets and search counts (5 × 4 scrambles), pseudo-slotting time within noise after making `mergeGoals` loop-based (the `flatMap` version cost ~5%).
+- BLD (Part 7c): `StepOptions` / `StepConfig` fields:
+  - `untouched` (every unlisted piece must end exactly as it is now),
+  - `buffer` (piece name; implies untouched, pieces must be `""`),
+  - `targetsPerStep` (default 2),
+  - `parity` (piece names),
+  - `StepConfig.repeat` (run the step again until a round has 0 moves, or NOTHING_NEW after round 1; rows named `Name 1`, `Name 2`…; cap `MAX_REPEATS` 60).
+
+  `readStep` key order: … `solvableWith, untouched, buffer, targetsPerStep, parity, moves, …, extraMoves, repeat`. New role `free` (`:x`): the spot may change in untouched steps, same as unlisted elsewhere (`dropFree` in `maskPattern`, `stepCombos`, `reachesGoal`). Exports: `bufferFromText`, `parityFromText`, `dropFree`; `MethodOptions.onStart(index, round)`.
+
+  Engine (TS):
+  - `untouchedCombos` (from `stepCombos`) builds a `Wanted` per grip × alternative: `set` spots with a piece and a twist (null = any), `free` spots (any leftover piece, any twist), `swap` spots (pieces swap among themselves keeping their twists).
+    - Manual goals use `untouchedWanted`: listed pieces go home; spots a listed piece leaves, and `:x` spots, are free; only solved / `:p` / `:x` roles are allowed.
+    - Buffer steps use `traceWanted`: follow the cycle, one goal per cycle-break choice. At a step's start with the buffer home, also one goal per pair of pieces twisted in place (flip / twist algs).
+  - `completions` lists every end state, keeping those whose `changeOf` (per orbit: permutation parity, twist sum) lies in `reachableChanges(moves)`, the group the moves' own changes generate. That makes it exact for face turns, with M and centers too. Cap `MAX_UNTOUCHED_TARGETS` 5k.
+  - If none is reachable and the step has parity pieces: `withParity` (clean swap first, then any twist). Otherwise PARITY_NEEDED / UNTOUCHED_OUT.
+  - Each end state W becomes a combo with `held = relabel(cube, W)` (piece renamed to its spot in W, twist counted from W's; moves act on spots, so answers are unchanged), target = `maskedTarget(wholeGoal())`, `Combo.cube` = the real held cube (for `stepCandidates`' end-state key), `Combo.untouched = { pieces, changed }`.
+  - `StepResult.changed` lists the spots the step may change. `reachesGoal(…, untouched?: { from, changed })` also checks every other spot against `heldPattern(scramble, from)` (`from` = moves before the step + its rotation).
+  - `knownAnswers` (engine memory, 5k) remembers untouched answers by moves + relabeled start, since a case doesn't depend on the scramble. `searchCombos` takes known ones first, so they bound the rest.
+
+  Rust: targets JSON may be `{"targets": [...], "orbitTables": N}` (`solvableWith` now optional in the object, `read_orbit_tables`). `SplitSearch` then adds per orbit one table of all its items, the last twisted one placed only, when ≤ N. The engine sends N = `ORBIT_TABLE_STATES` (100M) for untouched combos only, so other goals keep their exact plans and keys. On the cube that is all corners: 88,179,840 states, depth 11, ~7 s. Worker: `attachTables` builds each sub-table with `max(MAX_TABLE_STATES, split.states(i))`.
+
+  Numbers (Node, warm tables; bound → length):
+  - 3-cycles: 0–20 ms.
+  - Parity (edge swap + clean UFR/UBR swap): bound 10 → 13–14, 2 ms–6 s. Without the corner table: bound 6–7, 43–115 s.
+  - 2 corner twists: 40–500 ms.
+  - 2-edge flips: bound 6–8 → 13–14, 3.5–53 s. Tried and dropped: two 6-edge tables (42.6M each, needed `TABLE_LIMIT` 1<<24, ~8 s each), 1.5–2× fewer nodes; "EO of all edges + 4 edges" (48.7M), bound 6–7.
+  - Method "3-style BLD", 12 random scrambles: 81–116 moves, all rounds checked, cube solved. First run ~11 s with 18 builds; later runs 0.1–2.8 s, one first-time flip 26 s.
+
+  Checked:
+  - Corners first with edge parity `UF UR`, OP-style (1 target per step, every round parity), M slices, lookahead 1, solved cube (0 moves).
+  - CFOP "easiest pair" with repeat stops after 4 pairs.
+  - The 5 old example methods give identical solutions, offsets and search counts (4 random scrambles each, vs the pre-7c engine and worker).
+  - Built page: a single BLD step was 10 moves in 9.1 s (18 builds), and the example method gave 96 moves in 7.3 s, all ✓.
+
+  Testing: `bld.ts` / `edge.ts` style harnesses (fake Worker). Scrambles need a real PRNG: an LCG's `seed % 6` only gave F U L moves.
 ---
 
 ## Part 1 — Groups + centers
@@ -407,5 +454,24 @@ New example "ZZ (left block + CP, then R U only)": EOLine, left block + CP (U R 
 without the CP check, 5 of 6 scrambles fail at the R U last layer ("No solution found!"); lookahead on the CP step made 2 of 6 runs shorter. Built page (the built-in browser opened localhost this time): CP line step 6 moves in 1.55 s with its one table build;
 the example method 41 moves in 1.46 s (15 tables built), after a reload 709 ms (12 loaded from IndexedDB, 3 small ones rebuilt).
 Limits: later steps only keep the pieces the moves can't disturb (`settled`), so a later step that uses other moves can undo a CP; that's the method's choice, as in real 2GR / ZZ-d.
-For 7b (pieces relative to each other anywhere): the same closure with x y z would do it, but goal text can't drop all centers yet (no center typed = all six kept), and kept centers under x y z fail the "spots the moves never touch" check; that needs a way to say "no centers" first.
-For 7c (BLD parity): not a closure of a few moves (half of all states), so it needs a parity coordinate in the numbering or a check function in IDA*.
+
+**Done (7b, relative groups):** see "Relative groups (Part 7b)" in Facts. Not the x y z closure suggested after 7a: that makes the whole goal relative (and needs a "no centers" goal), so it can't say "cross solved, pair joined anywhere".
+Instead a role, `:r` / `:r2`…, marks groups of pieces solved relative to each other, and the engine sends every placement of the groups as targets (TS only; the tables and IDA* were unchanged and stay shortest).
+Checked (Node, fake worker): pair joined anywhere 2–3 moves (2–5 into its slot), cross + pair joined 6–7 (cross 5–7, XCross 7–9), ~10 ms after a ~0.35 s first build; cross + two pairs (`:r`, `:r2`, 200 targets) 7–8 in ~90 ms; pseudo 2x2x2 (corner + 3 edges) 5–6 vs 6–7 at home;
+twips on the same requests gives the same lengths; R U only, ZZ moves with EO kept (`:o` edges pushed around), ADF offsets and any front work; every answer is a rigid image of solved on the raw cube.
+Methods: two "join the easiest pair" steps with keep pick different pairs and keep both joined (`:r`, `:r2`), an insert step after them keeps the other pair joined; lookahead 1 on the second join made one run 17 → 13 moves (free insert).
+Pseudo 2x2x2 then 2x2x3 (the same group plus 3 pieces, no keep) extends the same block: 10–13 moves on 4 scrambles vs 11–13 at home. Old example methods: identical solutions, offsets and search counts. Built page: the new preset 7 moves in 381 ms with 3 table builds.
+On the question whether relative checks could speed up ordinary steps: no. Answers are already shortest, and a "joined" table is a valid but weak lower bound (being in the slot implies joined, and joining takes only a few moves), so the cross + piece sub-tables almost always give the larger bound.
+Limits: more than 10k placements per offset (3+ groups) is refused; with restricted moves a group already joined in a spot the moves never touch isn't recognized (that placement is dropped so the worker accepts the list).
+
+**Done (7c, BLD):** see "BLD (Part 7c)" in Facts.
+- Not the parity coordinate planned after 7b: BLD steps aren't "a state with even parity". They are "these pieces home, everything else exactly as it is now", which no goal could say.
+- A step option makes unlisted pieces *untouched*. A *buffer* traces the cycle; cycle breaks and twisted-in-place pairs become alternatives, and the shortest wins.
+- *Parity pieces* swap only when the targets left are odd, which the parities / twist-sums check detects. *Repeat until done* makes one step a whole BLD phase.
+- Relabeling every end state to the solved cube makes all BLD steps one shared goal, with one whole-orbit table (all corners) added in Rust.
+- Answers stay shortest: optimal commutators (8–10), parity 10–14, flips 13–14.
+
+Limits:
+- First-time 2-edge flips take seconds to a minute (no table that fits sees them).
+- Twists of in-place pairs only start a step with the buffer home.
+- `knownAnswers` lives as long as the page; it could be stored like the tables if repeated flips matter.

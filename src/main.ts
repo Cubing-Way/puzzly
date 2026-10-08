@@ -14,6 +14,8 @@ import {
   invertMoves,
   offsetsFromText,
   solvableFromText,
+  bufferFromText,
+  parityFromText,
   roleFromSuffix,
   roleSuffix,
   randomScramble,
@@ -51,6 +53,15 @@ interface Run {
   ms: number;
   ok: boolean; // scramble + done + solution really reaches the goal (up to one of the offsets)
   lookahead?: MethodStepResult["lookahead"]; // method steps with lookahead: candidates compared and the winner's moves over the steps they were judged by
+  bld?: Bld; // step runs: the blindfolded fields it was solved with (untouched steps show the whole cube)
+}
+
+// Blindfolded fields of a step: every other piece untouched, the buffer ("" = none), targets per step and parity pieces
+interface Bld {
+  untouched: boolean;
+  buffer: string;
+  targetsPerStep: number;
+  parity: string;
 }
 
 // Find a page element by id
@@ -77,6 +88,11 @@ const offsetsInput = $<HTMLInputElement>("offsets-input");
 const offsetsError = $("offsets-error");
 const solvableInput = $<HTMLInputElement>("solvable-input");
 const solvableError = $("solvable-error");
+const untouchedBox = $<HTMLInputElement>("untouched-box");
+const bufferInput = $<HTMLInputElement>("buffer-input");
+const perStepInput = $<HTMLInputElement>("per-step-input");
+const parityInput = $<HTMLInputElement>("parity-input");
+const bldError = $("bld-error");
 const searchCount = $("search-count");
 const maxDepthInput = $<HTMLInputElement>("max-depth");
 const firstFoundBox = $<HTMLInputElement>("first-found");
@@ -104,6 +120,7 @@ const stepList = $("step-list");
 const stepsEmpty = $("steps-empty");
 const stepNameInput = $<HTMLInputElement>("step-name");
 const keepBox = $<HTMLInputElement>("step-keep");
+const repeatBox = $<HTMLInputElement>("step-repeat");
 const lookaheadInput = $<HTMLInputElement>("step-lookahead");
 const extraMovesInput = $<HTMLInputElement>("step-extra");
 const addStepButton = $<HTMLButtonElement>("add-step");
@@ -202,10 +219,10 @@ function readMoves(input: HTMLTextAreaElement | HTMLInputElement, error: HTMLEle
   }
 }
 
-// Check the goal pieces, one alternative per line; returns false and shows why on a typo or an empty goal (empty is fine for a step that keeps earlier pieces)
+// Check the goal pieces, one alternative per line; returns false and shows why on a typo or an empty goal (empty is fine for a step that keeps earlier pieces, or has a buffer)
 function readPieces(): boolean {
   try {
-    readAlternatives(piecesInput.value, !keepBox.checked);
+    readAlternatives(piecesInput.value, !keepBox.checked && !bufferInput.value.trim());
     piecesError.textContent = "";
   } catch (error) {
     piecesError.textContent = (error as Error).message;
@@ -267,6 +284,32 @@ function readSolvable(): string[] | null {
   }
 }
 
+// Read the blindfolded fields; returns them (buffer and parity pieces cleaned up, untouched always on with a buffer), or null and shows why under them
+function readBld(): Bld | null {
+  try {
+    const buffer = bufferFromText(bufferInput.value);
+    const parity = parityFromText(parityInput.value);
+    const targetsPerStep = Math.max(1, Math.floor(Number(perStepInput.value) || 2));
+    const untouched = untouchedBox.checked || Boolean(buffer);
+    // A buffer step picks its own pieces; untouched steps take no offsets or solvable-with moves
+    if (buffer && splitAlternatives(piecesInput.value).some(Boolean)) throw new Error("A step with a buffer picks its own pieces (the buffer's next targets): leave Pieces empty.");
+    if (untouched && (offsetsInput.value.trim() || solvableInput.value.trim())) throw new Error("A step that keeps every other piece untouched can't have offsets or solvable-with moves.");
+    bldError.textContent = "";
+    return { untouched, buffer, targetsPerStep, parity };
+  } catch (problem) {
+    bldError.textContent = (problem as Error).message;
+    return null;
+  }
+}
+
+// Put blindfolded fields into the form
+function showBld(bld: Bld): void {
+  untouchedBox.checked = bld.untouched;
+  bufferInput.value = bld.buffer;
+  perStepInput.value = String(bld.targetsPerStep);
+  parityInput.value = bld.parity;
+}
+
 // Offsets back as field text (no offset left out; commas only when an offset has several moves)
 function offsetsText(offsets: string[]): string {
   const typed = offsets.filter(Boolean);
@@ -297,9 +340,11 @@ function goalKey(text: string): string {
   return [...rolesIn(text)].map(([piece, role]) => `${piece}=${role}`).sort().join(" ");
 }
 
-// Viewer mask letter for a role: full color, only the orientation sticker, orientation sticker dimmed, or dimmed for swap groups
+// Viewer mask letter for a role: full color (solved, or solved relative to its group), only the orientation sticker, orientation sticker dimmed, dimmed for swap groups,
+// or grey for a spot that may change (:x, the same as not listed)
 function maskChar(role: Role): string {
-  if (role === "solve") return "-";
+  if (role === "free") return "I";
+  if (role === "solve" || role.startsWith("relative")) return "-";
   if (role === "place") return "P";
   return role.startsWith("orient") ? "O" : "D";
 }
@@ -412,9 +457,13 @@ function showSearchCount(offsets: string[] | null): void {
   const each = alternatives > 1 ? `${plural(alternatives, "alternative")} × ` : "";
   // One search per alternative × grip covers every offset (they share one table)
   const allOffsets = offsets && offsets.length > 1 ? `, each covering all ${offsets.length} offsets (counting none)` : "";
-  searchCount.textContent = offsets
-    ? `Up to ${plural(alternatives * grips, "search", "searches")}: ${each}${plural(grips, "grip")}${allOffsets}. Repeats, and grips whose distance can't beat the best, are skipped.`
-    : "";
+  // Untouched steps search each way the goal can end instead (every cycle-break choice, free twists, parity)
+  const untouched = untouchedBox.checked || bufferInput.value.trim();
+  searchCount.textContent = !offsets
+    ? ""
+    : untouched
+      ? `Every way the goal can end (with a buffer: each cycle-break choice) is measured in ${plural(grips, "grip")}, then searched closest first; repeats and ones that can't beat the best are skipped.`
+      : `Up to ${plural(alternatives * grips, "search", "searches")}: ${each}${plural(grips, "grip")}${allOffsets}. Repeats, and grips whose distance can't beat the best, are skipped.`;
 }
 
 // Offsets or grips edited: check the offsets and update the search count (the shown result stays)
@@ -430,18 +479,19 @@ function syncViewer(): boolean {
   fitPieces();
   renderChips();
   syncPreset();
-  // Validate the inputs (step pieces, offsets and solvable-with moves only in step mode)
+  // Validate the inputs (step pieces, offsets, solvable-with moves and blindfolded fields only in step mode)
   const scramble = readMoves(scrambleInput, scrambleError);
   const done = readMoves(doneInput, doneError);
   const piecesOk = step ? readPieces() : true;
   const offsets = step ? readOffsets() : [""];
   const solvableWith = step ? readSolvable() : [];
-  if (!step) piecesError.textContent = offsetsError.textContent = solvableError.textContent = "";
+  const bld = step ? readBld() : null;
+  if (!step) piecesError.textContent = offsetsError.textContent = solvableError.textContent = bldError.textContent = "";
   showSearchCount(offsets);
-  // Update the cube for whatever parsed (mask the caret line's goal in the grip the cube is held in now)
+  // Update the cube for whatever parsed (mask the caret line's goal in the grip the cube is held in now; untouched steps care about every piece, so the whole cube shows)
   if (scramble !== null && done !== null) player.experimentalSetupAlg = joinMoves(scramble, done);
-  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step ? currentLineText() : null, scramble ?? "", done ?? "");
-  return scramble !== null && done !== null && piecesOk && offsets !== null && solvableWith !== null;
+  if (piecesOk) player.experimentalStickeringMaskOrbits = maskFor(step && !bld?.untouched ? currentLineText() : null, scramble ?? "", done ?? "");
+  return scramble !== null && done !== null && piecesOk && offsets !== null && solvableWith !== null && (!step || bld !== null);
 }
 
 // Form edited by hand: refresh the viewer and drop the outdated result
@@ -464,8 +514,8 @@ function showResult(run: Run | null): void {
   // Viewer: start position + solution, rewound to the start
   player.alg = run?.solution ?? "";
   player.timestamp = "start";
-  // Mask the goal pieces of the grip the solution ends in (it may start with a rotation)
-  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "full" ? null : run.pieces, run.scramble, joinMoves(run.done, run.solution));
+  // Mask the goal pieces of the grip the solution ends in (it may start with a rotation); full solves and untouched steps show the whole cube
+  if (run) player.experimentalStickeringMaskOrbits = maskFor(run.mode === "full" || run.bld?.untouched ? null : run.pieces, run.scramble, joinMoves(run.done, run.solution));
   // Text and stats
   solutionText.textContent = run ? run.solution || "(already solved)" : "—";
   movesStat.textContent = run ? String(run.moves) : "—";
@@ -555,11 +605,12 @@ function loadRun(run: Run): void {
   doneInput.value = run.done;
   // Method runs only bring back the start position (their steps stay in the method panel)
   if (run.mode !== "method") (form.elements.namedItem("mode") as RadioNodeList).value = run.mode;
-  // Step runs bring back their pieces (every alternative, one per line), offsets and solvable-with moves too
+  // Step runs bring back their pieces (every alternative, one per line), offsets, solvable-with moves and blindfolded fields too
   if (run.mode === "step") {
     piecesInput.value = run.alternatives.join("\n");
     offsetsInput.value = offsetsText(run.offsets);
     solvableInput.value = run.solvableWith.join(" ");
+    if (run.bld) showBld(run.bld);
   }
   syncViewer();
   showResult(run);
@@ -593,10 +644,16 @@ async function solve(): Promise<void> {
   const scramble = readMoves(scrambleInput, scrambleError) ?? "";
   const done = readMoves(doneInput, doneError) ?? "";
   const mode = currentMode();
-  // Step goal: one alternative per line, any one counts (labelled with preset names where they match)
+  // Step goal: one alternative per line, any one counts (labelled with preset names where they match); blindfolded fields (syncViewer already checked them)
   const alternatives = mode === "step" ? splitAlternatives(piecesInput.value) : [];
   const pieces = alternatives.join(" | ");
-  const goal = mode === "full" ? "Full cube" : alternatives.map(goalLabel).join(" | ");
+  const bld = mode === "step" ? (readBld() ?? undefined) : undefined;
+  const goal =
+    mode === "full"
+      ? "Full cube"
+      : bld?.buffer
+        ? `BLD from ${bld.buffer} (${plural(bld.targetsPerStep, "target")})`
+        : alternatives.map(goalLabel).join(" | ") + (bld?.untouched ? ", rest untouched" : "");
   const generatorMoves = chosenMoves();
   const maxDepth = maxDepthInput.value ? Number(maxDepthInput.value) : undefined;
   // First-answer mode only applies to steps
@@ -631,27 +688,31 @@ async function solve(): Promise<void> {
     let alternative = 0;
     let offset = "";
     let searches = 1;
+    // Untouched steps: the spots the answer may change, checked against the cube before it (in its grip)
+    let untouched: { from: string; changed: string } | undefined;
     if (mode === "full") solution = (await solveFull(scramble, done)).toString();
     else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, onProgress: tables.onProgress });
+      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, onProgress: tables.onProgress });
       solution = result.solution.toString();
       solved = result.pieces;
       alternative = result.alternative;
       offset = result.offset;
       searches = result.searches;
+      if (result.changed !== undefined) untouched = { from: joinMoves(done, result.rotation), changed: result.changed };
     }
     const ms = performance.now() - started;
     clearInterval(timer);
-    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts, and what the solvable-with moves can still do)
-    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets, solvableWith);
+    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts, what the solvable-with moves can still do, and the untouched pieces)
+    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets, solvableWith, untouched);
     // Record and show the run
-    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, solvableWith, goal, solution, offset, moves: countMoves(solution), ms, ok };
+    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, solvableWith, goal, solution, offset, moves: countMoves(solution), ms, ok, bld };
     runs.unshift(run);
     showResult(run);
     // Mention how many searches ran (all compared, or up to the first answer), the alternative that won, the offset left in and the moves that may finish it
     const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
     const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
-    const offsetNote = (offset ? `, offset ${offset}` : "") + (solvableWith.length ? `, solvable with ${solvableWith.join(" ")}` : "");
+    const offsetNote =
+      (offset ? `, offset ${offset}` : "") + (solvableWith.length ? `, solvable with ${solvableWith.join(" ")}` : "") + (untouched ? `, sent home ${solved || "nothing"}, changed ${untouched.changed || "nothing"}` : "");
     setStatus(
       ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}${tables.summary()}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
@@ -675,13 +736,14 @@ function stepFromForm(number: number): StepConfig | null {
     setStatus("Switch Goal to Step to set up a method step.", "error");
     return null;
   }
-  // Pieces, offsets and solvable-with moves, checked like a step solve
+  // Pieces, offsets, solvable-with moves and blindfolded fields, checked like a step solve
   const piecesOk = readPieces();
   const offsets = readOffsets();
   const solvableWith = readSolvable();
+  const bld = readBld();
   const moves = chosenMoves();
   const bottom = [...form.querySelectorAll<HTMLInputElement>('input[name="bottom"]:checked')].map((box) => box.value);
-  if (!piecesOk || !offsets || !solvableWith) setStatus("Fix the marked field first.", "error");
+  if (!piecesOk || !offsets || !solvableWith || !bld) setStatus("Fix the marked field first.", "error");
   else if (!moves.length) setStatus("Pick at least one allowed move.", "error");
   else if (!bottom.length) setStatus("Pick at least one bottom face.", "error");
   else {
@@ -693,12 +755,16 @@ function stepFromForm(number: number): StepConfig | null {
       grips: { bottom, anyFront: anyFrontBox.checked },
       offsets: offsetsText(offsets),
       solvableWith: solvableWith.join(" "),
+      // Blindfolded fields: every other piece untouched, buffer, targets per step, parity pieces
+      ...bld,
       moves,
       maxDepth: maxDepthInput.value ? Number(maxDepthInput.value) : null,
       firstFound: firstFoundBox.checked,
       // Lookahead (later steps that judge this step's answers) and extra moves: whole numbers, 0 when empty
       lookahead: wholeNumber(lookaheadInput.value),
       extraMoves: wholeNumber(extraMovesInput.value),
+      // Run again until nothing is left to do
+      repeat: repeatBox.checked,
     };
   }
   return null;
@@ -711,6 +777,7 @@ function stepToForm(step: StepConfig): void {
   piecesInput.value = splitAlternatives(step.pieces).join("\n");
   offsetsInput.value = step.offsets;
   solvableInput.value = step.solvableWith ?? "";
+  showBld({ untouched: Boolean(step.untouched), buffer: step.buffer ?? "", targetsPerStep: step.targetsPerStep ?? 2, parity: step.parity ?? "" });
   // Grips and allowed moves as checkboxes
   for (const box of form.querySelectorAll<HTMLInputElement>('input[name="bottom"]')) box.checked = step.grips.bottom.includes(box.value);
   anyFrontBox.checked = step.grips.anyFront;
@@ -719,6 +786,7 @@ function stepToForm(step: StepConfig): void {
   firstFoundBox.checked = Boolean(step.firstFound);
   stepNameInput.value = step.name;
   keepBox.checked = Boolean(step.keep);
+  repeatBox.checked = Boolean(step.repeat);
   lookaheadInput.value = String(step.lookahead ?? 0);
   extraMovesInput.value = String(step.extraMoves ?? 0);
   onInputChange();
@@ -727,8 +795,10 @@ function stepToForm(step: StepConfig): void {
 // One-line summary of a step's settings for the step list
 function stepSummary(step: StepConfig): string {
   return [
-    step.pieces || "no new pieces",
+    step.buffer ? `BLD from ${step.buffer}, ${plural(step.targetsPerStep ?? 2, "target")} per step` : step.pieces || "no new pieces",
     step.keep ? "+ earlier pieces" : "",
+    step.untouched && !step.buffer ? "rest untouched" : "",
+    step.parity ? `parity ${step.parity}` : "",
     `bottom ${step.grips.bottom.join("/")}${step.grips.anyFront ? " any front" : ""}`,
     step.offsets ? `offsets ${step.offsets}` : "",
     step.solvableWith ? `solvable with ${step.solvableWith}` : "",
@@ -736,6 +806,7 @@ function stepSummary(step: StepConfig): string {
     step.maxDepth == null ? "" : `max ${step.maxDepth}`,
     step.firstFound ? "first answer" : "",
     step.lookahead ? `lookahead ${step.lookahead}${step.extraMoves ? ` (+${step.extraMoves} moves)` : ""}` : "",
+    step.repeat ? "repeat until done" : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -866,6 +937,7 @@ function loadMethod(next: Method): void {
   editing = -1;
   stepNameInput.value = "";
   keepBox.checked = false;
+  repeatBox.checked = false;
   lookaheadInput.value = "0";
   extraMovesInput.value = "0";
   methodChanged();
@@ -897,13 +969,16 @@ async function runWholeMethod(): Promise<void> {
   showResult(null);
   methodRows = [];
   renderMethodRows();
-  // Live status: which step is searching, the time so far, and table builds or loads
+  // Live status: which step (and round of a repeated step) is searching, the time so far, and table builds or loads
   const started = performance.now();
   const tables = tableTracker();
+  let index = 0;
+  let round = 1;
   const tick = () => {
-    const index = methodRows.length;
-    const looking = running.steps[index]?.lookahead && index < running.steps.length - 1 ? " · looking ahead" : "";
-    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${running.steps[index]?.name ?? "…"})${looking}… ${formatMs(performance.now() - started)}${tables.note()}`);
+    const step = running.steps[index];
+    const looking = step?.lookahead && (step.repeat || index < running.steps.length - 1) ? " · looking ahead" : "";
+    const name = step ? (step.repeat ? `${step.name} ${round}` : step.name) : "…";
+    setStatus(`Running ${running.name}: step ${index + 1} of ${running.steps.length} (${name})${looking}… ${formatMs(performance.now() - started)}${tables.note()}`);
   };
   tick();
   const timer = setInterval(tick, 100);
@@ -911,6 +986,8 @@ async function runWholeMethod(): Promise<void> {
     const result = await runMethod(scramble, running, {
       done,
       onProgress: tables.onProgress,
+      // Note which step (and round) runs now, for the live status
+      onStart: (at, count) => ([index, round] = [at, count]),
       // Add each step's row as soon as it finishes
       onStep: (step, index) => {
         const run: Run = {
@@ -929,6 +1006,7 @@ async function runWholeMethod(): Promise<void> {
           ms: step.ms,
           ok: step.ok,
           lookahead: step.lookahead,
+          bld: { untouched: Boolean(running.steps[index].untouched), buffer: running.steps[index].buffer ?? "", targetsPerStep: running.steps[index].targetsPerStep ?? 2, parity: running.steps[index].parity ?? "" },
         };
         methodRows.push({ label: `${index + 1}. ${step.name}`, run });
         renderMethodRows();
@@ -1039,6 +1117,20 @@ for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-solva
   button.addEventListener("click", () => {
     solvableInput.value = button.dataset.solvable ?? "";
     readSolvable();
+  });
+}
+
+// Blindfolded fields: editing them rechecks the form (the pieces box may be empty with a buffer) and the cube shows whole for untouched steps
+for (const input of [untouchedBox, bufferInput, perStepInput, parityInput]) input.addEventListener("input", onInputChange);
+// Their quick picks fill in the buffer and parity pieces ("buffer|parity"); a buffer means untouched and an empty pieces box (it traces its own), None clears the box too
+for (const button of form.querySelectorAll<HTMLButtonElement>("button[data-bld]")) {
+  button.addEventListener("click", () => {
+    const [buffer, parity] = (button.dataset.bld ?? "|").split("|");
+    bufferInput.value = buffer;
+    parityInput.value = parity;
+    untouchedBox.checked = Boolean(buffer);
+    if (buffer) piecesInput.value = "";
+    onInputChange();
   });
 }
 

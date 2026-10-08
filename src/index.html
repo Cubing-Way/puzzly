@@ -47,6 +47,7 @@
                     <select id="preset-select">
                         <option value="DF DR DB DL">Cross</option>
                         <option value="DF DR DB DL DFR FR">XCross (front-right pair)</option>
+                        <option value="DF DR DB DL DFR:r FR:r">Cross + front-right pair joined anywhere</option>
                         <option value="DF DR DB DL DFR DFL DBL DBR">First layer</option>
                         <option value="UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o FL:o BR:o BL:o">EO (all edges oriented)</option>
                         <option value="UF:o UR:o UB:o UL:o DF DR:o DB DL:o FR:o FL:o BR:o BL:o">EOLine (EO + DF, DB)</option>
@@ -75,6 +76,9 @@
                             <option value=":s">:s anywhere in group 1, any turn</option>
                             <option value=":s2">:s2 anywhere in group 2, any turn</option>
                             <option value=":p">:p in place, any turn</option>
+                            <option value=":r">:r joined to group 1, anywhere</option>
+                            <option value=":r2">:r2 joined to group 2, anywhere</option>
+                            <option value=":x">:x spot may change (untouched steps)</option>
                         </select>
                     </div>
                     <div id="edge-chips" class="chips" aria-label="Edges"></div>
@@ -112,6 +116,26 @@
                         <button type="button" data-solvable="R U">R U</button>
                     </div>
                     <p id="solvable-error" class="error"></p>
+
+                    <!-- Blindfolded: every piece the goal doesn't list stays exactly as it is now; with a buffer the step traces the buffer's cycle itself (Pieces stays empty) -->
+                    <span class="label">Blindfolded <small>every other piece stays as it is now</small></span>
+                    <div class="moves">
+                        <label><input id="untouched-box" type="checkbox" />keep every other piece untouched</label>
+                    </div>
+                    <div class="row bld">
+                        <label class="check-label">Buffer <input id="buffer-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. UF)" /></label>
+                        <label class="check-label number-label"><input id="per-step-input" type="number" min="1" max="6" value="2" /> targets per step</label>
+                    </div>
+                    <div class="row bld">
+                        <label class="check-label">Parity pieces <input id="parity-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. UFR UBR)" /></label>
+                    </div>
+                    <!-- Quick picks: 3-style buffers (edges UF, swapping UFR and UBR on parity; corners UFR), or none -->
+                    <div class="row picks">
+                        <button type="button" class="quiet" data-bld="|">None</button>
+                        <button type="button" data-bld="UF|UFR UBR" title="Edges from buffer UF; on parity UFR and UBR swap too">Edges (UF)</button>
+                        <button type="button" data-bld="UFR|" title="Corners from buffer UFR">Corners (UFR)</button>
+                    </div>
+                    <p id="bld-error" class="error"></p>
                     <!-- Searches a step solve may run -->
                     <p id="search-count" class="hint"></p>
 
@@ -208,6 +232,7 @@
                         <div class="row grow">
                             <input id="step-name" type="text" spellcheck="false" autocomplete="off" placeholder="Step name" aria-label="Step name" />
                             <label class="check-label"><input id="step-keep" type="checkbox" /> keep earlier steps' pieces</label>
+                            <label class="check-label" title="Run the step again until it has nothing left to do (e.g. one BLD 3-cycle per round)"><input id="step-repeat" type="checkbox" /> repeat until done</label>
                         </div>
                         <!-- Lookahead: later steps that judge this step's answers (0 = take its own shortest), and how many moves longer than its shortest a candidate may be -->
                         <div class="row">

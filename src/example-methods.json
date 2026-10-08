@@ -46,5 +46,12 @@
       { "name": "Pseudo pair 4", "pieces": "DFR FR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "D D2 D'", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 1, "extraMoves": 1 },
       { "name": "ADF", "pieces": "", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "moves": ["D"], "maxDepth": 1, "firstFound": false, "lookahead": 0, "extraMoves": 0 }
     ]
+  },
+  {
+    "name": "3-style BLD (edges from UF, then corners from UFR)",
+    "steps": [
+      { "name": "Edges", "pieces": "", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "untouched": true, "buffer": "UF", "targetsPerStep": 2, "parity": "UFR UBR", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "repeat": true },
+      { "name": "Corners", "pieces": "", "keep": false, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "untouched": true, "buffer": "UFR", "targetsPerStep": 2, "parity": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "repeat": true }
+    ]
   }
 ]

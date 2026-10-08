@@ -7,7 +7,8 @@ import init, { DistanceTable, Searcher, SplitSearch, tableFormat } from "../sear
 // The compiled Rust code, bundled in as bytes
 import wasmBytes from "../search/pkg/puzzly_search_bg.wasm";
 
-// One request from the engine: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts);
+// One request from the engine: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts), or an object with that list
+// plus "solvableWith" moves and / or "orbitTables" (BLD steps: split tables also get whole-orbit tables up to that many states); the text is the cache key as it is;
 // "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves, "list" for every answer shorter than maxDepth (up to maxAnswers)
 interface Request {
   id: number;
@@ -189,11 +190,11 @@ async function loadTable(request: Request, key: string, targets: string): Promis
 }
 
 // Build a table now (throws when it's too big or too deep for one), storing it in this browser when it's big
-function buildTable(request: Request, key: string, targets: string): DistanceTable {
+function buildTable(request: Request, key: string, targets: string, maxStates = MAX_TABLE_STATES): DistanceTable {
   progress("build", false);
   let table: DistanceTable;
   try {
-    table = new DistanceTable(request.kpuzzle, targets, JSON.stringify(request.moves), MAX_TABLE_STATES);
+    table = new DistanceTable(request.kpuzzle, targets, JSON.stringify(request.moves), maxStates);
   } catch (error) {
     progress("build", true);
     throw error;
@@ -203,22 +204,23 @@ function buildTable(request: Request, key: string, targets: string): DistanceTab
   return table;
 }
 
-// The table for these targets: kept, stored in this browser, or built now; returns its cache key
-async function tableFor(request: Request, targets: string): Promise<string> {
+// The table for these targets (built with up to maxStates states): kept, stored in this browser, or built now; returns its cache key
+async function tableFor(request: Request, targets: string, maxStates = MAX_TABLE_STATES): Promise<string> {
   const key = tableKey(request, targets);
   if (solvers.get(key)?.solver instanceof DistanceTable) return key;
   // Something else under this key (a goal that fell back to twips): replace it
   drop(key);
-  const table = (await loadTable(request, key, targets)) ?? buildTable(request, key, targets);
+  const table = (await loadTable(request, key, targets)) ?? buildTable(request, key, targets, maxStates);
   keep(key, { solver: table, mb: table.bytes() / 2 ** 20 });
   return key;
 }
 
 // Give a split search its sub-tables, from the cache, this browser's store, or built now; returns their cache keys
+// (each may be as big as planned: a BLD goal's whole-orbit table, e.g. all 8 corners, is past the usual limit)
 async function attachTables(split: SplitSearch, request: Request): Promise<string[]> {
   const uses: string[] = [];
   for (let index = 0; index < split.tables(); index++) {
-    const key = await tableFor(request, split.targets(index));
+    const key = await tableFor(request, split.targets(index), Math.max(MAX_TABLE_STATES, split.states(index)));
     split.attach(index, solvers.get(key)!.solver as DistanceTable);
     uses.push(key);
   }

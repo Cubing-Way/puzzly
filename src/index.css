@@ -261,16 +261,12 @@ button.primary {
   border-color: var(--accent);
   font-weight: 600;
 }
-/* Orientation-only and position-only chips: dashed border plus their :o / :p tag */
-.chip[data-role="orient"],
-.chip[data-role="place"] {
+/* Chips with a role other than solved: dashed border plus their role tag (:o, :p, :s2, :r…) */
+.chip[aria-pressed="true"]:not([data-tag=""]) {
   border-style: dashed;
 }
-.chip[data-role="orient"]::after {
-  content: ":o";
-}
-.chip[data-role="place"]::after {
-  content: ":p";
+.chip[aria-pressed="true"]:not([data-tag=""])::after {
+  content: attr(data-tag);
 }
 
 /* Allowed-move checkboxes */
@@ -295,6 +291,17 @@ button.primary {
 }
 .offsets button {
   padding: 0.45rem 0.6rem;
+}
+
+/* Blindfolded fields: buffer and parity pieces fill their row, the targets number stays small */
+.bld .check-label:has(input[type="text"]) {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+.bld input[type="text"] {
+  flex: 1 1 4rem;
+  width: auto;
+  min-width: 0;
 }
 
 /* Move quick picks: small buttons under the move boxes (the row wraps them on narrow screens) */
