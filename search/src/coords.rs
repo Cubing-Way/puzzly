@@ -143,6 +143,8 @@ pub struct OrbitCoord {
     twists: u8,
     // Twist digits are per spot (every moving spot holds a twisted piece) instead of per tracked piece
     per_spot: bool,
+    // Every class is one piece and twists are per piece, so a turn never re-sorts pieces (a child's value can be ranked straight from its parent)
+    singles: bool,
     // Value counts: positions, twist digits, and their product
     positions: u64,
     twist_space: u64,
@@ -293,7 +295,8 @@ impl OrbitCoord {
                 add[t * spots.len() + from] = orbit.orientation_delta[to] % twists;
             }
         }
-        let mut orbit = OrbitCoord { name: name.clone(), spots, fixed, classes, twists, per_spot, positions, twist_space, size, dest, add, tables: None, to_dense: vec![], to_full: vec![], frozen, frozen_factor };
+        let singles = (!per_spot || classes.is_empty()) && classes.iter().all(|class| class.count == 1);
+        let mut orbit = OrbitCoord { name: name.clone(), spots, fixed, classes, twists, per_spot, singles, positions, twist_space, size, dest, add, tables: None, to_dense: vec![], to_full: vec![], frozen, frozen_factor };
         // Sizing only (planning sub-tables) skips this walk: the full count is an upper bound
         if reach {
             orbit.keep_reachable(targets, turns.len(), binomials);
@@ -568,6 +571,30 @@ impl OrbitCoord {
         }
     }
 
+    // Positions and twists values after one turn, ranked straight from the pieces before it (singles only: no piece re-sorts, nothing is written out)
+    #[inline]
+    fn rank_after(&self, spots: &[u8], twists: &[u8], turn: usize) -> (u64, u64) {
+        let m = self.spots.len();
+        let dest = &self.dest[turn * m..(turn + 1) * m];
+        let add = &self.add[turn * m..(turn + 1) * m];
+        let base = self.twists as u64;
+        let (mut positions, mut digits, mut used) = (0u64, 0u64, 0u64);
+        for (j, class) in self.classes.iter().enumerate() {
+            // The piece's new spot renumbered among the spots earlier pieces left free, and its twist after the turn
+            let from = spots[j] as usize;
+            let spot = dest[from] as u32;
+            positions = positions * class.free as u64 + (spot - (used & ((1u64 << spot) - 1)).count_ones()) as u64;
+            used |= 1u64 << spot;
+            if class.twisted {
+                let twist = twists[j] + add[from];
+                digits = digits * base + if twist >= self.twists { twist - self.twists } else { twist } as u64;
+            }
+        }
+        // Dense number when only reachable layouts are numbered
+        let positions = if self.to_dense.is_empty() { positions } else { self.to_dense[positions as usize] as u64 };
+        (positions, digits)
+    }
+
     // Build turn tables when they stay small (positions × turns, and the twist rows they need)
     fn build_tables(&mut self, turn_count: usize, binomials: &Binomials) {
         let turns = turn_count as u64;
@@ -731,6 +758,8 @@ pub struct Part {
     pub size: u64,
     // Every orbit has turn tables (neighbours are pure lookups)
     tabled: bool,
+    // Every orbit is singles, so a child's value can be ranked straight from its parent (rank_after)
+    pub singles: bool,
 }
 
 impl Part {
@@ -746,7 +775,8 @@ impl Part {
         if *offsets.last().unwrap() > MAX_UNITS || orbits.len() > MAX_ORBITS {
             return Err("Too many tracked pieces for an exact table".to_owned());
         }
-        Ok(Part { orbits, offsets, positions, twist_space, size, tabled: false })
+        let singles = orbits.iter().all(|orbit| orbit.singles);
+        Ok(Part { orbits, offsets, positions, twist_space, size, tabled: false, singles })
     }
 
     // Give every orbit turn tables if they all fit (used for the outer part, whose neighbours are needed per block)
@@ -860,6 +890,19 @@ impl Part {
     #[inline]
     pub fn rank(&self, units: &Units, binomials: &Binomials) -> u64 {
         let (positions, twists) = self.rank_split(units, binomials);
+        positions * self.twist_space + twists
+    }
+
+    // Value of these tracked pieces after one turn, without moving them (singles parts only)
+    #[inline]
+    pub fn rank_after(&self, units: &Units, turn: usize) -> u64 {
+        let (mut positions, mut twists) = (0u64, 0u64);
+        for (o, orbit) in self.orbits.iter().enumerate() {
+            let range = self.offsets[o]..self.offsets[o + 1];
+            let (p, t) = orbit.rank_after(&units.spot[range.clone()], &units.twist[range], turn);
+            positions = positions * orbit.positions + p;
+            twists = twists * orbit.twist_space + t;
+        }
         positions * self.twist_space + twists
     }
 

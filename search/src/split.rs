@@ -235,6 +235,8 @@ pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (
     let limit = limit.min(MAX_LENGTH as u64 + 1);
     // Search state: room for every depth up to MAX_LENGTH
     let count = tables.len();
+    let turn_count = check.full.turns.len();
+    let depths = MAX_LENGTH as usize + 1;
     let mut ida = Ida {
         tables,
         full: check.full,
@@ -242,10 +244,18 @@ pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (
         whole,
         follow: check.follow,
         groups: check.groups,
-        outer: vec![Units::new(); (MAX_LENGTH as usize + 1) * count],
-        inner: vec![0; (MAX_LENGTH as usize + 1) * count],
-        bounds: vec![0; (MAX_LENGTH as usize + 1) * count],
+        outer: vec![Units::new(); depths * count],
+        inner: vec![0; depths * count],
+        bounds: vec![0; depths * count],
+        current: vec![false; depths * count],
+        moved: Units::new(),
+        children: vec![0; depths * turn_count],
+        looked_up: vec![0; depths * count * turn_count],
+        indices: vec![0; turn_count],
+        distances: vec![0; turn_count],
         order: (0..count).collect(),
+        ruled: vec![false; count],
+        scratch: Vec::with_capacity(count),
         path: vec![],
         cut: false,
         nodes: 0,
@@ -263,7 +273,7 @@ pub(crate) fn deepen(tables: &[Rc<TableCore>], starts: &[(Units, u64)], whole: (
             return (Err(NO_SOLUTION), 0);
         }
         bound = bound.max(distance);
-        (ida.outer[t], ida.inner[t], ida.bounds[t]) = (outer, inner, distance);
+        (ida.outer[t], ida.inner[t], ida.bounds[t], ida.current[t]) = (outer, inner, distance, true);
     }
     // Deepen one move at a time until the first answer (or enough answers) turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)
     while (bound as u64) < limit {
@@ -484,8 +494,20 @@ struct Ida<'a> {
     outer: Vec<Units>,
     inner: Vec<u64>,
     bounds: Vec<u8>,
-    // Sub-tables in the order they are checked (the last one to rule a state out goes first)
+    // Whether each (depth, table) state is up to date: a sub-table's pieces are only moved along the path when a lookup needs them
+    current: Vec<bool>,
+    // Room for a child's pieces when a sub-table can't rank a child straight from its parent
+    moved: Units,
+    // Children still in at each depth (their turns, in turn order: depth * turns + k), and each looked-up child distance (depth, table, turn)
+    children: Vec<u8>,
+    looked_up: Vec<u8>,
+    // One node's child table indices and their distances (filled and read before going deeper)
+    indices: Vec<u64>,
+    distances: Vec<u8>,
+    // Sub-tables in the order they are checked (the ones that ruled children out at the last node go first), which ones did, and room to reorder them
     order: Vec<usize>,
+    ruled: Vec<bool>,
+    scratch: Vec<usize>,
     path: Vec<usize>,
     cut: bool,
     nodes: u64,
@@ -522,47 +544,63 @@ impl Ida<'_> {
             return false;
         }
         let count = self.tables.len();
+        let turns = self.full.turns.len();
         let (here, next) = (depth * count, (depth + 1) * count);
-        for turn in 0..self.full.turns.len() {
-            // Skip a turn of the same move as the last one, or of a commuting move that should have come first
-            let group = self.full.turns[turn].group;
-            if last != NO_GROUP && !self.follow[last * self.groups + group] {
+        // Children the move pruning allows, in turn order: never the same move as the last one, nor a commuting move that should have come first
+        let first = depth * turns;
+        let mut alive = 0;
+        for turn in 0..turns {
+            if last == NO_GROUP || self.follow[last * self.groups + self.full.turns[turn].group] {
+                self.children[first + alive] = turn as u8;
+                alive += 1;
+            }
+        }
+        // Sub-tables that could rule children out (one move changes a distance by at most one), one at a time over every child still in
+        for position in 0..count {
+            let t = self.order[position];
+            self.ruled[t] = false;
+            if alive == 0 || self.bounds[here + t] + 1 < remaining {
                 continue;
             }
-            // Sub-tables that could rule the child out (one move changes a distance by at most one), stopping at the first that needs more moves than are left
-            let mut ruled_out = false;
-            for position in 0..count {
-                let t = self.order[position];
-                if self.bounds[here + t] + 1 < remaining {
+            self.ensure(depth, t);
+            let tables = self.tables;
+            let table = &*tables[t];
+            // Each child's table index (ranked from this state, the child's pieces aren't kept), then all their distances (independent memory reads, so they overlap)
+            for k in 0..alive {
+                self.indices[k] = table.child_index(&self.outer[here + t], self.inner[here + t], self.children[first + k] as usize, &mut self.moved);
+            }
+            for k in 0..alive {
+                self.distances[k] = table.distance_at(self.indices[k]);
+            }
+            // Children needing more moves than are left drop out (a deeper bound may get past them, unreachable states never will)
+            let mut kept = 0;
+            for k in 0..alive {
+                let (turn, distance) = (self.children[first + k], self.distances[k]);
+                if distance >= remaining {
+                    self.cut |= distance != UNSEEN;
+                    self.ruled[t] = true;
                     continue;
                 }
-                let (before, after) = self.outer.split_at_mut(next + t);
-                let inner = self.tables[t].step(&before[here + t], self.inner[here + t], turn, &mut after[0]);
-                let distance = self.tables[t].distance(&after[0], inner);
-                if distance >= remaining {
-                    // A deeper bound may get past it (unreachable states never will); this sub-table is checked first from now on
-                    if distance != UNSEEN {
-                        self.cut = true;
-                    }
-                    self.order[..=position].rotate_right(1);
-                    ruled_out = true;
-                    break;
-                }
-                (self.inner[next + t], self.bounds[next + t]) = (inner, distance);
+                self.looked_up[(here + t) * turns + turn as usize] = distance;
+                self.children[first + kept] = turn;
+                kept += 1;
             }
-            if ruled_out {
-                continue;
-            }
-            // The others only follow the turn: their distance stays below what is left, so it isn't looked up
+            alive = kept;
+        }
+        // Sub-tables that ruled a child out are checked first from now on (keeping their order)
+        self.scratch.clear();
+        self.scratch.extend(self.order.iter().filter(|&&t| self.ruled[t]));
+        self.scratch.extend(self.order.iter().filter(|&&t| !self.ruled[t]));
+        std::mem::swap(&mut self.order, &mut self.scratch);
+        // Go into each child left, in turn order: each sub-table's bound is its looked-up distance or (not looked up) one more than before; its state is moved later, when needed
+        for k in 0..alive {
+            let turn = self.children[first + k] as usize;
             for t in 0..count {
-                if self.bounds[here + t] + 1 < remaining {
-                    let (before, after) = self.outer.split_at_mut(next + t);
-                    self.inner[next + t] = self.tables[t].step(&before[here + t], self.inner[here + t], turn, &mut after[0]);
-                    self.bounds[next + t] = self.bounds[here + t] + 1;
-                }
+                self.bounds[next + t] = if self.bounds[here + t] + 1 < remaining { self.bounds[here + t] + 1 } else { self.looked_up[(here + t) * turns + turn] };
+                self.current[next + t] = false;
             }
             self.path.push(turn);
-            if self.dfs(depth + 1, remaining - 1, group) {
+            if self.dfs(depth + 1, remaining - 1, self.full.turns[turn].group) {
                 return true;
             }
             self.path.pop();
@@ -574,9 +612,32 @@ impl Ida<'_> {
     }
 
     // True when the state at `depth` is already at the goal: every table at 0 (a bound of 0 is exact, others are looked up), then the whole goal checked
-    fn at_goal(&self, depth: usize) -> bool {
+    fn at_goal(&mut self, depth: usize) -> bool {
         let here = depth * self.tables.len();
-        (0..self.tables.len()).all(|t| self.bounds[here + t] == 0 || self.tables[t].distance(&self.outer[here + t], self.inner[here + t]) == 0) && self.is_goal()
+        for t in 0..self.tables.len() {
+            if self.bounds[here + t] == 0 {
+                continue;
+            }
+            self.ensure(depth, t);
+            if self.tables[t].distance(&self.outer[here + t], self.inner[here + t]) != 0 {
+                return false;
+            }
+        }
+        self.is_goal()
+    }
+
+    // Bring sub-table t's state at `depth` up to date: replay the path's turns from the deepest depth where it is current (the start always is)
+    fn ensure(&mut self, depth: usize, t: usize) {
+        let count = self.tables.len();
+        let mut from = depth;
+        while !self.current[from * count + t] {
+            from -= 1;
+        }
+        for d in from..depth {
+            let (before, after) = self.outer.split_at_mut((d + 1) * count + t);
+            self.inner[(d + 1) * count + t] = self.tables[t].step(&before[d * count + t], self.inner[d * count + t], self.path[d], &mut after[0]);
+            self.current[(d + 1) * count + t] = true;
+        }
     }
 
     // Replay the moves so far on the whole start and look it up among the targets

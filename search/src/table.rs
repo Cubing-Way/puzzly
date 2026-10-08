@@ -279,6 +279,25 @@ impl TableCore {
         self.coords.outer.rank(outer, &self.coords.binomials) * self.coords.inner.size + inner
     }
 
+    // Table index of a state's child after one turn (ranked straight from the parent when the outer part allows it, else via `scratch`)
+    #[inline]
+    pub(crate) fn child_index(&self, outer: &Units, inner: u64, turn: usize, scratch: &mut Units) -> u64 {
+        let inner = self.inner_next[turn * self.coords.inner.size as usize + inner as usize] as u64;
+        let outer = if self.coords.outer.singles {
+            self.coords.outer.rank_after(outer, turn)
+        } else {
+            self.coords.outer.apply(outer, turn, scratch);
+            self.coords.outer.rank(scratch, &self.coords.binomials)
+        };
+        outer * self.coords.inner.size + inner
+    }
+
+    // Distance stored at a table index
+    #[inline]
+    pub(crate) fn distance_at(&self, index: u64) -> u8 {
+        get(&self.nibbles, index)
+    }
+
     // Breadth-first fill from the targets, one layer at a time: a list while layers are small, then block scans (backward once few states are left)
     fn fill(&mut self, targets: &[KPatternData]) -> Result<(), String> {
         let outer = &self.coords.outer;

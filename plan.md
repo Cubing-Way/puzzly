@@ -17,6 +17,14 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 7a — Whole-state check "Solvable with" moves (2-gen CP, any "these moves can finish it" goal)
 - [x] Part 7b — Pieces solved relative to each other anywhere (pair joined anywhere, FMC pseudo-blocks)
 - [x] Part 7c — BLD: untouched pieces, buffer tracing, parity, repeated steps
+- [x] Part 8a — Benchmark harness + faster search nodes
+- [ ] Part 8b — Spot classes, exact size estimates, twist parity (sharper tables)
+- [ ] Part 8c — Inverse and symmetric lookups on the same tables
+- [ ] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
+- [ ] Part 8e — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
+- [ ] Part 8f — Symmetry-reduced numbering (only if still needed)
+- [ ] Part 8g — Parallel search (only if still needed)
+- [ ] Part 9 — Hand-written tables for specific goals (last resort)
 
 ## Goal of the project
 
@@ -243,6 +251,21 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   - Built page: a single BLD step was 10 moves in 9.1 s (18 builds), and the example method gave 96 moves in 7.3 s, all ✓.
 
   Testing: `bld.ts` / `edge.ts` style harnesses (fake Worker). Scrambles need a real PRNG: an LCG's `seed % 6` only gave F U L moves.
+- Benchmark + faster nodes (Part 8a): `bench/` in the repo (see README *Benchmark*), bundled by `npm run bench-build` into `bench/out` (git-ignored).
+  - `record.js` (fake Worker, `bench/setup.ts`, mulberry32 scrambles): scenarios dr-finish (DR, then every piece + keep with `U D R2 L2 F2 B2`, 4 scrambles), xxxcross (D bottom, 4), cfop-oll-pll (CFOP example + OLL + PLL with keep, 3),
+    pseudo-lookahead (example, 2), bld-flip (2 pure 2-edge flips made with cubing's solver, buffer UF); pass 1 records every worker request (1,356), pass 2 is warm.
+  - `replay.js` sends them to the wasm API directly, each goal on its big plan (10M; tables cached in `bench/out/tables`), and prints per scenario / kind: ms, nodes, µs per node, bound gap (answer − start bound). `compare.mjs`: answer / node diffs and ratios.
+    The bundle carries its wasm, so keep a copy (`replay-before.js`) before a Rust change. Old code = `git archive HEAD` into a scratch folder, `npm run build-search` there (~5 min first time, ~1 min later).
+  - Search loop (`Ida::dfs`, split.rs): per node, each sub-table that can rule children out looks up every child still in at once (child indices, then all distances), the ones that ruled any out go first next time;
+    a sub-table's pieces are only moved along the path when a lookup needs them (`current` per depth × table, `ensure` replays the path's turns); `TableCore::child_index` ranks a child straight from its parent
+    (`Part::rank_after`) when every outer orbit is "singles" (each class one piece, twists per piece: no re-sort), else apply + rank into a scratch. Same children in the same order, so answers and node counts are identical.
+  - Profile before (named build: `CARGO_PROFILE_RELEASE_STRIP=none`, wasm-bindgen `--keep-debug`, wasm-opt `-g`, `node --cpu-prof`): moving pieces 44%, re-ranking 27%, the loop 28%. After: loop + table reads 41%, `rank_after` 35%, moving pieces 20%.
+    Per node 16–27 child lookups over 3.5–5.5 sub-tables; nodes sit 5–8 moves from the goal (almost none within 3), so tricks near the goal don't pay. Batching lookups alone (no lazy pieces) was 0.8–1.4×; fixed-size `dest` / `add` rows
+    without bounds checks gained nothing on the full replay (dropped). This PC: i5-3210M, 3 MB L3, a random read in a 30 MB array 25–55 ns; the Claude app keeps ~2 threads busy, so compare builds back to back.
+  - Numbers (replay, 10M plans, old → new, same answers and nodes): dr-finish 6.5 → 3.4 s (7.7 → 4.0 µs/node, 845k nodes), xxxcross 13.1 → 6.1 s (8.7 → 4.0, 1.5M), cfop-oll-pll 203 → 101 s (12.3 → 6.1, 16.4M; PLL with keep is nearly all of it),
+    pseudo-lookahead search + list 0.52 → 0.30 s, bld-flip 214 → 88 s (14.0 → 5.7, 15.3M); whole replay 441 → 203 s. Tables: 62, 300M states, 143 MB, 75 s to build once.
+    Bound gap (avg / max): bld-flip 6.3 / 7, xxxcross 4.0 / 5, dr-finish 3.4 / 7, cfop-oll-pll 2.4 / 6, pseudo 1.3–1.5 / 5: the tables are now the limit (8b, 8c).
+    Method runs (record.js, old → new, same moves in all 30 runs): first pass 739 → 297 s, warm pass dr-finish 24.0 → 12.2 s, xxxcross 27.6 → 6.3 s, cfop-oll-pll 230 → 99 s (PLL 8–53 s per scramble), pseudo 6.4 → 4.6 s, bld-flip 48 → 24 s.
 ---
 
 ## Part 1 — Groups + centers
@@ -474,4 +497,105 @@ Limits: more than 10k placements per offset (3+ groups) is refused; with restric
 Limits:
 - First-time 2-edge flips take seconds to a minute (no table that fits sees them).
 - Twists of in-place pairs only start a step with the buffer home.
+
+## Part 8 — Faster search before hand-written tables (8a–8g, one per chat)
+
+**Why:** steps are optimal now; the next goal is near-optimal *methods* in a few seconds, e.g. a method "DR, then finish with `U D R2 L2 F2 B2`" behaving like Kociemba's two-phase solver
+(that method *is* two-phase: phase 1 answers by length, each followed by a phase 2 bounded by best − phase 1; compare with `solveFull`, cubing.js's two-phase). Two things stand in the way:
+- The finish step is slow (Facts, "Half-turn-only moves": 11–13 move finishes 14–131 ms, 14–15 move ones 0.4–4.7 s), while Kociemba calls its phase 2 thousands of times per second.
+- Lookahead isn't a real search: at most 64 candidates (`MAX_CANDIDATES`), later steps greedy (`movesAhead`), no overall bound, nothing shared between branches.
+
+Hand-written tables (Kociemba's coordinates) would bend the "engine never knows a step" rule, so first get everything generic out of the tables and the search; Part 9 only for the gap the benchmark still shows.
+
+Checked while planning (2026-10-08):
+- `OrbitCoord::new` (coords.rs) numbers all of an orbit's moving spots as one pool, so under DR moves the 8 U/D edges count as if they could reach all 12 spots.
+- `estimate_size` is an upper bound: the reachable-layout walk (`keep_reachable`) only runs for orbits of ≤ `REACH_LIMIT` (65,536) layouts, and never while sizing.
+- No parity trick, no symmetry; 4-bit distances; outer turn tables are freed after the fill, so the search steps outer coordinates from spot lists (~3–4 µs per IDA* node).
+
+**Order:** 8a → 8b → 8c → 8d are the core (Kociemba-like methods). Re-run 8a's benchmark after each part; do 8e–8g only when its numbers point at them.
+
+### Part 8a — Benchmark harness + faster nodes
+
+**Do:**
+- A Node harness (direct wasm API + fake-Worker method runs, as in Facts) over heavy goals, fixed seeded scrambles: DR phase 2 after a DR step, XXXCross, OLL and PLL with keep, a BLD 2-edge flip,
+  pseudo pairs with lookahead, the DR-then-finish method.
+- Per goal: start bound vs real length (bound gap: tables too weak), nodes, µs per node (search loop too slow), table build time and size. Keep the output as the baseline for 8b–8g.
+- Profile `deepen` / `TableCore::step` / `distance`. Likely cost: recomputing indices from spot lists on every lookup. Options: keep per-orbit turn tables during searches when they're small (memory cap),
+  incremental ranking, no allocations per node.
+
+**Test:** same move counts on every goal; µs per node and total time before / after.
+
+**Done:** see "Benchmark + faster nodes (Part 8a)" in Facts. The harness is `bench/` (record, replay, compare), with the old code's numbers as the baseline. The search loop now ranks children straight from their parent
+and only moves a sub-table's pieces when a lookup needs them: about 2× faster per node everywhere (2.0–2.4× on the heavy searches, identical answers and node counts), method runs 1.4–4.4× faster warm.
+Not done: per-orbit turn tables kept for searches (a 5-edge orbit needs ~14 MB of turn tables and each lookup becomes another random read, no better than ranking ~5 pieces). The PLL-with-keep step (8–53 s) and BLD flips
+(5–19 s) are still slow because their bounds are 2–7 moves short, which is 8b / 8c's job.
+
+### Part 8b — Spot classes, exact estimates, twist parity
+
+**Do:**
+- `OrbitCoord::new`: split the moving spots into the sets the turns connect (orbits of the turns' permutations on spots) and number each set on its own (a class only takes combinations within its set).
+  DR moves: edges = 8 + 4 spots, so all 12 edges = 8!·4! = 967,680 states (not 12!), corners + E-slice edges = 40,320 · 24; R U: 7 edge spots, 6 corner spots.
+- `estimate_size` uses the same sets, so it's exact for positions and the planner fits bigger sub-tables in the same budget. Check that the planner finds "all edges" and "corners + E-slice edges"
+  for DR phase 2 by itself (those are Kociemba's phase-2 tables).
+- Twist parity: when every piece of an orbit is tracked with its twist and the turns keep the twist sum (face turns), the last twist is implied (EO 2,048, CO 2,187).
+- Bump `TABLE_FORMAT` (the worker deletes other formats' stored tables on start).
+
+**Test:** same move counts as before 8b on 8a's set and the example methods; DR phase 2 times vs the Facts numbers; table sizes for DR phase 2, R U finish, EO, CO.
+
+### Part 8c — Inverse and symmetric lookups
+
+**Do:**
+- Inverse lookups: when the goal is the whole cube solved (PLL with keep, DR phase 2, every relabeled BLD step), a state and its inverse need the same number of moves, so each table may also be
+  looked up on the inverse state; bound = the larger. Detect it from the targets (one target, every piece its own id, twists counted), never from step names.
+- Symmetric lookups: find the cube symmetries (24 rotations; mirrors only if they can be expressed on the KPuzzle) that map the move set and the target set to themselves, look each table up on the
+  conjugated states too, and build fewer distinct tables (whole cube: one "4 U edges + one piece" table serves several).
+
+**Test:** same move counts; bound gap and nodes on PLL with keep, DR phase 2 and BLD flips (Facts: 3.5–53 s).
+
+### Part 8d — Anytime method search
+
+**Do:**
+- A new method run mode next to lookahead (lookahead stays as is): depth-first branch-and-bound over the steps, seeded with the lookahead (or greedy) total as the best so far.
+- Each step lists its answers by length, no cap, up to best − used − LB(rest). The last step needs no list (its measure / search is its cost).
+  LB(rest) = the largest bound to any later step's goal that keeps this step's pieces (min over that step's grips); without keep, the next step's bound only.
+- Visited table keyed by (step index, held cube, earlier pieces) → fewest moves used to get there (extends `stepCandidates`' per-step end-state dedupe to the whole run).
+- Run the loop inside the worker (or batch requests): thousands of list + bounded-search calls per second can't each be a round trip.
+- Anytime: a time budget and Stop; each shorter total shows as it's found; "optimal for this method" only when the search finishes.
+- Method rules, decide and write down: offset fixes (ADF / AUF) count; `repeat` rounds are searched like steps; `firstFound` / `maxDepth` are hard limits (or ignored); the covered-grip filter stays.
+- If it runs long, split it: 2-step methods first (DR + finish), N steps next.
+
+**Test:** never longer than lookahead on the same scrambles; small 2-step cases match an exhaustive check; DR + finish vs `solveFull` (length, time to reach 20 / 19 moves);
+CFOP F2L and pseudo-slotting: time to the first improvement and to the proof (report it even when the proof is too slow).
+
+### Part 8e — Table capacity (only if 8a–8c show the bounds are the limit)
+
+**Do:**
+- 2-bit tables: distance mod 3; the exact distance is recovered once at the start, children follow from parent ± 1 (`deepen` already tracks each table's last exact distance). 2× states per MB.
+- Planner tries a few candidate splits (whole-orbit groups, per piece, mixed) and keeps the best mean bound on a small sample of random states.
+- Budget from `navigator.deviceMemory` instead of a fixed 10M.
+
+**Test:** same move counts; bound gap and nodes vs 8c.
+
+### Part 8f — Symmetry-reduced numbering (only if still needed)
+
+**Do:** one entry per symmetry class (up to 16× for DR goals, 48× for the whole cube), canonical form per lookup (symmetry move tables for the coordinate). Biggest table gain, hardest change.
+
+**Test:** same move counts; table sizes and nodes vs 8e.
+
+### Part 8g — Parallel search (only if still needed)
+
+**Do:** split the first moves' subtrees over several workers (each loads the tables from IndexedDB, so memory × workers) or wasm threads (SharedArrayBuffer, needs COOP / COEP headers); parallel table builds the same way.
+
+**Test:** same move counts; speedup per core count on long searches (BLD flips, XXXCross, 8d's proof).
+
+## Part 9 — Hand-written tables (last resort)
+
+**Why:** hand-written coordinates (Kociemba's phase 1 / phase 2) can still beat generic ones on per-node cost and symmetry; only worth it for gaps Part 8's benchmark still shows (likely DR phase 2 per-node speed).
+
+**Do:**
+- A Rust registry that matches the compiled goal (masked targets + moves, the table key), never step names; a match uses a hand-written generator with the same calls as a generic table
+  (distance, step), so measure / search / list / lookahead / 8d work unchanged; anything else falls back to the generic builder.
+- Say in the results when a step used one: a goal that almost matches (an offset, a `:p`, M allowed) silently falls back to generic speed.
+
+**Test:** identical move counts to the generic path on every matched goal; time before / after.
 - `knownAnswers` lives as long as the page; it could be stored like the tables if repeated flips matter.

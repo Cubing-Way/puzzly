@@ -41,6 +41,20 @@ Build it once before `npm run dev` / `npm run build`, and again after changing i
 npm run build-search
 ```
 
+## Benchmark
+
+`bench/` times the search on heavy goals in Node (no browser), so a change to the Rust search or the engine can be compared with the code before it. Bundle it after `npm run build-search`:
+
+```bash
+npm run bench-build
+```
+
+- `node bench/out/record.js [requests file] [scenarios] [passes]` runs five scenarios on fixed seeded scrambles through the real engine and worker: *dr-finish* (DR, then the whole cube with `U D R2 L2 F2 B2`), *xxxcross*, *cfop-oll-pll* (the CFOP example plus OLL and PLL that keep F2L), *pseudo-lookahead* (the pseudo-slotting example) and *bld-flip* (two pure 2-edge flips). It prints each run's moves and time, twice (first with table builds, then warm), and saves every request the engine sent to the worker (default `bench/out/requests.jsonl`). A full run takes 10–20 minutes.
+- `node bench/out/replay.js [requests file] [results file] [scenarios]` sends those requests straight to the Rust search, each goal on its biggest tables, and prints per scenario: time, search nodes, µs per node, and how far the start bound is below the real answer length. Tables are saved in `bench/out/tables` after the first run (`FRESH=1` builds them again).
+- `node bench/compare.mjs before.jsonl after.jsonl` checks that two replays give the same answers (and node counts) and prints the speed-up per scenario.
+
+The replay bundle carries the Rust search code it was built with, so to compare a Rust change: record once, copy `bench/out/replay.js` to `bench/out/replay-before.js` and replay with it into `before.jsonl`, then change the code, run `npm run build-search` and `npm run bench-build`, replay into `after.jsonl` and compare.
+
 ## Test bench
 
 - **Start position**: a random scramble, or any moves you type (Ctrl+Enter solves).

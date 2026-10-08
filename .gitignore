@@ -6,3 +6,5 @@ dist/
 node_modules.7z
 # Rust build cache (recreated by npm run build-search)
 search/target/
+# Benchmark bundles, recorded requests and cached tables (recreated by npm run bench-build and the bench scripts)
+bench/out/
