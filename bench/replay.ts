@@ -1,6 +1,7 @@
 // Direct-wasm benchmark: replays recorded worker requests (bench/record.ts) on the Rust search code bundled in, each goal on its big plan (exact table up to 10M states,
-// else split tables of up to 10M each, as the worker ends up using), and reports per scenario: bound vs real length, nodes, µs per node, time, table builds
-// Usage: node bench/out/replay.js [requests file] [results file, - = none] [scenarios, comma-separated, all = every one]; FRESH=1 builds every table
+// else split tables of up to BIG states each, as the worker ends up using), and reports per scenario: bound vs real length, nodes, µs per node, time, table builds
+// Usage: node bench/out/replay.js [requests file] [results file, - = none] [scenarios, comma-separated, all = every one]; FRESH=1 builds every table,
+// BIG=40000000 plans split goals like the worker on a device with 8 GB or more (default 10M)
 import { initSync, SplitSearch, DistanceTable } from "../search/pkg/puzzly_search.js";
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
@@ -17,7 +18,9 @@ const requests = readFileSync(file, "utf8")
   .split("\n")
   .map((line) => JSON.parse(line))
   .filter((r) => !only || only.includes(r.scenario));
+// Biggest exact table for a whole goal (the worker's MAX_TABLE_STATES), and the big plan's sub-table limit (its BIG_TABLE_STATES)
 const MAX = 10_000_000;
+const BIG = Number(process.env.BIG ?? MAX);
 // Table bytes kept on disk next to the requests between runs (a file only loads with the same TABLE_FORMAT), so runs measure searches, not builds
 const CACHE = `${dirname(file)}/tables`;
 mkdirSync(CACHE, { recursive: true });
@@ -58,8 +61,8 @@ function solverFor(r: any): Solver {
     solver = { kind: "table", solver: table(moves, r.targets, MAX) };
   } catch {
     try {
-      const split = new SplitSearch(kpuzzle, r.targets, moves, MAX);
-      for (let i = 0; i < split.tables(); i++) split.attach(i, table(moves, split.targets(i), Math.max(MAX, split.states(i))));
+      const split = new SplitSearch(kpuzzle, r.targets, moves, BIG);
+      for (let i = 0; i < split.tables(); i++) split.attach(i, table(moves, split.targets(i), Math.max(BIG, split.states(i))));
       solver = { kind: "split", solver: split };
     } catch (error) {
       console.log(`no table for a goal (${String(error).slice(0, 60)}): skipped`);

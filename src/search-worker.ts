@@ -31,22 +31,30 @@ interface Solver {
 }
 
 // A kept solver, the memory it holds, the cache keys of the sub-tables it uses (split searches),
-// and for a split goal still on small sub-tables: its big plan and the search nodes the small one has used so far
+// and for a split goal not yet on its biggest plan: the bigger plans still to come, smallest first, and the search nodes used since the last switch
 interface Entry {
   solver: Solver;
   mb: number;
   uses?: string[];
-  next?: { split: SplitSearch; spent: number };
+  next?: { plans: SplitSearch[]; spent: number };
 }
 
-// Biggest exact table to build, in states (also the sub-table limit of a split goal's big plan): up to ~5M states build in under half a second
+// This device's memory in GB as the browser reports it (Chrome and Edge round it and report at most 8), or null where it isn't reported (Firefox, Safari, Node)
+const DEVICE_GB: number | null = (globalThis.navigator as { deviceMemory?: number } | undefined)?.deviceMemory ?? null;
+// Biggest exact table to build for a whole goal, in states: up to 10M build in about a second, so a goal's first answer never waits on a bigger build
 const MAX_TABLE_STATES = 10_000_000;
+// Sub-table limit of a split goal's big plan: 40M on devices with 8 GB or more (F2L-type plans then see 6 edges together: 3–4× fewer search nodes, but one method's
+// big plans may hold ~350 MB), else 10M (20M was measured too: little gain, since the next useful tables are 21M and up)
+const BIG_TABLE_STATES = DEVICE_GB !== null && DEVICE_GB >= 8 ? 40_000_000 : MAX_TABLE_STATES;
 // Sub-table limit of a split goal's first plan: small tables build in a fraction of a second, which is all shallow steps (F2L pairs…) need
 const SMALL_TABLE_STATES = 1_000_000;
+// Sub-table limits of a split goal's plans, smallest first: it moves up one plan at a time (going straight from 1M to 40M kept goals on small tables
+// for 20× as many nodes, and a warm XXXCross took 10× longer)
+const PLAN_STATES = [...new Set([SMALL_TABLE_STATES, MAX_TABLE_STATES, BIG_TABLE_STATES])];
 // A search node with small sub-tables costs about as much time as filling this many table states (~3 µs vs ~0.15 µs, measured)
 const STATES_PER_NODE = 20;
-// Memory the kept solvers may hold; past it the least recently used ones are freed
-const MAX_CACHE_MB = 256;
+// Memory the kept solvers may hold; past it the least recently used ones are freed (with 40M big plans, enough for one method's whole set)
+const MAX_CACHE_MB = BIG_TABLE_STATES > MAX_TABLE_STATES ? 512 : 256;
 // Twips's prune table size can't be read, so each Searcher counts as this much (most stay near 1 MB)
 const SEARCHER_MB = 2;
 // Error a split search gives when it used up its node budget (same text as the Rust side)
@@ -156,7 +164,7 @@ function drop(key: string): void {
   if (!entry) return;
   solvers.delete(key);
   entry.solver.free();
-  entry.next?.split.free();
+  for (const plan of entry.next?.plans ?? []) plan.free();
   cacheMb -= entry.mb;
   for (const [other, user] of solvers) if (user.uses?.includes(key)) drop(other);
 }
@@ -249,33 +257,41 @@ function plannedSplit(request: Request, maxStates: number): SplitSearch | null {
   }
 }
 
-// A split goal's solver: small sub-tables first, with the big plan kept for later (dropped when it has the same tables);
-// when the big plan's tables are all kept or stored already, it starts on the big plan
+// Cache keys (targets) of a split's sub-tables
+function splitTargets(split: SplitSearch): string[] {
+  return Array.from({ length: split.tables() }, (_, index) => split.targets(index));
+}
+
+// A split goal's solver: its plans from small to big sub-tables, the later ones kept for later (one with only the tables of the plan before it is dropped);
+// it starts on the biggest plan whose tables are all kept or stored already, else on the smallest
 async function newSplit(request: Request): Promise<Entry | null> {
-  let small = plannedSplit(request, SMALL_TABLE_STATES);
-  let big = plannedSplit(request, MAX_TABLE_STATES);
-  // Same sub-tables either way: only one plan is needed
-  if (small && big) {
-    const smallTargets = new Set(Array.from({ length: small.tables() }, (_, index) => small!.targets(index)));
-    if (Array.from({ length: big.tables() }, (_, index) => big!.targets(index)).every((targets) => smallTargets.has(targets))) {
-      big.free();
-      big = null;
+  const plans: SplitSearch[] = [];
+  for (const limit of PLAN_STATES) {
+    const plan = plannedSplit(request, limit);
+    if (!plan) continue;
+    // Same sub-tables as the plan before: only one of them is needed
+    const before = plans.length ? new Set(splitTargets(plans[plans.length - 1])) : null;
+    if (before && splitTargets(plan).every((targets) => before.has(targets))) plan.free();
+    else plans.push(plan);
+  }
+  // Skip the plans below the biggest one with nothing left to build
+  let start = 0;
+  for (let index = plans.length - 1; index > 0; index--) {
+    if (missingStates(plans[index], request) === 0) {
+      start = index;
+      break;
     }
   }
-  // Big plan with nothing left to build: no need for the small one
-  if (small && big && missingStates(big, request) === 0) {
-    small.free();
-    small = null;
-  }
-  // Start with whichever plan exists, the small one first
-  const first = small ?? big;
+  for (const plan of plans.splice(0, start)) plan.free();
+  // Start with the first plan left
+  const first = plans.shift();
   if (!first) return null;
   try {
     const uses = await attachTables(first, request);
-    return { solver: first, mb: 0, uses, next: small && big ? { split: big, spent: 0 } : undefined };
+    return { solver: first, mb: 0, uses, next: plans.length ? { plans, spent: 0 } : undefined };
   } catch (error) {
     first.free();
-    if (first !== big) big?.free();
+    for (const plan of plans) plan.free();
     throw error;
   }
 }
@@ -312,18 +328,20 @@ async function entryFor(request: Request, key: string): Promise<Entry> {
   return entry;
 }
 
-// Switch a split goal to its big plan (loading or building its missing sub-tables); if one can't be built, it stays on the small plan
+// Switch a split goal to its next plan (loading or building its missing sub-tables); if one can't be built, it stays on the plan it has, for good
 async function upgrade(entry: Entry, request: Request, key: string): Promise<void> {
-  const big = entry.next!.split;
-  entry.next = undefined;
+  const [next, ...later] = entry.next!.plans;
+  entry.next = later.length ? { plans: later, spent: 0 } : undefined;
   try {
-    entry.uses = await attachTables(big, request);
+    entry.uses = await attachTables(next, request);
   } catch {
-    big.free();
+    next.free();
+    for (const plan of later) plan.free();
+    entry.next = undefined;
     return;
   }
   entry.solver.free();
-  entry.solver = big;
+  entry.solver = next;
   trim(new Set([key, ...entry.uses]));
 }
 
@@ -344,7 +362,7 @@ function ask(solver: Solver, request: Request, options: object): string {
   return JSON.stringify([solver.search(request.start, text)]);
 }
 
-// Answer one search or list: a split goal on small sub-tables may use as many search nodes as building its big plan's missing tables would cost, then switches
+// Answer one search or list: a split goal below its biggest plan may use as many search nodes as building the next plan's missing tables would cost, then switches
 async function search(request: Request): Promise<string> {
   const key = tableKey(request, request.targets);
   const entry = await entryFor(request, key);
@@ -354,19 +372,19 @@ async function search(request: Request): Promise<string> {
     ...(request.minDepth === undefined ? {} : { minDepth: request.minDepth }),
     ...(request.after === undefined ? {} : { after: request.after }),
   };
-  if (entry.next) {
-    const small = entry.solver as SplitSearch;
-    const allowed = Math.floor(missingStates(entry.next.split, request) / STATES_PER_NODE) - entry.next.spent;
+  while (entry.next) {
+    const split = entry.solver as SplitSearch;
+    const allowed = Math.floor(missingStates(entry.next.plans[0], request) / STATES_PER_NODE) - entry.next.spent;
     if (allowed > 0) {
       try {
-        return ask(small, request, { ...options, maxNodes: allowed });
+        return ask(split, request, { ...options, maxNodes: allowed });
       } catch (error) {
         if (!String(error).includes(NODE_LIMIT)) throw error;
       } finally {
-        entry.next.spent += small.nodes();
+        entry.next.spent += split.nodes();
       }
     }
-    // Out of budget (or the big tables are kept or stored already): search with the big plan from now on
+    // Out of budget (or the next plan's tables are kept or stored already): search with the next plan from now on
     await upgrade(entry, request, key);
   }
   return ask(entry.solver, request, options);

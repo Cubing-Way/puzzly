@@ -22,7 +22,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8c — Inverse and symmetric lookups on the same tables (rotated copies share one table; inverse lookups measured, not kept)
 - [x] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
 - [x] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
-- [ ] Part 8f — Table capacity: 2-bit tables (done), smarter planner, memory-based budget (only if the benchmark says tables are the limit); one item per chat, each compared with the code before it
+- [x] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (one item per chat, each compared with the code before it)
 - [ ] Part 8g — Symmetry-reduced numbering (only if still needed)
 - [ ] Part 8h — Parallel search (only if still needed)
 - [ ] Part 9 — Hand-written tables for specific goals (last resort)
@@ -134,7 +134,7 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Plan: seed = first item no sub-table covers yet (its twist too), then every other item in order while `estimate_size` (5a's sizes without the reachable-layout walk) ≤ budget, with its twist if that fits, else positions only.
   A sub-goal = the targets relabeled: kept classes keep their id (and twist), every other piece on a moving spot joins one twist-free rest class, then ids are renumbered by the first spot they fill in the first target,
   so equal sub-goals from different goals give equal JSON and share one table (XXCross reuses XCross's; CFOP's four pair steps, every grip, use the same 8 "cross + one slot piece" tables).
-  Plans at 10M: XCross = cross + FR, cross + DFR · XXCross / XXXCross / F2L = cross + each piece · first layer = cross + each corner · DR = EO + E-slice (2.0M) and CO + E-slice positions (3.2M), found by the rule ·
+  Plans at 10M (before 8f's planner, which keeps two plans per goal: see "Planner (Part 8f, second item)"): XCross = cross + FR, cross + DFR · XXCross / XXXCross / F2L = cross + each piece · first layer = cross + each corner · DR = EO + E-slice (2.0M) and CO + E-slice positions (3.2M), found by the rule ·
   OLL with keep = 12 tables (27M states, 13 MB) · whole cube (PLL with keep) = 16 tables "4 U edges + one piece" (61M states, 29 MB, ~10–12 s to build).
   IDA*: per depth, each table's (outer `Units`, inner value), stepped with `TableCore::step` / `distance`. Move pruning: never one move twice in a row, commuting moves only in ascending order (commuting is checked
   on the KPuzzle transformations, so M/E/S and any move set work). Distances change by ≤ 1 per move, so a table is only looked up when its last exact distance plus the moves since could reach the bound;
@@ -145,6 +145,7 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   Worker tiers (`src/search-worker.ts`): one table if it fits (10M), else a split goal starts on small sub-tables (`SMALL_TABLE_STATES` 1M, ~0.2–0.4 s to build) and keeps its big plan (`MAX_TABLE_STATES` 10M);
   searches on the small tables may use (missing big states / `STATES_PER_NODE` 20) nodes in total (~3 µs per node vs ~0.15 µs per filled state), then the goal switches to the big plan
   (at once when those tables exist already). Entries list the sub-table keys they use (`uses`); dropping a table drops the splits using it. Twips `Searcher` only when no split works.
+  (Since 8f's budget: a chain of plans, 1M → 10M → 40M on 8 GB devices, one switch at a time; see "Budget (Part 8f, third item)".)
   Budget test: 1M-only builds 5–10× faster but XXXCross searches take 3–16 s (vs 0.2–0.8 s at 10M); 4M gains little over 10M.
   Numbers (Node, wasm, direct API, 10M, 5 scrambles; twips in brackets): XCross build 1.1–1.4 s, 0–1 ms (1–29 ms) · XXCross 1.9–2.3 s, 2–28 ms (0.2–9.1 s) · first layer 1.8–2.0 s, 0–14 ms (0.06–8.9 s) ·
   DR 0.3–0.4 s, 1–27 ms (3–320 ms) · XXXCross 3.5–4.1 s, 0.23–0.8 s (twips > 10 min on one scramble) · OLL with keep 3.8–5.2 s, 0–196 ms (6 ms–12.8 s) · PLL whole cube (T, Ua, Ub) 10–12 s, 2–441 ms (T in 11, Ua in 9).
@@ -362,6 +363,48 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
     (4 alternating rounds on xxxcross + cfop-oll-pll + pseudo + dr-finish: old 45.1–54.2 s, new 48.5–57.7 s; last two rounds 45.1 / 45.2 vs 48.8 / 49.5; cfop-oll-pll 2.47 → 2.70 µs per node): the extra read
     when a skipped table is needed again. Ranking that read from the parent (`child_index`) instead of the moved pieces took the first version's ~12% down to ~8%. Measures ~27 → ~34 µs each (the walk down).
   - So at the same 10M budget it's half the memory for ~8% per node; the gain has to come from bigger tables in the same memory (next 8f items: budget, planner).
+- Planner (Part 8f, second item): split.rs only; the engine, the worker and `TABLE_FORMAT` are unchanged (same numbering: the new sub-goals are just new table keys).
+  - `plan(items, order, fits)` runs twice and both plans' tables are kept (`[Orbit, Related].concat()`; repeats dropped by targets as before, a rotated copy found by both is read once).
+    `Order::Orbit` = the seed's own orbit first, then the others (item order). `Order::Related` = next, the untried item the most moves turn together with the kept ones
+    (`Item.moves`: turn groups that move a spot it holds in the first target, bit = group mod 64; score = shared groups summed over the kept items; ties in item order). The old order (every item in order, edges first) is gone.
+  - Plans at 10M (old → new): F2L 8 "cross + one piece" → 12 (4 "cross + middle edge", "4 corners + DF", 7 "pair + nearby pieces" such as `FR DFR DF DFL DR`, 5.3M); XXXCross 6 → 9; OLL with keep 12 → 17;
+    PLL with keep / BLD 4 tables, 16 lookups → 4 tables, 22 lookups ("4 U edges + DF" and "+ FR", all 8 corners with the D ones placed only 9.8M, `UF UFR UFL UR UBR` 4.8M read 10 ways);
+    DR finish 1 table, 7 lookups → 5 tables (all edges + UFR 7.7M and all corners + UF UR FR 9.0M, i.e. the Kociemba-like pair 8b's note asked for, + 3 Related ones).
+  - Candidates tried (replay nodes, old → orbit alone / related alone / both): DR finish 36k → 28k / 29k / 6.3k; xxxcross 1.52M → 1.65M / 0.53M / 0.43M; PLL with keep 16.4M → 2.44M / 7.27M / 1.27M;
+    pseudo F2L 28k → 24k / 9.0k / 5.9k. Old + related: 5.0M nodes on cfop-oll-pll (worse than both). Each candidate alone has a goal it's bad at, so both are kept.
+  - Not done: picking a plan per goal from a sample at run time. A sample can only be measured once every candidate's tables are built, so it could only save lookups, and both plans together were faster than
+    either alone on every heavy goal (up to ~1.6× per node for 2–13× fewer nodes). The sampling was done here instead (scratchpad `sample.ts`: mean start bound per candidate on 40 seeded states).
+  - Bounds sampled (40 seeded scrambles, old → new, 1M / 10M plans): F2L right after a cross (the method search's later goal) 4.55 → 6.45 / 5.55 → 7.25; F2L from random states 6.53 → 6.92 / 7.53 → 7.85;
+    XXXCross from random states 6.47 → 6.80 / 7.42 → 7.80.
+  - Replay (all 1,356 requests, 10M plans, old and new back to back): identical answers; start bound higher on 755, lower on 3 (xxxcross 8 → 7 once, an OLL measure 6 → 5). Nodes and time: dr-finish 40k → 10k (99 → 37 ms),
+    xxxcross 1.52M → 0.43M (3.4 → 1.3 s), cfop-oll-pll 16.4M → 1.27M (51.8 → 6.2 s), pseudo search 45.7k → 10.7k and list 26.7k → 6.3k, bld-flip 15.3M → 7.3M (45.7 → 21.1 s); total 103.3 → 31.5 s.
+    µs per node 2.2–3.2 → 2.9–4.9 (more lookups). Tables 39 → 84 (202M → 462M states, 48 → 111 MB).
+  - Method runs (`record.js`, fake worker, dr-finish + xxxcross + cfop-oll-pll + pseudo, old → new): first pass with builds 81.7 → 26.7 s, warm 59.4 → 3.8 s (PLL with keep 4.5–28.7 s → 10 ms–2.1 s).
+  - Example methods (6, 3 scrambles, BLD 2): every run reaches its goals, 11 of 17 identical; the others differ where a step's equal-length answers come in another order (measured bounds sort the combos),
+    with the same length at the first differing step. Totals equal except CFOP 29 → 27 once; CFOP + OLL + PLL in `record.js` 54 → 48 and 54 → 38 (same F2L lengths, another last layer).
+  - Method search (30 s after a plain run, 2 scrambles each, old → new): CFOP 23 / 26 → 24 / 25 (plain 31 / 32 → 27 / 30), ZZ 20 / 22 → 20 / 21, pseudo 21 / 23 → 18 / 23; root bounds 7–8 either way, ~25% more step starts in 30 s on CFOP.
+  - Testing: scratchpad copy with a `setPlanRule(n)` export and `SplitSearch.describe()` (plans as text), `replay-exp.ts` (RULE, PLANS), `sample.ts`, `msearch.ts`, `regress.ts`; requests and tables of the 2-bit replay reused.
+    `bench/out/replay-before.js` is now the 2-bit code (before this planner), `bench/out/requests.jsonl` the recorded requests.
+- Budget (Part 8f, third item): the worker, plus one Rust constant; `TABLE_FORMAT` unchanged (same numbering, same bytes).
+  - Worker: `DEVICE_GB` = `navigator.deviceMemory` (Chrome / Edge, in workers too; Firefox, Safari and Node report none = null). Chromium 152 reports 4 on this PC (6 GB installed, 5.9 GB visible), so it rounds down.
+    `BIG_TABLE_STATES` = 40M when `DEVICE_GB` ≥ 8, else 10M; `MAX_CACHE_MB` 512 with 40M, else 256. `MAX_TABLE_STATES` (one exact table for a whole goal) stays 10M, so a first answer never waits on a bigger build.
+  - Plan chain: `PLAN_STATES` = 1M, 10M, `BIG_TABLE_STATES` (deduped); `Entry.next = { plans, spent }`. A plan with only the tables of the one before it is dropped; a goal starts on the biggest plan with nothing missing (kept or stored), else the smallest.
+    It moves up one plan when its nodes on the current one reach (next plan's missing states / `STATES_PER_NODE`). With no device memory reported it behaves exactly as before.
+  - Why a chain: going straight from 1M to 40M (first try) kept goals on 1M tables for 20× the nodes (228M / 20 = 11M for XXXCross): warm XXXCross 1.1 → 11.1 s, the DR step 18 → 310 ms, one PLL with keep 64 s on the first pass,
+    and a CFOP run took other equal-length answers (38 → 54 moves).
+  - Rust: `TABLE_LIMIT` (turn tables kept while a table fills) 1<<22 → 1<<24 entries. The 40M plans need 6-edge tables (665,280 positions × 32 flips = 21.3M); 6 edges × 18 turns = 12M entries was past the old cap,
+    so they filled piece by piece in ~165 s each; with the cap 2.2–7.4 s (~96 MB while filling, freed after). Two such tables built both ways: identical bytes.
+  - Big-plan states per scenario at 10M / 20M / 40M (sub-tables shared within a scenario counted once): dr-finish 37M / 73M / 134M, xxxcross 40M / 40M / 228M, pseudo 122M / 122M / 969M,
+    cfop-oll-pll 214M / 303M / 1.48G (352 MB), bld-flip 109M / 128M / 320M. 20M adds little: the next useful tables (6 edges with flips) are 21M and up.
+  - Replay (1,356 requests, every goal on its biggest plan, 10M → 20M → 40M): identical answers. 20M: cfop-oll-pll 4.2 → 3.1 s, dr-finish 37 → 15 ms, the rest unchanged (+14 tables built in 17.6 s, 111 → 141 MB).
+    40M: dr-finish 37 → 19 ms (10.2k → 3.2k nodes), xxxcross 945 → 309 ms (430k → 110k), cfop-oll-pll 4.21 → 1.08 s (1.27M → 274k), pseudo search 10.7k → 4.4k nodes (same time), bld-flip 19.9 → 7.3 s (7.26M → 2.08M);
+    start bound higher on 587 requests, never lower (gap avg xxxcross 4.25 → 3.75, bld-flip 5.33 → 5.00, cfop-oll-pll 1.39 → 0.87); total 27.6 → 8.8 s; µs per node 2.2–3.3 → 2.8–3.9.
+    Tables 84 → 123 (462M → 2.8G states, 111 → 673 MB), the 87 new ones built in 213 s.
+  - Method runs (`record.js`, dr-finish + xxxcross + cfop-oll-pll + pseudo, 2 passes; first / warm pass): before 28.3 / 3.8 s; no device memory 28.4 / 3.9 s; `DEVICE_GB=8` 31.8 / 3.9 s (XXXCross's first pass alone varies 10–14 s
+    between runs); identical solutions in all three. The 40M plans aren't reached in two passes: a goal first spends ~16–20M nodes on its 10M plan (BLD flips: 6–7 warm passes, then a ~320M-state build), or starts on them once they're stored.
+    BLD flips, 4 passes at 8 GB: identical solutions, 50.1 / 5.1 / 4.7 / 3.7 s → 36.8 / 3.6 / 3.5 / 3.5 s (BLD's plans have no orbit past the old cap, so the first-pass gap is likely build-time noise).
+  - Bench: `DEVICE_GB=8` (bench/setup.ts sets `navigator.deviceMemory` before the worker loads), `BIG=40000000 node bench/out/replay.js …` (exact tables stay 10M). `bench/out/replay-before.js` is now the planner code (before this item).
+  - Testing: scratchpad `plans.ts` (plan sizes per goal and budget, nothing built) and `which.ts` (each sub-table's pieces, states, and whether it's in the table cache), a replay that logs every build's time.
 ---
 
 ## Part 1 — Groups + centers
@@ -734,6 +777,20 @@ time to the first improvement and the best after 30 s vs 8d's numbers (same seed
 **Done (2-bit tables):** see "2-bit tables (Part 8f, first item)" in Facts. Identical answers, nodes and bounds on the whole replay; half the memory and stored bytes (96 → 48 MB), builds ~25% faster, searches ~8% slower per node
 (one extra read when a skipped table is needed again). The 10M budget is unchanged, so this item alone only saves memory: the next items (a budget of ~20M states in the old memory, or from `navigator.deviceMemory`; planner candidates) turn it into sharper bounds.
 Not checked in a real browser (the worker didn't change; table bytes are opaque to it, and loading them back is covered by the replay's table cache).
+
+**Done (smarter planner):** see "Planner (Part 8f, second item)" in Facts. Two plans per goal, both kept: each table grown from its seed's own orbit first (all corners together), and each grown with the pieces the same moves turn
+(a pair's corner and edge together). No candidate alone was best everywhere (orbit-first wins PLL and DR finish, related-first wins F2L pairs and XXXCross), both together beat each on every heavy goal.
+Identical answers on the whole replay, 3.3× faster in total (PLL with keep 8×, XXXCross and DR finish 2.6×, BLD flips 2.2×); method runs 3× faster with builds and 16× warm; the F2L bound right after a cross +1.7–1.9 moves.
+Cost: 2.3× the table memory (48 → 111 MB on the replay) and more first-time builds. Runtime sampling not done (it needs every candidate's tables first; see Facts). Not checked in a real browser (worker and table format unchanged).
+Next item: the budget (bigger tables now cost 2-bit memory; `navigator.deviceMemory`), measured against this planner.
+
+**Done (memory-based budget):** see "Budget (Part 8f, third item)" in Facts. The benchmark said yes, but only past 20M: with every goal on 40M plans the heavy searches are ~3× faster (XXXCross, PLL with keep, BLD flips; identical answers,
+higher start bounds on 587 requests) for 6× the table memory (673 MB over all five scenarios, up to ~350 MB for one method). 20M barely helped (the next useful tables are 21M and up).
+Two things had to change to get there: the fill's turn-table cap (6-edge tables filled in ~165 s without their turn table, 2–7 s with it) and the worker's switch, which now climbs 1M → 10M → 40M one plan at a time
+(jumping straight from 1M to 40M kept goals on 1M tables 20× longer: a warm XXXCross 10× slower). Only devices whose browser reports 8 GB or more get 40M plans and a 512 MB cache; everything else
+(this 6 GB PC reports 4; Firefox, Safari and Node report nothing) keeps today's behaviour, with identical solutions. In method runs 40M plans arrive only after a goal has searched about as much as they cost to build,
+so the 2-pass benchmarks never reach them. Checked in a browser: only `navigator.deviceMemory` inside a worker (Chromium 152); the built page wasn't run.
+Not done from the Do list: extra rotated lookups chosen by sample (8c), and letting measures switch plans (8e's F2L bound).
 
 ### Part 8g — Symmetry-reduced numbering (only if still needed)
 

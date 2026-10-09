@@ -1,5 +1,7 @@
 // Fake Worker: the search worker module runs in this process, messages go through setImmediate; every request can be recorded
 (globalThis as any).self = globalThis;
+// DEVICE_GB=8: the worker sees this much device memory (Node reports none, like Firefox and Safari), so it picks that device's table budget
+if (process.env.DEVICE_GB) Object.defineProperty(navigator, "deviceMemory", { value: Number(process.env.DEVICE_GB), configurable: true });
 let current: any = null;
 // Requests seen so far (recording on when the array exists)
 export const recorded: any[] = [];

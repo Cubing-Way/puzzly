@@ -9,8 +9,9 @@ const MAX_SPOTS: usize = 64;
 pub const MAX_UNITS: usize = 64;
 // Most orbits in one part
 const MAX_ORBITS: usize = 16;
-// Largest turn table an orbit may get (entries); bigger orbits are worked out piece by piece instead
-const TABLE_LIMIT: u64 = 1 << 22;
+// Largest turn table an orbit may get (entries, kept only while a table fills: 6 edges × 18 turns = 12M fits, ~96 MB with their twist rows);
+// bigger orbits are worked out piece by piece instead (a 21M-state 6-edge table filled in ~165 s that way, 2–7 s with its turn table)
+const TABLE_LIMIT: u64 = 1 << 24;
 // Largest twist-row table for orbits with twists per piece (entries)
 const ROW_LIMIT: usize = 1 << 20;
 // Twists row of an orbit (or part) whose twists never count

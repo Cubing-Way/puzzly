@@ -1,6 +1,7 @@
 // Goals too big for one exact table: split into sub-tables that each fit (the goal with some pieces, or their twists, left out), then IDA* guided by the largest of their distances
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -26,11 +27,21 @@ const MAX_LENGTH: u8 = 40;
 // No turn made yet (any turn may come first)
 const NO_GROUP: usize = usize::MAX;
 
-// One piece class of the goal that sub-tables may track: a single piece or a group sharing an id, with or without a twist that counts
+// One piece class of the goal that sub-tables may track: a single piece or a group sharing an id, with or without a twist that counts,
+// and the moves that turn its spots in the first target (bit = turn group, mod 64)
 struct Item {
     orbit: usize,
     id: u8,
     twisted: bool,
+    moves: u64,
+}
+
+// How a plan grows each sub-table from its seed: the seed's own orbit first (all corners together: PLL's corner cycles, DR's corner permutation),
+// or the items the most moves turn together with the ones kept so far (a pair's corner and edge share two faces: F2L pairs whole)
+#[derive(Clone, Copy)]
+enum Order {
+    Orbit,
+    Related,
 }
 
 // How a pattern becomes one sub-table's, orbit by orbit
@@ -127,9 +138,9 @@ fn pattern_json(kpuzzle: &KPuzzle, pattern: &KPatternData) -> String {
 // Items a sub-table keeps: (item index, whether its twist counts)
 type Kept = Vec<(usize, bool)>;
 
-// Sub-tables for a goal: each starts from an item no earlier sub-table covers, then adds the goal's items in order (edges first on the 3x3)
+// Sub-tables for a goal: each starts from an item no earlier sub-table of this plan covers, then adds the goal's other items in the plan's order
 // while the table still fits, with their twists if possible, else their positions only
-fn plan(items: &[Item], fits: impl Fn(&[(usize, bool)]) -> bool) -> Vec<Kept> {
+fn plan(items: &[Item], order: Order, fits: impl Fn(&[(usize, bool)]) -> bool) -> Vec<Kept> {
     let mut tables = vec![];
     let mut placed = vec![false; items.len()];
     let mut twisted = vec![false; items.len()];
@@ -157,11 +168,12 @@ fn plan(items: &[Item], fits: impl Fn(&[(usize, bool)]) -> bool) -> Vec<Kept> {
             placed[seed] = true;
             continue;
         }
-        // Then every other item, in order
-        for item in 0..items.len() {
-            if item != seed {
-                add(&mut kept, item);
-            }
+        // Then every other item, in the plan's order
+        let mut tried = vec![false; items.len()];
+        tried[seed] = true;
+        while let Some(item) = next_item(items, order, seed, &kept, &tried) {
+            tried[item] = true;
+            add(&mut kept, item);
         }
         for &(item, with_twist) in &kept {
             placed[item] = true;
@@ -170,6 +182,15 @@ fn plan(items: &[Item], fits: impl Fn(&[(usize, bool)]) -> bool) -> Vec<Kept> {
         tables.push(kept);
     }
     tables
+}
+
+// The next item a sub-table tries (None when every item was tried): the seed's orbit first, else the item the most moves turn together with the kept ones; ties in item order
+fn next_item(items: &[Item], order: Order, seed: usize, kept: &Kept, tried: &[bool]) -> Option<usize> {
+    let untried = (0..items.len()).filter(|&item| !tried[item]);
+    match order {
+        Order::Orbit => untried.min_by_key(|&item| (items[item].orbit != items[seed].orbit, item)),
+        Order::Related => untried.max_by_key(|&item| (kept.iter().map(|&(other, _)| (items[item].moves & items[other].moves).count_ones()).sum::<u32>(), Reverse(item))),
+    }
 }
 
 // True when the two turns give the same result in either order (then only one order is searched)
@@ -394,7 +415,12 @@ impl SplitSearch {
         let goals = closed.iter().map(|target| full.read(target).ok_or("A target doesn't fit its own numbering")).collect::<Result<HashSet<_>, _>>()?;
         // Sub-tables relabel the targets as sent (a sub-goal closed under the moves is the closed goal relabeled, so each table closes its own)
         let targets = sent;
-        // The goal's items, orbit by orbit in the puzzle's order (an orbit's sets by first spot, classes in spot order; a class in several sets is one item)
+        // The goal's items, orbit by orbit in the puzzle's order (an orbit's sets by first spot, classes in spot order; a class in several sets is one item),
+        // each with the moves that turn a spot it holds in the first target
+        let moves_of = |info: &cubing::kpuzzle::KPuzzleOrbitInfo, id: u8| {
+            let spots: Vec<usize> = (0..info.num_pieces as usize).filter(|&spot| targets[0][&info.name].pieces[spot] == id).collect();
+            full.turns.iter().filter(|turn| spots.iter().any(|&spot| turn.data[&info.name].permutation[spot] as usize != spot)).fold(0u64, |mask, turn| mask | 1 << (turn.group % 64))
+        };
         let mut items: Vec<Item> = vec![];
         for (o, info) in kpuzzle.orbit_info_iter().enumerate() {
             let mut sets: Vec<_> = full.orbits().filter(|orbit| orbit.name == info.name).collect();
@@ -402,7 +428,7 @@ impl SplitSearch {
             for class in sets.iter().flat_map(|orbit| orbit.classes.iter()) {
                 match items.iter_mut().find(|item| item.orbit == o && item.id == class.id) {
                     Some(item) => item.twisted |= class.twisted,
-                    None => items.push(Item { orbit: o, id: class.id, twisted: class.twisted }),
+                    None => items.push(Item { orbit: o, id: class.id, twisted: class.twisted, moves: moves_of(info, class.id) }),
                 }
             }
         }
@@ -417,8 +443,9 @@ impl SplitSearch {
         };
         // Sub-tables that fit this split's budget
         let fits = |kept: &[(usize, bool)]| fits_in(kept, max_states);
-        // Planned sub-tables (the items each one keeps)
-        let mut plans = plan(&items, &fits);
+        // Planned sub-tables (the items each one keeps): both plans together, since each sees what the other can't (their largest distance is the bound;
+        // either alone left 2–13× more search nodes on PLL, XXXCross or F2L pairs)
+        let mut plans = [plan(&items, Order::Orbit, &fits), plan(&items, Order::Related, &fits)].concat();
         // With "solvable with" moves, also one table per orbit holding every item's position (no twists) when it fits: the moves usually allow
         // only some layouts of those pieces as a whole (a 2-gen corner permutation), which tables of a few pieces can't see
         if !free.is_empty() {
@@ -469,7 +496,10 @@ impl SplitSearch {
             if let Some(symmetry) = &symmetry {
                 let shape = shape_of(&kept, symmetry);
                 if let Some(found) = (0..subs.len()).find_map(|s| (1..symmetry.rotations.len()).find(|&r| symmetry.turned(&shapes[s], r) == shape).map(|r| (s, r))) {
-                    slots.push(found);
+                    // The same rotated copy from the other plan is read once
+                    if !slots.contains(&found) {
+                        slots.push(found);
+                    }
                     continue;
                 }
             }
