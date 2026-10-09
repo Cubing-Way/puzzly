@@ -21,7 +21,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8b — Spot classes, exact size estimates, twist parity (sharper tables)
 - [x] Part 8c — Inverse and symmetric lookups on the same tables (rotated copies share one table; inverse lookups measured, not kept)
 - [x] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
-- [ ] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
+- [x] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
 - [ ] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
 - [ ] Part 8g — Symmetry-reduced numbering (only if still needed)
 - [ ] Part 8h — Parallel search (only if still needed)
@@ -320,6 +320,37 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   - Page: method panel *Search fewest moves* + *for up to [30] s*, *Stop search* outside the locked editor (`stopRequested`), rows replaced on each `onBetter` (`Run.untimed` shows "—"), final status "the fewest this method can do" when optimal.
   - Testing: `harness/search.ts` style (fake worker; SCEN small = 2-step methods vs an exhaustive check with `stepCandidates` + `solveStep`; dr / cfop / pseudo / zz / zzcp / bld with BUDGET seconds after one warm-up `runMethod`),
     `harness/paging.ts` (worker messages straight to the fake worker), `harness/regress-{old,new}.ts` (the old engine imported by the project's absolute path). Built page checked in the browser pane (search, Stop, Run method).
+- Method lower bounds (Part 8e): engine.ts only (TS); the worker and Rust are unchanged.
+  - `gripGoals(pieces, rotations, keep, earlier)`: a step's goal per alternative × grip, with the covered-grip filter and NOTHING_NEW, no cube needed. `stepCombos` now uses it, and plain runs are identical (7 methods × 3 scrambles).
+  - `laterGoals(steps, index, earlier)`: the goal walk.
+    - Walk states are (grip from the start, earlier pieces, moves used so far). They follow each step's `gripGoals` and `piecesAfter` (now takes `{ rotation, settled }`).
+    - Per later step, its goals are deduped by the goal named in the start's grip, `movesKey`, the grip (orient roles only), the offsets and the solvable-with moves.
+    - It only returns the steps the next step doesn't keep, plus the last step reached, since a step that keeps asks for more. So CFOP gives F2L only, pseudo-slotting the ADF step's exact F2L, ZZ both blocks, ZZ with CP the whole cube.
+    - It stops: at once for a repeated or untouched current step; before an untouched step; after a repeated step's first round; before a step with more than `MAX_LATER_GOALS` (64) goals; past `MAX_WALK_STATES` (256) states.
+  - Moves for a later goal = every move the steps from the start up to it may use, renamed into that step's grip.
+    - `moveInGrip` renames by conjugating with the grips (R in grip y is B as held). `turnName` drops the prime of quarter turns. `distinctTurns` drops a half turn whose quarter turn is there. `movesForGrip` takes a step's own list when it's the same turns, so tables are shared.
+    - Measuring with the step's own moves would be wrong: pseudo's ADF step (D only) can't reach F2L.
+  - `measureLater`: held cube via `heldInGrip` (turned through its transformation, not replayed; checked equal to `heldPattern` on 200 cases), the centers filter, one measure per offset group. Exact null = Infinity, split null = 0, errors = 0. `laterBound` = the largest, over steps, of each step's closest goal.
+  - `searchMethod`:
+    - `SearchNode.bound` = max(next step's closest combo, later bound). The later bound is measured only for children the next step's bound doesn't prune, and cached per (step, earlier id) for the walk and per start key for the bound.
+    - Children are still visited in 8d's order (next step's bound), ties by the rest's bound; children are skipped by the rest's bound.
+    - Root bound: `MethodSearchResult.bound`, `onBound`. `optimal` is also true when the best ≤ the root bound (`proven` stops the search at once).
+  - Page: live status "…, at least N moves"; final status "any run needs at least N moves" when not proven.
+  - Gap per level on the best runs (moves left: 8d bound → 8e bound). Never above the moves left on 24 best runs (8d's and 8e's).
+    - CFOP after the cross 20: 3 → 5 and 17: 3 → 3; pseudo 17: 3 → 5 and 16: 0 → 4.
+    - ZZ right-block start 12: 8 → 10, 9: 7 → 9, 6: 1 → 5; ZZ with CP 22: 9 → 10, 20: 7 → 10, 7: 3 → 7.
+    - Roots +0–2 (whole-cube or F2L goals). DR + finish gets only a root bound (7–8, DR's own 4–7).
+  - The F2L bound is weak: the worker measures it on its small (1M) sub-tables, since measures never switch a goal to its big plan, and even "cross + one piece" tables take a max over pieces.
+    - Forcing big tables gave CFOP / pseudo +3 per level (3 → 6 after the cross).
+    - Letting a measure switch once the big plan's tables all exist changed nothing in 30 s (the pair steps stay on small tables), so it wasn't kept.
+  - Search, Node, 30 s after a warm-up run, same seeds as 8d. Today's 8d run first (this PC was faster than in 8d's notes), 8d → 8e:
+    - CFOP 26 → 20 and 23 → 23. ZZ 20 → 16 and 17 → 17 (0.45 s vs 1.1 s). ZZ with CP 26 / 27 the same.
+    - Pseudo 22 / 23 the same (22 at 4.7 s vs 5.8 s). DR + finish identical.
+    - Step starts per second up (CFOP 414 / 720 → 803 / 921, ZZ ~2,900 → 3,300–4,000): pruned children skip their pages.
+    - The first later goals build tables once (whole cube with face moves ~1.3 s, EOLine + blocks ~2.4 s, whole cube with U R L ~3 s), which delays ZZ with CP's first improvement from 0.1 s to 4 s.
+  - Visiting children by the rest's bound alone (tried first): CFOP 23 → 25 and ZZ 17 → 24 in 30 s, so the next step's bound stays the visiting order.
+  - Exhaustive 2-step cases (9 short + 9 full scrambles): all match. On full scrambles "2 edges then cross" is proven in 8 / 1 / 1 step starts instead of 4,415 / 667 / 1,681 (1.4 s → 0.17 s); "cross then a pair" is unchanged (its bound 6 is one under the best, 7).
+  - Testing: harnesses in the scratchpad: `search.ts` (8d's, with `PATHS` saving best runs), `gap.ts` (MODE probe / gap, on a copy of engine.ts with `export { laterGoals, … }` appended), `regress.ts`. Built page checked in the browser pane (ZZ, 8 s: "at least 7 moves").
 ---
 
 ## Part 1 — Groups + centers
@@ -664,6 +695,15 @@ Expect better runs sooner, not proofs: a whole CFOP or DR run likely stays unpro
 **Test:** never a bound above what really remains (check every level of the best runs found: used + bound ≤ best); the exhaustive 2-step cases still match and prove faster; per scenario, gap before / after,
 time to the first improvement and the best after 30 s vs 8d's numbers (same seeds); step starts per second (the extra measures' cost).
 
+**Done:** see "Method lower bounds (Part 8e)" in Facts. The goal walk and the bound as planned (TS only), with every move the steps in between may use (renamed per grip), and only the steps whose goal the next step doesn't keep are measured.
+- The bound is sound on every level of 24 best runs, and the exhaustive 2-step cases match (some now proven at the root, 4,415 → 8 step starts).
+- In 30 s: CFOP 26 → 20 and ZZ 20 → 16 on one scramble each; every other scenario equal to 8d (DR + finish unchanged: its only later goal is the root's).
+- Plain runs are identical.
+- The gap is still large: after a CFOP cross ~20 moves remain and the bound is 3–5. A bound made of "cross + one piece" tables can't add up four pairs; even big tables give only ~6.
+- Kept 8d's visiting order (by the rest's bound found worse runs in time).
+- Not kept: measures switching to big plans (no effect).
+- Not done: a whole-run proof (as expected). Sharper F2L-type bounds are a table question (8f: e.g. a planner that tries "cross + a pair" tables, with sampling).
+
 ### Part 8f — Table capacity (only if 8a–8c show the bounds are the limit)
 
 **Do:**
@@ -674,6 +714,9 @@ time to the first improvement and the best after 30 s vs 8d's numbers (same seed
 - From 8c: extra rotated lookups (a table read on rotated copies no planned table covers) halve PLL / BLD-flip nodes, but all 80 of them cost ~2.5× per node; keeping the few that raise the bound most on the sample
   could pay off. Inverse lookups cut nodes 7–37% at ~2–3× per node (the whole state per depth is the fixed cost); worth a retry only if lookups get cheaper (8g / 8h).
 - Budget from `navigator.deviceMemory` instead of a fixed 10M.
+- From 8e: the method search's later-goal bounds (F2L after a CFOP cross) are measured on small 1M sub-tables, since measures never spend nodes or switch plans. Forced big tables gave +3 per level (3 → 6 after a cross), still far from the ~20 moves left.
+  - A planner candidate with "cross + one pair" tables (XCross, 73M) would see pairs whole.
+  - Or let measures switch once a goal has been measured many times. Measure the gain with 8e's gap check (`gap.ts`) first.
 
 **Test:** same move counts; bound gap and nodes vs 8c.
 

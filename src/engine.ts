@@ -415,7 +415,7 @@ function solvedAfter(moves: string): KPattern {
 export async function loadEngine(): Promise<void> {
   kpuzzle = await cube3x3x3.kpuzzle();
   // Cached cubes and lookups belong to the old definition
-  for (const cache of [turnedSolved, scrambledInGrip, heldAfter, movesKeys, pieceMovesMade]) cache.clear();
+  for (const cache of [turnedSolved, scrambledInGrip, heldAfter, movesKeys, movesRenamed, pieceMovesMade]) cache.clear();
   // Remember where the centers end up for each of the 24 grips
   for (const grip of ALL_GRIPS) gripByCenters.set(centerLayout(kpuzzle.defaultPattern().applyAlg(grip)), grip);
 }
@@ -463,6 +463,17 @@ function heldPattern(scramble: string, done = ""): KPattern {
 // Note a held cube worked out another way (e.g. a step's held cube plus its answer's moves), so heldPattern needn't apply every move again
 function noteHeld(scramble: string, done: string, held: KPattern): void {
   remember(heldAfter, `${scramble}\n${done}`, () => held);
+}
+
+// The cube after `scramble` then `done`, held in another grip (a rotation from the grip it's held in): heldPattern(scramble, done + rotation),
+// made by turning the held cube instead of applying every move again
+function heldInGrip(scramble: string, done: string, rotation: string): KPattern {
+  if (!rotation) return heldPattern(scramble, done);
+  return remember(heldAfter, `${scramble}\n${joinMoves(done, rotation)}`, () => {
+    // Held cube as a transformation of the solved cube, done between the rotation's inverse and the rotation
+    const held = heldPattern(scramble, done).experimentalToTransformation();
+    return held ? solvedAfter(invertMoves(rotation)).applyTransformation(held).applyAlg(rotation) : heldPattern(scramble, joinMoves(done, rotation));
+  });
 }
 
 // Goal (text or roles) renumbered to the actual pieces that fill its spots in the grip after `scramble` then `done` (e.g. for the viewer's mask)
@@ -575,6 +586,59 @@ function movesKey(rotation: string, moves: string[]): string {
 
 // Moves keys already worked out, by rotation and moves
 const movesKeys = new Map<string, string>();
+
+// Turn families a step's moves may use (face, slice and wide turns), to name a turn the way another grip sees it
+const TURN_FAMILIES = ["U", "R", "F", "D", "L", "B", "M", "E", "S", "Uw", "Rw", "Fw", "Dw", "Lw", "Bw"];
+// Moves renamed for another grip, by both grips and the move (null = no single move is that turn)
+const movesRenamed = new Map<string, string | null>();
+
+// A move as the turns it allows: a quarter turn by its family alone (its powers are the same moves either way round), any other with its amount (e.g. "R2")
+function turnName(move: string): string {
+  const leaf = Array.from(new Alg(move).experimentalLeafMoves())[0];
+  if (!leaf) return move;
+  const amount = Math.abs(leaf.amount);
+  return amount === 1 ? leaf.family : `${leaf.family}${amount}`;
+}
+
+// A move named in one grip, named the way another grip sees the same turn (both grips as rotations from one hold), e.g. R in grip y is B as held;
+// quarter turns come without the prime (see turnName), null when no single move is that turn
+function moveInGrip(move: string, from: string, to: string): string | null {
+  if (from === to) return turnName(move);
+  return remember(movesRenamed, `${from}/${move}/${to}`, () => {
+    // The turn as the cube itself turns it in a grip (rotation, move, rotation back)
+    const turn = (rotation: string, name: string) => JSON.stringify(solvedAfter(joinMoves(rotation, name, invertMoves(rotation))).patternData);
+    const wanted = turn(from, move);
+    // The move that turns the cube the same way in the other grip
+    for (const family of TURN_FAMILIES) {
+      for (const amount of ["", "2", "'"]) if (turn(to, family + amount) === wanted) return turnName(family + amount);
+    }
+    return null;
+  });
+}
+
+// Moves with each turn once (see turnName); a half turn whose quarter turn is there too is left out, as one of its powers
+function distinctTurns(moves: string[]): string[] {
+  const names = [...new Set(moves.map(turnName))];
+  return names.filter((name) => !(name.endsWith("2") && names.includes(name.slice(0, -1))));
+}
+
+// Moves named as the cube is held (see turnName), named for a grip; a list from `prefer` instead when it allows the same turns
+// (a step's own list, so a measure shares its tables); null when one has no single-move name there
+function movesForGrip(turns: string[], rotation: string, prefer: string[][]): string[] | null {
+  const named: string[] = [];
+  for (const turn of turns) {
+    const name = moveInGrip(turn, "", rotation);
+    if (name === null) return null;
+    named.push(name);
+  }
+  const allowed = distinctTurns(named);
+  // Same turns: the same names once each list is tidied the same way
+  const same = (list: string[]) => {
+    const other = distinctTurns(list);
+    return other.length === allowed.length && other.every((name) => allowed.includes(name));
+  };
+  return prefer.find(same) ?? allowed;
+}
 
 // True when the allowed moves can bring the start's goal centers to where the target has them (few center layouts, so a quick breadth-first walk)
 function centersReachable(start: KPattern, target: KPattern, moves: string[]): boolean {
@@ -1373,6 +1437,52 @@ interface Answer {
   moves: string;
 }
 
+// A step's goal in one grip, for one of its alternatives (no cube needed)
+interface GripGoal {
+  alternative: number; // which of the step's alternatives
+  rotation: string; // grip ("" = as held)
+  goal: Goal; // the goal named in that grip (kept pieces included)
+  gripMatters: boolean; // the goal has orient-group pieces, which are judged from the grip (so two grips never ask for the same thing)
+  fresh: number; // goal pieces earlier steps don't cover yet in that grip
+}
+
+// A step's goals worth trying from the earlier pieces (named in the grip it starts in): per alternative, its goal in each grip where earlier pieces cover the fewest
+// of its pieces (a grip turn can't trade its pieces for ones already done). When no alternative adds anything, the step is already done if the cube may stay as held
+// (only that grip is tried, e.g. a last pair after an XCross); otherwise it throws NOTHING_NEW rather than answer with a bare grip turn
+function gripGoals(pieces: string, rotations: string[], keep: Goal | undefined, earlier: Goal | undefined): GripGoal[] {
+  const perAlternative = readAlternatives(pieces).map((text, alternative) => {
+    // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand; :x pieces are just not checked)
+    const own = dropFree(goalFromText(text, !keep));
+    // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no centers left at all = all six, like goal text)
+    const goalFor = (rotation: string): Goal => {
+      if (!keep) return own;
+      const goal = mergeGoals(rotateGoal(keep, rotation), own);
+      goal.CENTERS ??= allCenters();
+      return goal;
+    };
+    // Its pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
+    const ownPieces = Object.entries(own)
+      .filter(([orbit]) => orbit !== "CENTERS")
+      .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
+    // Orientation is judged from the grip, so orient-group goals can't be shared between grips
+    const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
+    // Each grip: how many of its pieces earlier steps already cover there (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
+    const goals = rotations.map((rotation) => {
+      const before = rotateGoal(earlier ?? keep ?? {}, rotation);
+      const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
+      return { alternative, rotation, goal: goalFor(rotation), gripMatters, covered, fresh: ownPieces.length - covered };
+    });
+    // Only the grips where earlier steps cover the fewest of its pieces; nothingNew: every grip only names pieces earlier steps already did
+    const least = Math.min(...goals.map((goal) => goal.covered));
+    return { goals: goals.filter((goal) => goal.covered === least), nothingNew: ownPieces.length > 0 && least === ownPieces.length };
+  });
+  // Alternatives that add something, else only the as-held grip
+  const adding = perAlternative.filter((entry) => !entry.nothingNew);
+  const goals = adding.length ? adding.flatMap((entry) => entry.goals) : perAlternative.flatMap((entry) => entry.goals.filter((goal) => goal.rotation === ""));
+  if (!goals.length) throw new Error(NOTHING_NEW);
+  return goals;
+}
+
 // Every alternative × grip combo of a step worth searching (each with all its offsets at once), measured by the worker and sorted closest first,
 // plus the error to throw if none of them finds anything
 async function stepCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
@@ -1390,72 +1500,40 @@ async function stepCombos(scramble: string, pieces: string, options: StepOptions
   const asked = new Set<string>();
   // How each piece moves under the allowed moves, for the easy-looking scores
   const tables = pieceMoves(generatorMoves);
-  // Each grip once: earlier steps then the grip's rotation, the cube held that way, and the earlier steps' pieces named in that grip
-  const grips = (options.rotations ?? [""]).map((rotation) => {
+  // Each alternative's goal in the grips worth trying (where earlier steps cover the fewest of its pieces), each grip with every offset group
+  const combos = gripGoals(pieces, options.rotations ?? [""], keep, options.earlier).flatMap(({ alternative, rotation, goal, gripMatters, fresh }) => {
+    // Earlier steps then the grip's rotation, and the cube held that way
     const done = joinMoves(options.done ?? "", rotation);
-    return { rotation, done, held: heldPattern(scramble, done), before: rotateGoal(options.earlier ?? keep ?? {}, rotation) };
-  });
-  // Each alternative's combos (grips × offsets), keeping only its grips where earlier steps cover the fewest of its pieces
-  const perAlternative = readAlternatives(pieces).map((text, alternative) => {
-    // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand; :x pieces are just not checked)
-    const own = dropFree(goalFromText(text, !keep));
-    // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no centers left at all = all six, like goal text)
-    const goalFor = (rotation: string): Goal => {
-      if (!keep) return own;
-      const goal = mergeGoals(rotateGoal(keep, rotation), own);
-      goal.CENTERS ??= allCenters();
-      return goal;
-    };
-    // Its pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
-    const ownPieces = Object.entries(own)
-      .filter(([orbit]) => orbit !== "CENTERS")
-      .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
-    // Orientation is judged from the grip, so orient-group goals can't be shared between grips
-    const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));
-    // Every grip with every offset group
-    const combos = grips.flatMap(({ rotation, done, held, before }) => {
-      // Start = cube held in this grip, with the goal's hidden pieces masked
-      const goal = goalFor(rotation);
-      const start = maskPattern(held, goal);
-      // How many of its pieces earlier steps already cover in this grip (e.g. a filled pair slot, or the solved first layer once x2 puts it on top)
-      const covered = ownPieces.filter(([orbit, piece, role]) => covers(before[orbit]?.[piece], role)).length;
-      const fresh = ownPieces.length - covered;
-      // Targets already used in this grip (an offset the goal can't see repeats one, so it's dropped)
-      const seen = new Set<string>();
-      return groups.flatMap((group) => {
-        // Each offset's targets = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots);
-        // with relative groups, one per placement the allowed moves could reach
-        const offsets: string[] = [];
-        const targets: KPattern[] = [];
-        for (const offset of group) {
-          for (const target of reachableTargets(goalTargets(goal, offset), generatorMoves)) {
-            const key = cellsKey(cellsOf(target));
-            if (seen.has(key)) continue;
-            seen.add(key);
-            offsets.push(offset);
-            targets.push(target);
-          }
+    const held = heldPattern(scramble, done);
+    // Start = cube held in this grip, with the goal's hidden pieces masked
+    const start = maskPattern(held, goal);
+    // Targets already used in this grip (an offset the goal can't see repeats one, so it's dropped)
+    const seen = new Set<string>();
+    return groups.flatMap((group) => {
+      // Each offset's targets = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots);
+      // with relative groups, one per placement the allowed moves could reach
+      const offsets: string[] = [];
+      const targets: KPattern[] = [];
+      for (const offset of group) {
+        for (const target of reachableTargets(goalTargets(goal, offset), generatorMoves)) {
+          const key = cellsKey(cellsOf(target));
+          if (seen.has(key)) continue;
+          seen.add(key);
+          offsets.push(offset);
+          targets.push(target);
         }
-        if (!targets.length) return [];
-        // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total);
-        // with solvable-with moves a piece may end on other spots too, so no score (the worker's measure ranks the combos)
-        const scores = solvableWith.length
-          ? [{ bound: 0, total: 0 }]
-          : [...new Set(offsets)].map((offset) => estimate(held, start, targets.filter((_, index) => offsets[index] === offset), goal, tables));
-        const bound = Math.min(...scores.map((score) => score.bound));
-        const total = Math.min(...scores.map((score) => score.total));
-        return [{ alternative, rotation, done, goal, gripMatters, covered, fresh, held, start, offsets, targets, bound, total }];
-      });
+      }
+      if (!targets.length) return [];
+      // The easiest-looking offset's scores: its hardest piece alone is a sure lower bound (bound), the sum ranks how far off the goal looks (total);
+      // with solvable-with moves a piece may end on other spots too, so no score (the worker's measure ranks the combos)
+      const scores = solvableWith.length
+        ? [{ bound: 0, total: 0 }]
+        : [...new Set(offsets)].map((offset) => estimate(held, start, targets.filter((_, index) => offsets[index] === offset), goal, tables));
+      const bound = Math.min(...scores.map((score) => score.bound));
+      const total = Math.min(...scores.map((score) => score.total));
+      return [{ alternative, rotation, done, goal, gripMatters, fresh, held, start, offsets, targets, bound, total }];
     });
-    // Only the grips where earlier steps cover the fewest of its pieces (a grip turn can't trade its pieces for ones already done)
-    const least = Math.min(...combos.map((combo) => combo.covered));
-    // nothingNew: every grip only names pieces earlier steps already did
-    return { combos: combos.filter((combo) => combo.covered === least), nothingNew: ownPieces.length > 0 && least === ownPieces.length };
   });
-  // Alternatives that add something; if none does, the step is already done when the cube may stay as held (only that grip is searched, e.g. a last pair after an XCross),
-  // otherwise stop rather than answer with a bare grip turn
-  const adding = perAlternative.filter((entry) => !entry.nothingNew);
-  const combos = adding.length ? adding.flatMap((entry) => entry.combos) : perAlternative.flatMap((entry) => entry.combos.filter((combo) => combo.rotation === ""));
   if (!combos.length) throw new Error(NOTHING_NEW);
   // Easiest-looking first (ties keep alternative and grip order), keeping only combos worth measuring
   const candidates: typeof combos = [];
@@ -1920,7 +1998,7 @@ function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProg
 
 // Earlier pieces after a step: they follow its grip turn, then the pieces it left for good join them (later roles win; with solvable-with moves,
 // pieces those moves would still move stay out, so a later step that keeps earlier pieces doesn't hold them in place)
-function piecesAfter(earlier: Goal, result: StepResult): Goal {
+function piecesAfter(earlier: Goal, result: Pick<StepResult, "rotation" | "settled">): Goal {
   return mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.settled));
 }
 
@@ -2070,6 +2148,132 @@ function methodTotals(steps: MethodStepResult[], pieces: Goal): MethodResult {
   };
 }
 
+// Most goals one later step may have from a step start, and most ways the steps before it may have gone, for a method search's lower bound
+// (past either, the goal walk stops before that step)
+const MAX_LATER_GOALS = 64;
+const MAX_WALK_STATES = 256;
+
+// A goal a later step of a method may have, seen from a step start: named in the grip that step would search in (a rotation from the start's grip),
+// with every move the steps up to it may use (named in that grip too) and its offsets' targets (each offset group apart: one measure each) and solvable-with moves.
+// The fewest moves to it from the start is a lower bound on the rest of the run
+interface LaterGoal {
+  rotation: string;
+  goal: Goal;
+  moves: string[];
+  targets: KPattern[][];
+  solvableWith: string[];
+}
+
+// One way the steps from a step start may have gone, as the goal walk follows them: the grip they end in (from the start's grip), the earlier pieces
+// named in that grip, and every move they may have used (named as the start holds the cube, see turnName)
+interface WalkState {
+  rotation: string;
+  earlier: Goal;
+  turns: string[];
+}
+
+// Goals the later steps of a method may have from the start of step `index` (earlier pieces named in its grip), found without the cube: every step's alternatives
+// and grips are followed with the rules a run uses (kept pieces, grips where earlier pieces cover the fewest of its pieces, the pieces it leaves for good).
+// Per later step, its goals, each once; only the steps whose pieces the next step doesn't keep (a step keeping them asks for more: CFOP's last pair, F2L, stands for
+// the pairs before it), plus the last step reached. The walk stops after a repeated step's first round (more rounds may follow), before a step that keeps every other
+// piece untouched (its goal depends on the cube), and where goals or ways get too many; a repeated or untouched step itself gives none
+function laterGoals(steps: StepConfig[], index: number, earlier: Goal): LaterGoal[][] {
+  const later: { index: number; goals: LaterGoal[] }[] = [];
+  // The last step reached stands for the rest, and so does every step whose pieces the next one doesn't keep
+  const standing = () => later.filter((entry, at) => at === later.length - 1 || !steps[entry.index + 1].keep).map((entry) => entry.goals);
+  if (steps[index].repeat || steps[index].untouched || steps[index].buffer) return [];
+  let states: WalkState[] = [{ rotation: "", earlier, turns: [] }];
+  for (let at = index; at < steps.length && states.length; at++) {
+    const step = steps[at];
+    if (at > index && (step.untouched || step.buffer)) break;
+    const offsets = offsetsFromText(step.offsets);
+    const solvableWith = solvableFromText(step.solvableWith ?? "");
+    const rotations = gripRotations(step.grips.bottom, step.grips.anyFront);
+    // This step's goals, each once (by what it asks of the cube as the start holds it), and the ways on after it
+    const goals = new Map<string, LaterGoal>();
+    const next = new Map<string, WalkState>();
+    for (const state of states) {
+      let options: GripGoal[];
+      try {
+        options = gripGoals(step.pieces, rotations, step.keep ? state.earlier : undefined, state.earlier);
+      } catch {
+        // Nothing new for this step this way: a run can't go on like that
+        continue;
+      }
+      for (const { rotation, goal, gripMatters } of options) {
+        // The grip the step searches in (from the start's grip), and every move used up to it, named as the start holds the cube
+        const grip = netRotation(joinMoves(state.rotation, rotation));
+        const own = step.moves.map((move) => moveInGrip(move, grip, ""));
+        if (own.includes(null)) return standing();
+        const turns = distinctTurns([...state.turns, ...(own as string[])]);
+        if (at > index) {
+          // Those moves named in the step's grip (a list some step uses when it's the same turns), and its goal's targets per offset group
+          const moves = movesForGrip(turns, grip, [step.moves, ...steps.slice(index, at).map((earlierStep) => earlierStep.moves), FACE_MOVES]);
+          if (!moves) return standing();
+          const key = [
+            goalToText(rotateGoal(goal, invertMoves(grip))),
+            movesKey(grip, moves),
+            gripMatters ? grip : "",
+            offsets.map((offset) => movesKey(grip, [offset])).join("&"),
+            movesKey(grip, solvableWith),
+          ].join("/");
+          if (!goals.has(key)) {
+            // Each offset group's targets, each once (too many relative-group placements: the walk stops before this step)
+            let targets: KPattern[][];
+            try {
+              targets = offsetGroups(offsets, moves).map((group) => {
+                const seen = new Set<string>();
+                return group.flatMap((offset) => reachableTargets(goalTargets(goal, offset), moves)).filter((target) => {
+                  const cells = cellsKey(cellsOf(target));
+                  return !seen.has(cells) && Boolean(seen.add(cells));
+                });
+              });
+            } catch {
+              return standing();
+            }
+            goals.set(key, { rotation: grip, goal, moves, targets, solvableWith });
+          }
+        }
+        // The earlier pieces after it, as a run's piecesAfter makes them
+        const after = piecesAfter(state.earlier, { rotation, settled: goalToText(solvableWith.length ? settledGoal(goal, solvableWith) : goal) });
+        const key = `${grip}/${goalToText(after)}/${turns.join(" ")}`;
+        if (!next.has(key)) next.set(key, { rotation: grip, earlier: after, turns });
+      }
+    }
+    if (at > index) {
+      if (!goals.size || goals.size > MAX_LATER_GOALS) break;
+      later.push({ index: at, goals: [...goals.values()] });
+      if (step.repeat) break;
+    }
+    states = next.size > MAX_WALK_STATES ? [] : [...next.values()];
+  }
+  return standing();
+}
+
+// Fewest moves a later step's goal needs from the cube after `scramble` then `done`: the closest offset group's measure (a lower bound; 0 when the worker
+// can't tell, e.g. twips; Infinity when the moves can't reach it)
+async function measureLater(scramble: string, done: string, later: LaterGoal, onProgress?: (progress: TableProgress) => void): Promise<number> {
+  const start = maskPattern(heldInGrip(scramble, done, later.rotation), later.goal);
+  const measures = later.targets.map(async (group) => {
+    // Only targets whose centers the moves can bring home (as in stepCombos)
+    const targets = group.filter((target) => centersReachable(start, target, later.moves));
+    if (!targets.length) return Infinity;
+    try {
+      const { bound, exact } = await askWorker({ kind: "measure", start, targets, moves: later.moves, solvableWith: later.solvableWith }, onProgress);
+      return exact ? (bound ?? Infinity) : (bound ?? 0);
+    } catch {
+      return 0;
+    }
+  });
+  return Math.min(...(await Promise.all(measures)));
+}
+
+// Fewest moves the rest of a run needs from a step start, from the later steps' goals: each step's closest goal, the largest of those (0 = no later goals)
+async function laterBound(scramble: string, done: string, goals: LaterGoal[][], onProgress?: (progress: TableProgress) => void): Promise<number> {
+  const perStep = await Promise.all(goals.map(async (options) => Math.min(...(await Promise.all(options.map((later) => measureLater(scramble, done, later, onProgress)))))));
+  return Math.max(0, ...perStep);
+}
+
 // Default time budget of a method search: it stops then with the best run found so far
 export const METHOD_SEARCH_MS = 30_000;
 // Answers per list page in a method search (each page's next steps are measured in one batch, which the worker answers back to back)
@@ -2085,6 +2289,7 @@ export interface MethodSearchOptions {
   budgetMs?: number; // stop after this long with the best run found so far (default METHOD_SEARCH_MS)
   stop?: () => boolean; // asked between worker requests: true stops the search (e.g. a Stop button)
   onBetter?: (result: MethodResult) => void; // hears each run with fewer moves than every one before it (the plain run first; a found run's ms = time since the search started, its steps' ms 0)
+  onBound?: (moves: number) => void; // hears the fewest moves any run can have (see MethodSearchResult.bound) once it's known, right after the plain run
   onProgress?: (progress: TableProgress) => void; // hears when the search worker builds or loads a table
 }
 
@@ -2092,7 +2297,8 @@ export interface MethodSearchOptions {
 export interface MethodSearchResult {
   best: MethodResult | null; // the run with the fewest moves (null = no run of the method gets through every step)
   seed: number | null; // moves of the plain run the search started from (each step with its own lookahead; null when that run failed)
-  optimal: boolean; // the search finished: no run of the method is shorter (by its rules), not just none found in time
+  optimal: boolean; // no run of the method is shorter (by its rules): the search finished, or the best run has as few moves as the bound
+  bound: number | null; // fewest moves any run needs (a lower bound: the first step's closest combo, or a later step's closest goal; null = no run can start)
   states: number; // step starts the search measured (each answer it took up leads to one, unless that start was reached before with no more moves)
   ms: number; // whole search time, the plain run included
 }
@@ -2117,19 +2323,23 @@ interface SearchRow {
   solvableWith?: string[];
 }
 
-// One step start in a method search: its step's combos, the moves so far (after the scramble), the earlier pieces, the moves used and the steps that led here
+// One step start in a method search: its step's combos, the moves so far (after the scramble), the earlier pieces (and their id), the moves used, the steps that led here,
+// and the fewest moves the rest needs (its step's closest combo, or a later step's closest goal)
 interface SearchNode {
   level: SearchLevel;
   done: string;
   earlier: Goal;
+  earlierId: number;
   used: number;
   rows: SearchRow[];
+  bound: number;
 }
 
 // Search a method's runs for the fewest moves in total: a depth-first branch and bound over its steps, starting from the plain run (each step with its own lookahead)
 // and looking only for runs with fewer moves. Each step lists its answers shortest first, a page at a time, and every answer's next step is measured before going on,
-// so a start whose next step can't get under the best total is skipped, and so is a start reached before with no more moves. The last step takes its shortest answer
-// within the moves left. Stops at the time budget (or when asked) with the best run so far; optimal = it looked at everything.
+// so a start whose rest can't get under the best total is skipped, and so is a start reached before with no more moves. The rest's bound is the next step's closest
+// combo, or, when larger, a later step's closest goal (laterGoals: e.g. after a CFOP cross, F2L from there). The last step takes its shortest answer within the moves left.
+// Stops at the time budget (or when asked) with the best run so far; optimal = it looked at everything, or the best run is as short as the start's bound.
 // Method rules: a step's answers never pass through its goal on the way (as with lookahead), a step's maxDepth still limits it, firstFound is ignored,
 // a repeated step is searched round by round, and the offset the last step leaves isn't counted (a fix step, like ADF, is a step)
 export async function searchMethod(scramble: string, method: Method, options: MethodSearchOptions = {}): Promise<MethodSearchResult> {
@@ -2142,6 +2352,9 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   let halted = false;
   let complete = true;
   let states = 0;
+  // Fewest moves any run needs (the first step start's bound), and whether the best run has that few (then nothing shorter exists)
+  let rootBound: number | null = null;
+  let proven = false;
   // Seed: the plain run (if it fails, any run the search finds is the best)
   let seed: number | null = null;
   try {
@@ -2151,8 +2364,8 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   } catch {
     // No plain run: the search looks for any run
   }
-  // True once the search must stop: out of time, or asked to
-  const stopped = (): boolean => (halted ||= performance.now() > deadline || Boolean(options.stop?.()));
+  // True once the search must stop: the best run is as short as any can be, out of time, or asked to (only the last two leave it unfinished)
+  const stopped = (): boolean => proven || (halted ||= performance.now() > deadline || Boolean(options.stop?.()));
 
   // Step starts seen so far with the fewest moves that reached them, and an id for each earlier-pieces text (keeps the keys short)
   const visited = new Map<string, number>();
@@ -2164,13 +2377,32 @@ export async function searchMethod(scramble: string, method: Method, options: Me
     if (id === undefined) pieceSets.set(text, (id = pieceSets.size));
     return id;
   };
-  // True when this start (step, round, earlier pieces' id, cube held in its grip) was reached before with no more moves; otherwise it's noted with these moves
-  const seenBefore = (index: number, round: number, earlierId: number, done: string, used: number): boolean => {
-    const key = `${index}/${round}/${earlierId}/${cellsKey(cellsOf(heldPattern(scramble, done)))}`;
+  // Key of a step start: step, round, earlier pieces' id, cube held in its grip
+  const startKey = (index: number, round: number, earlierId: number, done: string): string => `${index}/${round}/${earlierId}/${cellsKey(cellsOf(heldPattern(scramble, done)))}`;
+  // True when this start was reached before with no more moves; otherwise it's noted with these moves
+  const seenBefore = (key: string, used: number): boolean => {
     const before = visited.get(key);
     if (before !== undefined && before <= used) return true;
     if (before !== undefined || visited.size < MAX_VISITED) visited.set(key, used);
     return false;
+  };
+
+  // Later steps' goals by step and earlier pieces' id (the walk needs no cube, so it's done once for each), and each start's later bound by its key
+  const laterFound = new Map<string, LaterGoal[][]>();
+  const laterBounds = new Map<string, number>();
+  // Fewest moves the rest needs from a start, from the later steps' goals (0 when there are none)
+  const restBound = async (node: SearchNode, key: string): Promise<number> => {
+    if (node.level.end) return 0;
+    const walk = `${node.level.index}/${node.earlierId}`;
+    let goals = laterFound.get(walk);
+    if (!goals) laterFound.set(walk, (goals = laterGoals(steps, node.level.index, node.earlier)));
+    if (!goals.length) return 0;
+    let bound = laterBounds.get(key);
+    if (bound === undefined) {
+      bound = await laterBound(scramble, node.done, goals, options.onProgress);
+      if (laterBounds.size < MAX_VISITED) laterBounds.set(key, bound);
+    }
+    return bound;
   };
 
   // A step's combos at a start, moving on past a repeated step whose round has nothing new left; null when the step can't go on from there
@@ -2200,6 +2432,8 @@ export async function searchMethod(scramble: string, method: Method, options: Me
     const found = rows.map(({ index, round, done, answer, searches, solvableWith }) => methodRow(scramble, method, index, round, done, stepResult(answer, searches, solvableWith), 0, null));
     best = { ...methodTotals(found, earlier), ms: performance.now() - started };
     bestMoves = used;
+    // As few moves as the start's bound: no run is shorter, so the search can stop
+    proven = rootBound !== null && bestMoves <= rootBound;
     options.onBetter?.(best);
   };
 
@@ -2233,7 +2467,7 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   // Search below one step start for runs with fewer moves than the best
   const visit = async (node: SearchNode): Promise<void> => {
     const { level, done, earlier, used, rows } = node;
-    if (stopped() || used + needs(level) >= bestMoves) return;
+    if (stopped() || used + node.bound >= bestMoves) return;
     // Past the last step: a whole run
     if (level.end) return record(rows, used, earlier);
     const step = steps[level.index];
@@ -2265,7 +2499,7 @@ export async function searchMethod(scramble: string, method: Method, options: Me
           if (combo.twips) complete = false;
           atGoal ||= length === 0 && page.length > 0;
           await branch(node, combo, page, length);
-          if (halted || combo.twips || page.length < SEARCH_PAGE) break;
+          if (halted || proven || combo.twips || page.length < SEARCH_PAGE) break;
           after = page.at(-1);
         }
       }
@@ -2294,27 +2528,42 @@ export async function searchMethod(scramble: string, method: Method, options: Me
         // The cube there is the combo's held cube (as it really is) plus the answer, which spares replaying every move so far
         if (row) noteHeld(scramble, nextDone, (combo.cube ?? combo.held).applyAlg(moves));
         // Skip a start reached before with no more moves, else measure its step
-        if (seenBefore(index, round, earlierId, nextDone, used + length)) return null;
+        const key = startKey(index, round, earlierId, nextDone);
+        if (seenBefore(key, used + length)) return null;
         states++;
         const next = await levelAt(index, round, nextDone, nextEarlier);
         if (!next) return null;
         const taken = row ? [...rows, { index: level.index, round: level.round, done, answer: { combo, moves }, searches: 0, solvableWith }] : rows;
-        return { level: next, done: nextDone, earlier: nextEarlier, used: used + length, rows: taken };
+        const child: SearchNode = { level: next, done: nextDone, earlier: nextEarlier, earlierId, used: used + length, rows: taken, bound: needs(next) };
+        // Later steps' goals bound the rest too: measured only when the next step's own bound doesn't rule the start out already
+        if (child.used + child.bound < bestMoves) child.bound = Math.max(child.bound, await restBound(child, key));
+        return child;
       }),
     );
-    // Closest next steps first (the sort keeps the list's order on ties); once one can't beat the best, the rest can't either
-    const alive = children.filter((child): child is SearchNode => child !== null).sort((a, b) => needs(a.level) - needs(b.level));
+    // Closest next steps first, then the closest rests (the sort keeps the list's order on ties: ordering by the rest's bound alone found worse runs in time);
+    // a start whose rest can't beat the best is skipped
+    const alive = children.filter((child): child is SearchNode => child !== null).sort((a, b) => needs(a.level) - needs(b.level) || a.bound - b.bound);
     for (const child of alive) {
-      if (used + length + needs(child.level) >= bestMoves) break;
+      if (child.used + child.bound >= bestMoves) continue;
       await visit(child);
-      if (halted) return;
+      if (halted || proven) return;
     }
   };
 
-  // Start at the first step, from the scramble and the moves already done
+  // Start at the first step, from the scramble and the moves already done: its bound is the fewest moves any run needs (reported, and a run that short is the fewest)
   const done = options.done ?? "";
   const root = await levelAt(0, 1, done, {});
   states++;
-  if (root && !seenBefore(0, 1, piecesId({}), done, 0)) await visit({ level: root, done, earlier: {}, used: 0, rows: [] });
-  return { best, seed, optimal: !halted && complete, states, ms: performance.now() - started };
+  const rootKey = startKey(0, 1, piecesId({}), done);
+  if (root && !seenBefore(rootKey, 0)) {
+    const node: SearchNode = { level: root, done, earlier: {}, earlierId: piecesId({}), used: 0, rows: [], bound: needs(root) };
+    node.bound = Math.max(node.bound, await restBound(node, rootKey));
+    if (Number.isFinite(node.bound)) {
+      rootBound = node.bound;
+      proven = bestMoves <= rootBound;
+      options.onBound?.(rootBound);
+    }
+    await visit(node);
+  }
+  return { best, seed, optimal: proven || (!halted && complete), bound: rootBound, states, ms: performance.now() - started };
 }

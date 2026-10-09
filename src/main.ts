@@ -1089,13 +1089,15 @@ async function searchWholeMethod(): Promise<void> {
   stopRequested = false;
   stopSearchButton.disabled = false;
   stopSearchButton.hidden = false;
-  // Live status: the best run so far, the time so far and table builds or loads
+  // Live status: the best run so far, the fewest any run can have (once known), the time so far and table builds or loads
   const started = performance.now();
   const tables = tableTracker();
   let best: MethodResult | null = null;
+  let atLeast: number | null = null;
   const tick = () => {
     const found = best ? `best so far ${plural(best.moves, "move")}` : "first run";
-    setStatus(`Searching ${running.name} for fewer moves (${found})… ${formatMs(performance.now() - started)} of ${seconds} s${tables.note()}`);
+    const bound = atLeast === null ? "" : `, at least ${plural(atLeast, "move")}`;
+    setStatus(`Searching ${running.name} for fewer moves (${found}${bound})… ${formatMs(performance.now() - started)} of ${seconds} s${tables.note()}`);
   };
   tick();
   const timer = setInterval(tick, 100);
@@ -1105,6 +1107,8 @@ async function searchWholeMethod(): Promise<void> {
       budgetMs: seconds * 1000,
       stop: () => stopRequested,
       onProgress: tables.onProgress,
+      // The fewest moves any run can have, for the live status
+      onBound: (moves) => (atLeast = moves),
       // Show each shorter run's steps as soon as it's found (the plain run first)
       onBetter: (result) => {
         best = result;
@@ -1124,10 +1128,12 @@ async function searchWholeMethod(): Promise<void> {
     showResult(total);
     const from = found.seed === null ? "the plain run failed" : found.seed === found.best.moves ? "same as the plain run" : `plain run ${plural(found.seed, "move")}`;
     const proof = found.optimal ? ", the fewest this method can do" : "";
+    // Not proven: how few moves a run could still have, and why the search ended
+    const bound = found.optimal || found.bound === null ? "" : `; any run needs at least ${plural(found.bound, "move")}`;
     const unproven = found.optimal ? "" : `; ${stopRequested ? "stopped" : "time's up"} before it could rule out shorter runs`;
     setStatus(
       found.best.ok
-        ? `${running.name}: ${plural(found.best.moves, "move")}${proof} (${from}; ${plural(found.states, "step start")} in ${formatMs(found.ms)}${unproven}${tables.summary()}).`
+        ? `${running.name}: ${plural(found.best.moves, "move")}${proof} (${from}${bound}; ${plural(found.states, "step start")} in ${formatMs(found.ms)}${unproven}${tables.summary()}).`
         : `${running.name}: a step's solution doesn't reach its goal!`,
       found.best.ok ? "ok" : "error",
     );
