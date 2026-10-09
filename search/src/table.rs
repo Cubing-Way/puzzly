@@ -12,10 +12,10 @@ use crate::solvable::closed_targets;
 use crate::split::{answer_list, deepen, move_pruning, read_options, GoalCheck, SearchOptions, Slot, NO_SOLUTION};
 
 // Version of a table's saved bytes: bump it whenever coords.rs numbers states differently (or the layout below changes), so tables saved by older code are rebuilt, never misread
-pub const TABLE_FORMAT: u32 = 2;
+pub const TABLE_FORMAT: u32 = 3;
 // First bytes of a saved table, to recognise one
 const MAGIC: &[u8; 4] = b"PZT\0";
-// Saved table header: magic, format (u32), states (u64), depth (u8); the 4-bit distances follow
+// Saved table header: magic, format (u32), states (u64), depth (u8); the 2-bit values follow
 const HEADER: usize = 4 + 4 + 8 + 1;
 
 // Version of saved table bytes (the worker keys stored tables with it, so a new version never meets old bytes)
@@ -24,8 +24,10 @@ pub fn table_format() -> u32 {
     TABLE_FORMAT
 }
 
-// Table value for a state not reached (yet): distances 0..14 fit in the other 4-bit values
-pub const UNSEEN: u8 = 15;
+// Stored value of a state not reached (yet): the other 2-bit values hold distances mod 3
+const EMPTY: u8 = 3;
+// Distance of a state no allowed turns bring to a target
+pub const UNSEEN: u8 = u8::MAX;
 // Layers stay a list of states while smaller than 1/QUEUE_SHARE of the table; bigger ones are found by scanning
 const QUEUE_SHARE: u64 = 256;
 // Longest list a layer may stay
@@ -43,8 +45,9 @@ pub struct DistanceTable {
 pub struct TableCore {
     kpuzzle: KPuzzle,
     coords: Coords,
-    // 4 bits per state, two states per byte (even index in the low half)
-    nibbles: Vec<u8>,
+    // Each state's distance mod 3 (or EMPTY) in 2 bits, four states per byte (lowest index in the low bits); a turn changes a distance by at most one,
+    // so a neighbour's exact distance follows from the state's (see `near`), and a start's from walking down to a target (see `distance`)
+    cells: Vec<u8>,
     // Inner part after each turn: inner_next[turn * inner size + inner value]
     inner_next: Vec<u16>,
     // Deepest distance in the table
@@ -55,18 +58,33 @@ pub struct TableCore {
     groups: usize,
 }
 
-// Distance stored for a state
+// Value stored for a state (distance mod 3, or EMPTY)
 #[inline]
-fn get(nibbles: &[u8], index: u64) -> u8 {
-    (nibbles[(index >> 1) as usize] >> ((index & 1) * 4)) & 15
+fn get(cells: &[u8], index: u64) -> u8 {
+    (cells[(index >> 2) as usize] >> ((index & 3) * 2)) & 3
 }
 
-// Store a state's distance
+// Store a state's value
 #[inline]
-fn set(nibbles: &mut [u8], index: u64, value: u8) {
-    let byte = &mut nibbles[(index >> 1) as usize];
-    let shift = (index & 1) * 4;
-    *byte = (*byte & !(15 << shift)) | (value << shift);
+fn set(cells: &mut [u8], index: u64, value: u8) {
+    let byte = &mut cells[(index >> 2) as usize];
+    let shift = (index & 3) * 2;
+    *byte = (*byte & !(3 << shift)) | (value << shift);
+}
+
+// Exact distance of a neighbour of a state at distance `parent`, from the neighbour's stored value: it is parent − 1, parent or parent + 1, the one with that value mod 3
+#[inline]
+pub(crate) fn near(parent: u8, value: u8) -> u8 {
+    if value == EMPTY {
+        return UNSEEN;
+    }
+    (parent + (value + 4 - parent % 3) % 3).wrapping_sub(1)
+}
+
+// Exact distances of a state's neighbours by stored value (index = value), for a state at distance `parent`
+#[inline]
+pub(crate) fn near_values(parent: u8) -> [u8; 4] {
+    [near(parent, 0), near(parent, 1), near(parent, 2), UNSEEN]
 }
 
 // Puzzle, targets (a JSON list of patterns, or one with "solvable with" moves: closed under them) and allowed moves from the JSON the worker sends, with the state numbering they give
@@ -119,7 +137,7 @@ impl DistanceTable {
         coords.build_tables();
         let inner_next = inner_turns(&coords);
         let (goals, follow, groups) = listing_parts(&kpuzzle, &targets, &coords)?;
-        let mut table = TableCore { kpuzzle, coords, nibbles: vec![0xFF; (size as usize).div_ceil(2)], inner_next, depth: 0, goals, follow, groups };
+        let mut table = TableCore { kpuzzle, coords, cells: vec![0xFF; (size as usize).div_ceil(4)], inner_next, depth: 0, goals, follow, groups };
         table.fill(&targets)?;
         // The outer turn tables only speed up the fill; answers unpack pieces instead
         table.coords.outer.drop_tables();
@@ -132,9 +150,9 @@ impl DistanceTable {
         // Show Rust panics in the browser console instead of a bare "unreachable"
         console_error_panic_hook::set_once();
         let (kpuzzle, targets, coords) = setup(kpuzzle_json, targets_json, moves_json)?;
-        // Header: same magic, same format, same state count, and exactly that many distances after it
+        // Header: same magic, same format, same state count, and exactly that many values after it
         let size = coords.size();
-        let fits = bytes.len() == HEADER + (size as usize).div_ceil(2)
+        let fits = bytes.len() == HEADER + (size as usize).div_ceil(4)
             && &bytes[..4] == MAGIC
             && bytes[4..8] == TABLE_FORMAT.to_le_bytes()
             && bytes[8..16] == size.to_le_bytes();
@@ -143,19 +161,19 @@ impl DistanceTable {
         }
         let inner_next = inner_turns(&coords);
         let (goals, follow, groups) = listing_parts(&kpuzzle, &targets, &coords)?;
-        Ok(DistanceTable { core: Rc::new(TableCore { kpuzzle, coords, nibbles: bytes[HEADER..].to_vec(), inner_next, depth: bytes[16], goals, follow, groups }) })
+        Ok(DistanceTable { core: Rc::new(TableCore { kpuzzle, coords, cells: bytes[HEADER..].to_vec(), inner_next, depth: bytes[16], goals, follow, groups }) })
     }
 
-    // The table as bytes (header + 4-bit distances), to save and load later with fromBytes
+    // The table as bytes (header + 2-bit values), to save and load later with fromBytes
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let core = &self.core;
-        let mut bytes = Vec::with_capacity(HEADER + core.nibbles.len());
+        let mut bytes = Vec::with_capacity(HEADER + core.cells.len());
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&TABLE_FORMAT.to_le_bytes());
         bytes.extend_from_slice(&core.coords.size().to_le_bytes());
         bytes.push(core.depth);
-        bytes.extend_from_slice(&core.nibbles);
+        bytes.extend_from_slice(&core.cells);
         bytes
     }
 
@@ -196,7 +214,7 @@ impl DistanceTable {
 
     // Memory the table holds, in bytes (distances plus the inner turn table)
     pub fn bytes(&self) -> f64 {
-        (self.core.nibbles.len() + self.core.inner_next.len() * 2 + self.core.coords.outer.table_bytes()) as f64
+        (self.core.cells.len() + self.core.inner_next.len() * 2 + self.core.coords.outer.table_bytes()) as f64
     }
 
     // Deepest distance in the table (the hardest state's fewest moves)
@@ -218,29 +236,36 @@ impl TableCore {
         let start = pattern_data(&self.kpuzzle, start_json)?;
         let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
         // Tracked pieces of the start (none when an untouched spot is wrong: no turn can fix it)
-        let (mut outer, inner) = self.coords.read(&start).ok_or(NO_SOLUTION)?;
-        let mut inner = self.coords.inner.rank(&inner, &self.coords.binomials);
-        let mut distance = get(&self.nibbles, self.index(&outer, inner));
-        // Unreachable, or longer than allowed
-        if distance == UNSEEN || options["maxDepth"].as_u64().is_some_and(|max| distance as u64 >= max) {
+        let (outer, inner) = self.coords.read(&start).ok_or(NO_SOLUTION)?;
+        let inner = self.coords.inner.rank(&inner, &self.coords.binomials);
+        // The walk down to a target is a shortest answer; none when unreachable, or longer than allowed
+        let answer = self.descend(&outer, inner).ok_or(NO_SOLUTION)?;
+        if options["maxDepth"].as_u64().is_some_and(|max| answer.len() as u64 >= max) {
             return Err(NO_SOLUTION.to_owned());
         }
-        // Descend: any turn that lowers the distance by one is the start of a shortest answer
-        let mut answer = vec![];
-        let mut moved = Units::new();
-        while distance > 0 {
-            let step = (0..self.coords.turns.len()).find_map(|turn| {
-                self.coords.outer.apply(&outer, turn, &mut moved);
-                let next_inner = self.inner_next[turn * self.coords.inner.size as usize + inner as usize] as u64;
-                (get(&self.nibbles, self.index(&moved, next_inner)) == distance - 1).then_some((turn, moved, next_inner))
-            });
-            let (turn, next_outer, next_inner) = step.ok_or("Distance table is inconsistent")?;
-            answer.push(self.coords.turns[turn].name.clone());
-            outer = next_outer;
-            inner = next_inner;
-            distance -= 1;
+        Ok(answer.iter().map(|&turn| self.coords.turns[turn].name.clone()).collect::<Vec<_>>().join(" "))
+    }
+
+    // Walk down from a state to a target, each time by the first turn (in turn order) to a neighbour one move closer: a shortest answer as turns (None when unreachable);
+    // a neighbour stored as the state's distance − 1 mod 3 is one closer (neighbours are within one), and a state with none is a target
+    fn descend(&self, outer: &Units, inner: u64) -> Option<Vec<usize>> {
+        let mut value = self.value(outer, inner);
+        if value == EMPTY {
+            return None;
         }
-        Ok(answer.join(" "))
+        let (mut outer, mut inner) = (*outer, inner);
+        let (mut scratch, mut moved) = (Units::new(), Units::new());
+        let mut path = vec![];
+        loop {
+            let closer = (value + 2) % 3;
+            let Some(turn) = (0..self.coords.turns.len()).find(|&turn| get(&self.cells, self.child_index(&outer, inner, turn, &mut scratch)) == closer) else {
+                return Some(path);
+            };
+            inner = self.step(&outer, inner, turn, &mut moved);
+            outer = moved;
+            value = closer;
+            path.push(turn);
+        }
     }
 
     // A pattern's state in this table: outer pieces and inner value (None when an untouched spot can't match)
@@ -256,10 +281,15 @@ impl TableCore {
         self.inner_next[turn * self.coords.inner.size as usize + inner as usize] as u64
     }
 
-    // A state's distance (UNSEEN when no allowed turns reach a target from it)
-    #[inline]
+    // A state's exact distance (UNSEEN when no allowed turns reach a target from it), by walking down to a target
     pub fn distance(&self, outer: &Units, inner: u64) -> u8 {
-        get(&self.nibbles, self.index(outer, inner))
+        self.descend(outer, inner).map_or(UNSEEN, |path| path.len() as u8)
+    }
+
+    // A state's stored value (distance mod 3, or EMPTY): with the exact distance of a neighbour, `near` gives its exact distance
+    #[inline]
+    pub(crate) fn value(&self, outer: &Units, inner: u64) -> u8 {
+        get(&self.cells, self.index(outer, inner))
     }
 }
 
@@ -292,10 +322,10 @@ impl TableCore {
         outer * self.coords.inner.size + inner
     }
 
-    // Distance stored at a table index
+    // Value stored at a table index (distance mod 3, or EMPTY)
     #[inline]
-    pub(crate) fn distance_at(&self, index: u64) -> u8 {
-        get(&self.nibbles, index)
+    pub(crate) fn value_at(&self, index: u64) -> u8 {
+        get(&self.cells, index)
     }
 
     // Breadth-first fill from the targets, one layer at a time: a list while layers are small, then block scans (backward once few states are left)
@@ -309,15 +339,15 @@ impl TableCore {
             blocks: outer.positions,
         };
         let size = self.coords.size();
-        let mut nibbles = std::mem::take(&mut self.nibbles);
+        let mut cells = std::mem::take(&mut self.cells);
         let inner_next = std::mem::take(&mut self.inner_next);
         // Targets start at distance 0
         let mut queue: Option<Vec<u32>> = Some(vec![]);
         for target in targets {
             let (outer, inner) = self.coords.read(target).ok_or("A target doesn't fit its own numbering")?;
             let index = self.coords.index(&outer, &inner);
-            if get(&nibbles, index) == UNSEEN {
-                set(&mut nibbles, index, 0);
+            if get(&cells, index) == EMPTY {
+                set(&mut cells, index, 0);
                 queue.as_mut().unwrap().push(index as u32);
             }
         }
@@ -325,17 +355,18 @@ impl TableCore {
         let mut frontier = seen;
         let mut depth: u8 = 0;
         while frontier > 0 {
-            // A 15th layer can't be stored: fail if any state at 14 still has an unseen neighbour
-            let too_deep = depth == UNSEEN - 1;
+            // Distances must stay below UNSEEN (never reached on a puzzle, but a table must not wrap around)
+            if depth == UNSEEN - 1 {
+                return Err("Too deep for an exact table".to_owned());
+            }
             let found = if let Some(list) = &queue {
                 // Small layer: expand each listed state, listing the next layer while it stays small
-                let (found, next_list) = self.expand_list(&layout, list, &mut nibbles, &inner_next, depth, too_deep)?;
+                let (found, next_list) = self.expand_list(&layout, list, &mut cells, &inner_next, depth);
                 queue = next_list;
                 found
-            } else if size - seen < frontier * 2 && !too_deep {
-                self.scan(&layout, &mut nibbles, &inner_next, depth, true, false)?
             } else {
-                self.scan(&layout, &mut nibbles, &inner_next, depth, false, too_deep)?
+                // Big layer: scan every block, backward once fewer unseen states are left than twice this layer
+                self.scan(&layout, &mut cells, &inner_next, depth, size - seen < frontier * 2)
             };
             // Next layer
             if found > 0 {
@@ -345,13 +376,13 @@ impl TableCore {
             frontier = found;
             depth += 1;
         }
-        self.nibbles = nibbles;
+        self.cells = cells;
         self.inner_next = inner_next;
         Ok(())
     }
 
     // Expand a listed layer: returns how many states joined the next layer, and their list (None once it grows too big)
-    fn expand_list(&self, layout: &Layout, list: &[u32], nibbles: &mut [u8], inner_next: &[u16], depth: u8, too_deep: bool) -> Result<(u64, Option<Vec<u32>>), String> {
+    fn expand_list(&self, layout: &Layout, list: &[u32], cells: &mut [u8], inner_next: &[u16], depth: u8) -> (u64, Option<Vec<u32>>) {
         let limit = (self.coords.size() / QUEUE_SHARE).clamp(1024, QUEUE_LIMIT) as usize;
         let direct = self.coords.outer.direct();
         let mut next_list = Some(vec![]);
@@ -377,13 +408,10 @@ impl TableCore {
             }
             for turn in 0..layout.turn_count {
                 let child = next_positions[turn] * layout.block + next_twists[turn] as u64 * layout.inner_size + inner_next[turn * layout.inner_size as usize + inner] as u64;
-                if get(nibbles, child) != UNSEEN {
+                if get(cells, child) != EMPTY {
                     continue;
                 }
-                if too_deep {
-                    return Err("Too deep for an exact table".to_owned());
-                }
-                set(nibbles, child, depth + 1);
+                set(cells, child, (depth + 1) % 3);
                 found += 1;
                 // Keep listing while the next layer stays small
                 if next_list.as_ref().is_some_and(|l: &Vec<u32>| l.len() >= limit) {
@@ -394,14 +422,17 @@ impl TableCore {
                 }
             }
         }
-        Ok((found, next_list))
+        (found, next_list)
     }
 
-    // One layer by block scan: forward expands this layer, backward lets unseen states find a neighbour in it (turns come with their inverses)
-    fn scan(&self, layout: &Layout, nibbles: &mut [u8], inner_next: &[u16], depth: u8, backward: bool, too_deep: bool) -> Result<u64, String> {
-        let wanted = if backward { UNSEEN } else { depth };
-        // Which halves of a byte hold the wanted value (bit 0 = even state, bit 1 = odd state)
-        let matches: [u8; 256] = std::array::from_fn(|byte| ((byte & 15) as u8 == wanted) as u8 | ((((byte >> 4) as u8 == wanted) as u8) << 1));
+    // One layer by block scan: forward expands this layer, backward lets unseen states find a neighbour in it (turns come with their inverses);
+    // values are mod 3, so forward also expands older layers stored with the same value (their children are all seen: a little wasted work, no harm),
+    // and backward a stored neighbour with this layer's value is in this layer (an unseen state's neighbours are no closer than this layer)
+    fn scan(&self, layout: &Layout, cells: &mut [u8], inner_next: &[u16], depth: u8, backward: bool) -> u64 {
+        let wanted = if backward { EMPTY } else { depth % 3 };
+        let (layer, next) = (depth % 3, (depth + 1) % 3);
+        // Which quarters of a byte hold the wanted value (bit q = the byte's state q)
+        let matches: [u8; 256] = std::array::from_fn(|byte| (0..4).fold(0, |bits, q| bits | ((((byte >> (2 * q)) & 3) as u8 == wanted) as u8) << q));
         // Twist rows straight from the outer tables when they allow it (no per-block work)
         let direct = self.coords.outer.direct();
         let width = layout.twist_space.min(CHUNK);
@@ -422,22 +453,22 @@ impl TableCore {
                 let mut index = start;
                 while index < end {
                     let offset = (index - start) as usize;
-                    if index & 1 == 1 || index + 1 == end {
-                        // A lone half byte at either end
-                        if get(nibbles, index) == wanted {
+                    if index & 3 != 0 || end - index < 4 {
+                        // A lone quarter byte at either end
+                        if get(cells, index) == wanted {
                             active.push(((offset / inner_size) as u32, (offset % inner_size) as u32));
                         }
                         index += 1;
                         continue;
                     }
-                    let found_here = matches[nibbles[(index >> 1) as usize] as usize];
-                    if found_here & 1 != 0 {
-                        active.push(((offset / inner_size) as u32, (offset % inner_size) as u32));
+                    // A whole byte: each of its four states that holds the wanted value
+                    let mut found_here = matches[cells[(index >> 2) as usize] as usize];
+                    while found_here != 0 {
+                        let q = found_here.trailing_zeros() as usize;
+                        active.push((((offset + q) / inner_size) as u32, ((offset + q) % inner_size) as u32));
+                        found_here &= found_here - 1;
                     }
-                    if found_here & 2 != 0 {
-                        active.push((((offset + 1) / inner_size) as u32, ((offset + 1) % inner_size) as u32));
-                    }
-                    index += 2;
+                    index += 4;
                 }
                 if active.is_empty() {
                     continue;
@@ -467,8 +498,8 @@ impl TableCore {
                         while i < active.len() {
                             let (k, inner) = active[i];
                             let neighbour = base + twists[k as usize] as u64 * layout.inner_size + inners[inner as usize] as u64;
-                            if get(nibbles, neighbour) == depth {
-                                set(nibbles, start + k as u64 * layout.inner_size + inner as u64, depth + 1);
+                            if get(cells, neighbour) == layer {
+                                set(cells, start + k as u64 * layout.inner_size + inner as u64, next);
                                 found += 1;
                                 active.swap_remove(i);
                             } else {
@@ -480,18 +511,15 @@ impl TableCore {
                     // Forward: unseen children of this layer's states join the next layer
                     for &(k, inner) in &active {
                         let child = base + twists[k as usize] as u64 * layout.inner_size + inners[inner as usize] as u64;
-                        if get(nibbles, child) != UNSEEN {
+                        if get(cells, child) != EMPTY {
                             continue;
                         }
-                        if too_deep {
-                            return Err("Too deep for an exact table".to_owned());
-                        }
-                        set(nibbles, child, depth + 1);
+                        set(cells, child, next);
                         found += 1;
                     }
                 }
             }
         }
-        Ok(found)
+        found
     }
 }

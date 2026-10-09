@@ -22,7 +22,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8c — Inverse and symmetric lookups on the same tables (rotated copies share one table; inverse lookups measured, not kept)
 - [x] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
 - [x] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
-- [ ] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
+- [ ] Part 8f — Table capacity: 2-bit tables (done), smarter planner, memory-based budget (only if the benchmark says tables are the limit); one item per chat, each compared with the code before it
 - [ ] Part 8g — Symmetry-reduced numbering (only if still needed)
 - [ ] Part 8h — Parallel search (only if still needed)
 - [ ] Part 9 — Hand-written tables for specific goals (last resort)
@@ -351,6 +351,17 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   - Visiting children by the rest's bound alone (tried first): CFOP 23 → 25 and ZZ 17 → 24 in 30 s, so the next step's bound stays the visiting order.
   - Exhaustive 2-step cases (9 short + 9 full scrambles): all match. On full scrambles "2 edges then cross" is proven in 8 / 1 / 1 step starts instead of 4,415 / 667 / 1,681 (1.4 s → 0.17 s); "cross then a pair" is unchanged (its bound 6 is one under the best, 7).
   - Testing: harnesses in the scratchpad: `search.ts` (8d's, with `PATHS` saving best runs), `gap.ts` (MODE probe / gap, on a copy of engine.ts with `export { laterGoals, … }` appended), `regress.ts`. Built page checked in the browser pane (ZZ, 8 s: "at least 7 moves").
+- 2-bit tables (Part 8f, first item): table.rs / split.rs only; the engine and the worker are unchanged (a comment), `TABLE_FORMAT` 3 (the worker deletes stored format-2 tables on its next start).
+  - Storage: `TableCore.cells`, each state's distance mod 3 in 2 bits (4 states per byte), `EMPTY` (3) = not reached. `UNSEEN` (255) is now only a worked-out distance. No 14-move depth limit any more (only < 255).
+  - Exact distances: `near(parent, value)` / `near_values(parent)` (a neighbour is parent − 1, + 0 or + 1, the one with that value mod 3). `distance()` walks down (`descend`: the first turn to a neighbour stored one lower mod 3, until none = a target), used for a search's start bounds, `measure`
+    and `TableCore::search` (same answers: the first turn in turn order that gets one closer).
+  - IDA*: `Ida.exact` per (depth, table). A looked-up child is exact; a skipped table's child carries bound + 1 (inexact). `ensure` gives each replayed state that isn't exact its exact distance from its parent's (index via `child_index` from the parent,
+    one read). After `ensure`, a table whose exact distance + 1 is under `remaining` is skipped (no child can be ruled out). `at_goal` uses the exact bound.
+  - Fill: a forward scan also expands older layers with the same value mod 3 (their children are all seen: a little wasted work); a backward scan is exact (an unseen state's stored neighbours with this layer's value are in this layer).
+  - Replay (1,356 requests, 10M plans, 8e → 2-bit): identical answers, nodes and start bounds; tables 96.3 → 48.2 MB (same 39 tables, 202M states), built in 27.1 → 20.3 s. Searches ~8% slower per node
+    (4 alternating rounds on xxxcross + cfop-oll-pll + pseudo + dr-finish: old 45.1–54.2 s, new 48.5–57.7 s; last two rounds 45.1 / 45.2 vs 48.8 / 49.5; cfop-oll-pll 2.47 → 2.70 µs per node): the extra read
+    when a skipped table is needed again. Ranking that read from the parent (`child_index`) instead of the moved pieces took the first version's ~12% down to ~8%. Measures ~27 → ~34 µs each (the walk down).
+  - So at the same 10M budget it's half the memory for ~8% per node; the gain has to come from bigger tables in the same memory (next 8f items: budget, planner).
 ---
 
 ## Part 1 — Groups + centers
@@ -719,6 +730,10 @@ time to the first improvement and the best after 30 s vs 8d's numbers (same seed
   - Or let measures switch once a goal has been measured many times. Measure the gain with 8e's gap check (`gap.ts`) first.
 
 **Test:** same move counts; bound gap and nodes vs 8c.
+
+**Done (2-bit tables):** see "2-bit tables (Part 8f, first item)" in Facts. Identical answers, nodes and bounds on the whole replay; half the memory and stored bytes (96 → 48 MB), builds ~25% faster, searches ~8% slower per node
+(one extra read when a skipped table is needed again). The 10M budget is unchanged, so this item alone only saves memory: the next items (a budget of ~20M states in the old memory, or from `navigator.deviceMemory`; planner candidates) turn it into sharper bounds.
+Not checked in a real browser (the worker didn't change; table bytes are opaque to it, and loading them back is covered by the replay's table cache).
 
 ### Part 8g — Symmetry-reduced numbering (only if still needed)
 

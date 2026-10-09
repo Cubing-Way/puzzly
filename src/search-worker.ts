@@ -51,7 +51,7 @@ const MAX_CACHE_MB = 256;
 const SEARCHER_MB = 2;
 // Error a split search gives when it used up its node budget (same text as the Rust side)
 const NODE_LIMIT = "Node limit reached";
-// Tables with at least this many states (2 per byte, so ~50 KB) are stored in this browser: they take 0.1–0.8 s to build but load in a few ms (tinier ones build about as fast)
+// Tables with at least this many states (4 per byte, so ~25 KB) are stored in this browser: they take 0.1–0.8 s to build but load in a few ms (tinier ones build about as fast)
 const STORE_MIN_STATES = 100_000;
 // IndexedDB database and object store holding the stored tables (key: table format / moves / targets, value: the table's bytes)
 const DB_NAME = "puzzly-tables";

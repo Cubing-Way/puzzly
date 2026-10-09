@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
 use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
 use crate::symmetry::{Shape, Symmetry};
-use crate::table::{DistanceTable, TableCore, UNSEEN};
+use crate::table::{near_values, DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
 pub(crate) const NO_SOLUTION: &str = "No solution found!";
@@ -289,6 +289,7 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
         outer: vec![Units::new(); depths * count],
         inner: vec![0; depths * count],
         bounds: vec![0; depths * count],
+        exact: vec![false; depths * count],
         current: vec![false; depths * count],
         moved: Units::new(),
         children: vec![0; depths * turn_count],
@@ -310,7 +311,7 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
         resume,
         resuming: false,
     };
-    // Each table's start state; the largest distance is the first bound
+    // Each table's start state and its exact distance; the largest distance is the first bound
     let mut bound = 0;
     for (t, &(outer, inner)) in starts.iter().enumerate() {
         let distance = tables[t].table.distance(&outer, inner);
@@ -318,7 +319,7 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
             return (Err(NO_SOLUTION), 0);
         }
         bound = bound.max(distance);
-        (ida.outer[t], ida.inner[t], ida.bounds[t], ida.current[t]) = (outer, inner, distance, true);
+        (ida.outer[t], ida.inner[t], ida.bounds[t], ida.exact[t], ida.current[t]) = (outer, inner, distance, true, true);
     }
     // A list page starts at its first depth (shorter answers were on earlier pages)
     bound = bound.max(min_depth.min(MAX_LENGTH as u64) as u8);
@@ -598,7 +599,9 @@ struct Ida<'a> {
     outer: Vec<Units>,
     inner: Vec<u64>,
     bounds: Vec<u8>,
-    // Whether each (depth, table) state is up to date: a sub-table's pieces are only moved along the path when a lookup needs them
+    // Whether each (depth, table) bound is the exact distance (tables store distances mod 3, so a child's distance is only known from an exact parent's)
+    exact: Vec<bool>,
+    // Whether each (depth, table) state is up to date: a sub-table's pieces are only moved along the path when a lookup needs them (an up-to-date state's distance is exact too)
     current: Vec<bool>,
     // Room for a child's pieces when a sub-table can't rank a child straight from its parent
     moved: Units,
@@ -674,7 +677,12 @@ impl Ida<'_> {
             if alive == 0 || self.bounds[here + t] + 1 < remaining {
                 continue;
             }
+            // The state and its exact distance (a bound carried down may be above it: then no child can be ruled out after all)
             self.ensure(depth, t);
+            if self.bounds[here + t] + 1 < remaining {
+                continue;
+            }
+            let decode = near_values(self.bounds[here + t]);
             let tables = self.tables;
             let table = &*tables[t].table;
             // The children's turns as this table makes them (a rotated lookup turns them first)
@@ -687,12 +695,13 @@ impl Ida<'_> {
                     &self.rotated[..alive]
                 }
             };
-            // Each child's table index (ranked from this state, the child's pieces aren't kept), then all their distances (independent memory reads, so they overlap)
+            // Each child's table index (ranked from this state, the child's pieces aren't kept), then all their distances (independent memory reads, so they overlap),
+            // each the parent's distance − 1, + 0 or + 1 as its stored value mod 3 says
             for k in 0..alive {
                 self.indices[k] = table.child_index(&self.outer[here + t], self.inner[here + t], own[k] as usize, &mut self.moved);
             }
             for k in 0..alive {
-                self.distances[k] = table.distance_at(self.indices[k]);
+                self.distances[k] = decode[table.value_at(self.indices[k]) as usize];
             }
             // Children needing more moves than are left drop out (a deeper bound may get past them, unreachable states never will)
             let mut kept = 0;
@@ -714,7 +723,7 @@ impl Ida<'_> {
         self.scratch.extend(self.order.iter().filter(|&&t| self.ruled[t]));
         self.scratch.extend(self.order.iter().filter(|&&t| !self.ruled[t]));
         std::mem::swap(&mut self.order, &mut self.scratch);
-        // Go into each child left, in turn order: each sub-table's bound is its looked-up distance or (not looked up) one more than before; its state is moved later, when needed
+        // Go into each child left, in turn order: each sub-table's bound is its looked-up distance (exact) or (not looked up) one more than before; its state is moved later, when needed
         let resuming = self.resuming;
         for k in 0..alive {
             let turn = self.children[first + k] as usize;
@@ -726,7 +735,9 @@ impl Ida<'_> {
                 self.resuming = turn == self.resume[depth];
             }
             for t in 0..count {
-                self.bounds[next + t] = if self.bounds[here + t] + 1 < remaining { self.bounds[here + t] + 1 } else { self.looked_up[(here + t) * turns + turn] };
+                let skipped = self.bounds[here + t] + 1 < remaining;
+                self.bounds[next + t] = if skipped { self.bounds[here + t] + 1 } else { self.looked_up[(here + t) * turns + turn] };
+                self.exact[next + t] = !skipped;
                 self.current[next + t] = false;
             }
             self.path.push(turn);
@@ -741,7 +752,7 @@ impl Ida<'_> {
         false
     }
 
-    // True when the state at `depth` is already at the goal: every table at 0 (a bound of 0 is exact, others are looked up), then the whole goal checked
+    // True when the state at `depth` is already at the goal: every table at 0 (a bound of 0 is exact, others are made exact), then the whole goal checked
     fn at_goal(&mut self, depth: usize) -> bool {
         let here = depth * self.tables.len();
         for t in 0..self.tables.len() {
@@ -749,14 +760,15 @@ impl Ida<'_> {
                 continue;
             }
             self.ensure(depth, t);
-            if self.tables[t].table.distance(&self.outer[here + t], self.inner[here + t]) != 0 {
+            if self.bounds[here + t] != 0 {
                 return false;
             }
         }
         self.is_goal()
     }
 
-    // Bring sub-table t's state at `depth` up to date: replay the path's turns from the deepest depth where it is current (the start always is)
+    // Bring sub-table t's state at `depth` up to date: replay the path's turns from the deepest depth where it is current (the start always is),
+    // and give each replayed state whose distance isn't exact yet its exact distance, from its stored value and the state before it (always exact by then)
     fn ensure(&mut self, depth: usize, t: usize) {
         let count = self.tables.len();
         let mut from = depth;
@@ -764,11 +776,18 @@ impl Ida<'_> {
             from -= 1;
         }
         for d in from..depth {
-            let (before, after) = self.outer.split_at_mut((d + 1) * count + t);
+            let (here, next) = (d * count + t, (d + 1) * count + t);
+            let (before, after) = self.outer.split_at_mut(next);
             let slot = &self.tables[t];
             let turn = slot.turns.as_ref().map_or(self.path[d], |map| map[self.path[d]] as usize);
-            self.inner[(d + 1) * count + t] = slot.table.step(&before[d * count + t], self.inner[d * count + t], turn, &mut after[0]);
-            self.current[(d + 1) * count + t] = true;
+            // Exact distance first, its index ranked straight from the parent (cheaper than ranking the moved pieces)
+            if !self.exact[next] {
+                let index = slot.table.child_index(&before[here], self.inner[here], turn, &mut self.moved);
+                self.bounds[next] = near_values(self.bounds[here])[slot.table.value_at(index) as usize];
+                self.exact[next] = true;
+            }
+            self.inner[next] = slot.table.step(&before[here], self.inner[here], turn, &mut after[0]);
+            self.current[next] = true;
         }
     }
 
