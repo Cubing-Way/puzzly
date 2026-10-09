@@ -24,11 +24,13 @@ import {
   reachesGoal,
   countMoves,
   runMethod,
+  searchMethod,
   type GoalPiece,
   type Role,
   type Method,
   type StepConfig,
   type MethodStepResult,
+  type MethodResult,
   type TableProgress,
 } from "./engine";
 // Example, saved and file methods
@@ -54,6 +56,7 @@ interface Run {
   ok: boolean; // scramble + done + solution really reaches the goal (up to one of the offsets)
   lookahead?: MethodStepResult["lookahead"]; // method steps with lookahead: candidates compared and the winner's moves over the steps they were judged by
   bld?: Bld; // step runs: the blindfolded fields it was solved with (untouched steps show the whole cube)
+  untimed?: boolean; // a step of a method search (steps aren't timed one by one there)
 }
 
 // Blindfolded fields of a step: every other piece untouched, the buffer ("" = none), targets per step and parity pieces
@@ -126,6 +129,9 @@ const extraMovesInput = $<HTMLInputElement>("step-extra");
 const addStepButton = $<HTMLButtonElement>("add-step");
 const updateStepButton = $<HTMLButtonElement>("update-step");
 const runMethodButton = $<HTMLButtonElement>("run-method");
+const searchMethodButton = $<HTMLButtonElement>("search-method");
+const searchSecondsInput = $<HTMLInputElement>("search-seconds");
+const stopSearchButton = $<HTMLButtonElement>("stop-search");
 const methodBody = $("method-body");
 const methodEmpty = $("method-empty");
 
@@ -154,6 +160,8 @@ let editing = -1;
 let dirty = false;
 // Rows of the last method run: one per step, then the total
 let methodRows: { label: string; run: Run }[] = [];
+// True once Stop was pressed during a method search
+let stopRequested = false;
 
 // Show a message in the status line (kind sets its color)
 function setStatus(text: string, kind: "info" | "ok" | "error" = "info"): void {
@@ -553,7 +561,7 @@ function runRow(run: Run, label: string, cells: string[], onClick: () => void): 
     moves: String(run.moves),
     offset: run.offset || "—",
     lookahead: ahead.text,
-    time: formatMs(run.ms),
+    time: run.untimed ? "—" : formatMs(run.ms),
     check: run.ok ? "✓" : "✗",
     solution: run.solution || "(already solved)",
   };
@@ -950,21 +958,71 @@ function currentMethod(): Method {
   return { ...method, name: methodNameInput.value.trim() || "Untitled method" };
 }
 
-// Run every step of the method from the start position (scramble, then Done so far), showing each step as it finishes
-async function runWholeMethod(): Promise<void> {
-  if (busy) return;
+// Start position and a copy of the method to run (so the steps can't change mid-run); null, with the reason in the status line, when a field is wrong or there are no steps
+function methodStart(): { scramble: string; done: string; running: Method } | null {
   const scramble = readMoves(scrambleInput, scrambleError);
   const done = readMoves(doneInput, doneError);
   if (scramble === null || done === null) {
     setStatus("Fix the marked field first.", "error");
-    return;
+    return null;
   }
   if (!method.steps.length) {
     setStatus("Add at least one step first.", "error");
-    return;
+    return null;
   }
-  // Run a copy, so the steps can't change mid-run
-  const running = structuredClone(currentMethod());
+  return { scramble, done, running: structuredClone(currentMethod()) };
+}
+
+// One method step as a run (a row of the method results; click it to see that step on the cube)
+function methodStepRun(scramble: string, running: Method, step: MethodStepResult, untimed = false): Run {
+  const config = running.steps[step.step];
+  return {
+    scramble,
+    done: step.done,
+    mode: "step",
+    pieces: step.pieces,
+    alternatives: splitAlternatives(config.pieces),
+    alternative: step.alternative,
+    offsets: step.offsets,
+    solvableWith: step.solvableWith,
+    goal: `${running.name}: ${step.name}`,
+    solution: step.solution.toString(),
+    offset: step.offset,
+    moves: step.moves,
+    ms: step.ms,
+    ok: step.ok,
+    lookahead: step.lookahead,
+    bld: { untouched: Boolean(config.untouched), buffer: config.buffer ?? "", targetsPerStep: config.targetsPerStep ?? 2, parity: config.parity ?? "" },
+    untimed,
+  };
+}
+
+// A whole method run as one run: every step's moves, with every step's pieces shown on the cube
+function methodTotalRun(scramble: string, done: string, running: Method, result: MethodResult, ms: number): Run {
+  return {
+    scramble,
+    done,
+    mode: "method",
+    pieces: result.pieces,
+    alternatives: [],
+    alternative: 0,
+    offsets: result.steps.at(-1)?.offsets ?? [""],
+    solvableWith: result.steps.at(-1)?.solvableWith ?? [],
+    goal: running.name,
+    solution: result.solution,
+    offset: result.offset,
+    moves: result.moves,
+    ms,
+    ok: result.ok,
+  };
+}
+
+// Run every step of the method from the start position (scramble, then Done so far), showing each step as it finishes
+async function runWholeMethod(): Promise<void> {
+  if (busy) return;
+  const start = methodStart();
+  if (!start) return;
+  const { scramble, done, running } = start;
   setBusy(true);
   showResult(null);
   methodRows = [];
@@ -990,46 +1048,13 @@ async function runWholeMethod(): Promise<void> {
       onStart: (at, count) => ([index, round] = [at, count]),
       // Add each step's row as soon as it finishes
       onStep: (step, index) => {
-        const run: Run = {
-          scramble,
-          done: step.done,
-          mode: "step",
-          pieces: step.pieces,
-          alternatives: splitAlternatives(running.steps[index].pieces),
-          alternative: step.alternative,
-          offsets: step.offsets,
-          solvableWith: step.solvableWith,
-          goal: `${running.name}: ${step.name}`,
-          solution: step.solution.toString(),
-          offset: step.offset,
-          moves: step.moves,
-          ms: step.ms,
-          ok: step.ok,
-          lookahead: step.lookahead,
-          bld: { untouched: Boolean(running.steps[index].untouched), buffer: running.steps[index].buffer ?? "", targetsPerStep: running.steps[index].targetsPerStep ?? 2, parity: running.steps[index].parity ?? "" },
-        };
-        methodRows.push({ label: `${index + 1}. ${step.name}`, run });
+        methodRows.push({ label: `${index + 1}. ${step.name}`, run: methodStepRun(scramble, running, step) });
         renderMethodRows();
       },
     });
     clearInterval(timer);
-    // The whole solve as one run: every step's moves, with every step's pieces shown on the cube
-    const total: Run = {
-      scramble,
-      done,
-      mode: "method",
-      pieces: result.pieces,
-      alternatives: [],
-      alternative: 0,
-      offsets: result.steps.at(-1)?.offsets ?? [""],
-      solvableWith: result.steps.at(-1)?.solvableWith ?? [],
-      goal: running.name,
-      solution: result.solution,
-      offset: result.offset,
-      moves: result.moves,
-      ms: performance.now() - started,
-      ok: result.ok,
-    };
+    // The whole solve as one run
+    const total = methodTotalRun(scramble, done, running, result, performance.now() - started);
     methodRows.push({ label: "Total", run: total });
     runs.unshift(total);
     showResult(total);
@@ -1046,6 +1071,71 @@ async function runWholeMethod(): Promise<void> {
     setStatus(`Method error: ${(error as Error).message}`, "error");
   } finally {
     clearInterval(timer);
+    setBusy(false);
+  }
+}
+
+// Search the method's runs for the fewest moves in total (for up to the seconds given, or until Stop), showing each shorter run's steps as it's found
+async function searchWholeMethod(): Promise<void> {
+  if (busy) return;
+  const start = methodStart();
+  if (!start) return;
+  const { scramble, done, running } = start;
+  const seconds = Math.max(1, wholeNumber(searchSecondsInput.value) || 30);
+  setBusy(true);
+  showResult(null);
+  methodRows = [];
+  renderMethodRows();
+  stopRequested = false;
+  stopSearchButton.disabled = false;
+  stopSearchButton.hidden = false;
+  // Live status: the best run so far, the time so far and table builds or loads
+  const started = performance.now();
+  const tables = tableTracker();
+  let best: MethodResult | null = null;
+  const tick = () => {
+    const found = best ? `best so far ${plural(best.moves, "move")}` : "first run";
+    setStatus(`Searching ${running.name} for fewer moves (${found})… ${formatMs(performance.now() - started)} of ${seconds} s${tables.note()}`);
+  };
+  tick();
+  const timer = setInterval(tick, 100);
+  try {
+    const found = await searchMethod(scramble, running, {
+      done,
+      budgetMs: seconds * 1000,
+      stop: () => stopRequested,
+      onProgress: tables.onProgress,
+      // Show each shorter run's steps as soon as it's found (the plain run first)
+      onBetter: (result) => {
+        best = result;
+        methodRows = result.steps.map((step) => ({ label: `${step.step + 1}. ${step.name}`, run: methodStepRun(scramble, running, step, true) }));
+        methodRows.push({ label: "Total", run: methodTotalRun(scramble, done, running, result, result.ms) });
+        renderMethodRows();
+      },
+    });
+    clearInterval(timer);
+    if (!found.best) {
+      setStatus(`${running.name}: no run gets through every step${found.optimal ? "" : " (stopped before the search finished)"}.`, "error");
+      return;
+    }
+    // The best run as one run: shown on the cube and kept in the runs table
+    const total = methodRows.at(-1)!.run;
+    runs.unshift(total);
+    showResult(total);
+    const from = found.seed === null ? "the plain run failed" : found.seed === found.best.moves ? "same as the plain run" : `plain run ${plural(found.seed, "move")}`;
+    const proof = found.optimal ? ", the fewest this method can do" : "";
+    const unproven = found.optimal ? "" : `; ${stopRequested ? "stopped" : "time's up"} before it could rule out shorter runs`;
+    setStatus(
+      found.best.ok
+        ? `${running.name}: ${plural(found.best.moves, "move")}${proof} (${from}; ${plural(found.states, "step start")} in ${formatMs(found.ms)}${unproven}${tables.summary()}).`
+        : `${running.name}: a step's solution doesn't reach its goal!`,
+      found.best.ok ? "ok" : "error",
+    );
+  } catch (error) {
+    setStatus(`Method search error: ${(error as Error).message}`, "error");
+  } finally {
+    clearInterval(timer);
+    stopSearchButton.hidden = true;
     setBusy(false);
   }
 }
@@ -1179,6 +1269,12 @@ keepBox.addEventListener("change", () => syncViewer());
 addStepButton.addEventListener("click", addStep);
 updateStepButton.addEventListener("click", updateStep);
 runMethodButton.addEventListener("click", runWholeMethod);
+searchMethodButton.addEventListener("click", searchWholeMethod);
+// Stop asks the method search to end (it stops between worker requests, keeping its best run)
+stopSearchButton.addEventListener("click", () => {
+  stopRequested = true;
+  stopSearchButton.disabled = true;
+});
 
 // Renaming counts as a change, and decides whether Delete has a saved method to remove
 methodNameInput.addEventListener("input", () => {

@@ -464,10 +464,18 @@ tbody tr.bad td[data-col="check"] {
   cursor: pointer;
 }
 
-/* Small number field inside its text (lookahead steps, extra moves) */
+/* Small number field inside its text (lookahead steps, extra moves, search time) */
 .number-label input[type="number"] {
   width: 4rem;
   padding: 0.3rem 0.4rem;
+}
+
+/* Method search button and its time budget on one line, the button taking the room left */
+.search-row {
+  align-items: center;
+}
+.search-row > button {
+  flex: 1 1 auto;
 }
 
 /* Numbered step list */

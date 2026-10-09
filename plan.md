@@ -20,10 +20,11 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8a — Benchmark harness + faster search nodes
 - [x] Part 8b — Spot classes, exact size estimates, twist parity (sharper tables)
 - [x] Part 8c — Inverse and symmetric lookups on the same tables (rotated copies share one table; inverse lookups measured, not kept)
-- [ ] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
-- [ ] Part 8e — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
-- [ ] Part 8f — Symmetry-reduced numbering (only if still needed)
-- [ ] Part 8g — Parallel search (only if still needed)
+- [x] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
+- [ ] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
+- [ ] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (only if the benchmark says tables are the limit)
+- [ ] Part 8g — Symmetry-reduced numbering (only if still needed)
+- [ ] Part 8h — Parallel search (only if still needed)
 - [ ] Part 9 — Hand-written tables for specific goals (last resort)
 
 ## Goal of the project
@@ -298,6 +299,27 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
     - Extra rotated lookups (each table on every rotated copy whose pieces no slot reads yet; PLL / BLD 16 → 96 slots, DR 7 → 8): nodes −8% / −50% / −51%, ×1.2–2.8 per node (189 ms / 9.7 s / 4.9 s).
       Both together: nodes −60% / −66%, 4–5× slower.
     - Lookups are random reads in 2–8 MB tables (this PC: 3 MB L3), so each extra lookup costs about what it saves. No start bound rose (a PLL's inverse is a PLL, a 2-edge flip is its own inverse).
+- Method search (Part 8d): `searchMethod(scramble, method, { done, budgetMs, stop, onBetter, onProgress })` → `MethodSearchResult { best, seed, optimal, states, ms }` (engine.ts; `METHOD_SEARCH_MS` 30 s default).
+  - Seed = `runMethod` (the steps' own lookahead), then a depth-first branch and bound. A node is a step start: `SearchLevel` = step index + round + its `stepCombos` queue (measured, closest first); pruned when used + queue[0].bound ≥ best.
+    A non-last step lists its answers length by length from that bound, combo by combo in queue order, in pages of `SEARCH_PAGE` (100). For each page, every answer's next level is measured at once (`Promise.all`; the worker answers back to back),
+    sorted by bound (stable) and visited while used + length + bound < best. The last (non-repeat) step is `searchCombos` with maxDepth best − used − 1.
+  - LB(rest) = the next step's closest combo bound only. The plan's "any later step that keeps" bound wasn't done: a later step's goal depends on the grips taken in between. Taking only the earlier pieces plus that step's own
+    (min over 24 rotations × offsets) gives nothing for CFOP / pseudo-slotting (pair 4 alone = the next pair's bound); following the steps in between too (CFOP: F2L) is Part 8e.
+  - Visited: key = step / round / earlier-pieces id (`piecesId`, interned `goalToText`) / `cellsKey` of the held cube, value = fewest moves; cap `MAX_VISITED` 1M (past it, new keys aren't added).
+  - Rules: answers never pass through the step's goal (the list rule), maxDepth is hard, firstFound is ignored (levels run with `firstFound: false`). A repeated step gets a level per round: an answer with moves goes to the next round (MAX_REPEATS);
+    a later round with 0 moves goes to the next step without a row; NOTHING_NEW on a later round skips to the next step (`levelAt`). A step already at its goal only takes its 0-move answer. The offset the last step leaves isn't counted.
+  - `optimal` = not halted (time or `stop()`, checked per visit and page) and complete: twips combos (`Combo.twips`, set when the measure gives null) only list their one answer, and lengths past `MAX_SEARCH_LENGTH` (40) are never listed.
+  - Rust paging: `read_options` returns `SearchOptions` (+ `minDepth`, `after` = move text). In list mode `deepen` starts its bound at minDepth; at the depth of `after` it skips children before that path (`resume`, `resuming`) and the answer itself,
+    so pages continue in turn order. Search mode ignores both. Checked: pages of 37 = one big page = the old full list filtered to that length (cross, pseudo cross with 4 targets, XCross, DR; 3 scrambles × 3+ lengths).
+    Replay (1,275 requests of xxxcross, dr-finish, pseudo-lookahead; 8c → 8d): identical answers and nodes, times within noise.
+  - Engine speed-ups (same answers): `remember` caches (cleared at `MAX_REMEMBERED` 10k) for `solvedAfter(moves)` (grips, offsets, the scramble's net rotation), the scramble held per grip (`scrambledInGrip`), `heldPattern` results (`heldAfter`;
+    the search seeds each child's with `noteHeld` = combo's held cube + answer), `offsetGroups`, `movesKey`, `pieceMoves`. `rotationsIn` skips parsing without x / y / z; `maskPattern` copies arrays instead of `structuredClone`;
+    `dropFree` returns the goal itself when nothing is `:x`; `parseGoalText` uses `PIECE_INDEX`. In the search, a page's earlier pieces (the same for every answer of a combo) are worked out once, and step results are only made for a run being recorded.
+    Per measured step start ~3 ms → ~0.7 ms (≈ 1,500 per second in Node). Regression: 7 methods (6 examples + DR + finish) × 3 scrambles give identical solutions, offsets, alternatives and searches to 8c; the CFOP lookahead example 0.8 → 0.45 s.
+  - `MethodStepResult.step` = the method step's index; `methodRow` / `methodTotals` are shared by `runMethod` and the search. A found run's `ms` = time since the search started, its steps' ms 0.
+  - Page: method panel *Search fewest moves* + *for up to [30] s*, *Stop search* outside the locked editor (`stopRequested`), rows replaced on each `onBetter` (`Run.untimed` shows "—"), final status "the fewest this method can do" when optimal.
+  - Testing: `harness/search.ts` style (fake worker; SCEN small = 2-step methods vs an exhaustive check with `stepCandidates` + `solveStep`; dr / cfop / pseudo / zz / zzcp / bld with BUDGET seconds after one warm-up `runMethod`),
+    `harness/paging.ts` (worker messages straight to the fake worker), `harness/regress-{old,new}.ts` (the old engine imported by the project's absolute path). Built page checked in the browser pane (search, Stop, Run method).
 ---
 
 ## Part 1 — Groups + centers
@@ -530,7 +552,7 @@ Limits:
 - First-time 2-edge flips take seconds to a minute (no table that fits sees them).
 - Twists of in-place pairs only start a step with the buffer home.
 
-## Part 8 — Faster search before hand-written tables (8a–8g, one per chat)
+## Part 8 — Faster search before hand-written tables (8a–8h, one per chat)
 
 **Why:** steps are optimal now; the next goal is near-optimal *methods* in a few seconds, e.g. a method "DR, then finish with `U D R2 L2 F2 B2`" behaving like Kociemba's two-phase solver
 (that method *is* two-phase: phase 1 answers by length, each followed by a phase 2 bounded by best − phase 1; compare with `solveFull`, cubing.js's two-phase). Two things stand in the way:
@@ -544,14 +566,14 @@ Checked while planning (2026-10-08):
 - `estimate_size` is an upper bound: the reachable-layout walk (`keep_reachable`) only runs for orbits of ≤ `REACH_LIMIT` (65,536) layouts, and never while sizing. (8b: exact per spot set, the walk still never runs while sizing.)
 - No parity trick, no symmetry; 4-bit distances; outer turn tables are freed after the fill, so the search steps outer coordinates from spot lists (~3–4 µs per IDA* node). (8b: twist parity; no permutation parity, no symmetry. 8c: rotated copies of a table share it; inverse lookups measured, not kept.)
 
-**Order:** 8a → 8b → 8c → 8d are the core (Kociemba-like methods). Re-run 8a's benchmark after each part; do 8e–8g only when its numbers point at them.
+**Order:** 8a → 8b → 8c → 8d are the core (Kociemba-like methods), then 8e (better bounds for the method search). Re-run 8a's benchmark after each part; do 8f–8h only when its numbers point at them.
 
 ### Part 8a — Benchmark harness + faster nodes
 
 **Do:**
 - A Node harness (direct wasm API + fake-Worker method runs, as in Facts) over heavy goals, fixed seeded scrambles: DR phase 2 after a DR step, XXXCross, OLL and PLL with keep, a BLD 2-edge flip,
   pseudo pairs with lookahead, the DR-then-finish method.
-- Per goal: start bound vs real length (bound gap: tables too weak), nodes, µs per node (search loop too slow), table build time and size. Keep the output as the baseline for 8b–8g.
+- Per goal: start bound vs real length (bound gap: tables too weak), nodes, µs per node (search loop too slow), table build time and size. Keep the output as the baseline for 8b–8h.
 - Profile `deepen` / `TableCore::step` / `distance`. Likely cost: recomputing indices from spot lists on every lookup. Options: keep per-orbit turn tables during searches when they're small (memory cap),
   incremental ranking, no allocations per node.
 
@@ -576,7 +598,7 @@ Not done: per-orbit turn tables kept for searches (a 5-edge orbit needs ~14 MB o
 
 **Done:** see "Spot sets + twist parity (Part 8b)" in Facts. Identical answers on all 1,356 replayed requests, the 6 example methods and 12 DR + finish runs. DR phase 2 searches are 19× faster (21× fewer nodes) on big tables;
 EO, CO, EOLine and DR's sub-tables are a half to a third of their old size with the same distances; every other goal numbers exactly as before.
-The planner doesn't find Kociemba's two phase-2 tables by itself: it fills each table edges first, so it finds "all edges" (plus one corner) and repeats it once per corner, never seeing the corners together (moved to 8e).
+The planner doesn't find Kociemba's two phase-2 tables by itself: it fills each table edges first, so it finds "all edges" (plus one corner) and repeats it once per corner, never seeing the corners together (moved to 8f).
 Not checked in a real browser: with `TABLE_FORMAT` 2 the worker deletes every stored format-1 table on its next start and rebuilds what it needs, once.
 
 ### Part 8c — Inverse and symmetric lookups
@@ -610,7 +632,39 @@ Not checked in a real browser (`TABLE_FORMAT` is unchanged, so stored tables sti
 **Test:** never longer than lookahead on the same scrambles; small 2-step cases match an exhaustive check; DR + finish vs `solveFull` (length, time to reach 20 / 19 moves);
 CFOP F2L and pseudo-slotting: time to the first improvement and to the proof (report it even when the proof is too slow).
 
-### Part 8e — Table capacity (only if 8a–8c show the bounds are the limit)
+**Done:** see "Method search (Part 8d)" in Facts. One generic search for N steps (2-step methods needed nothing special), run from the engine with batched worker requests instead of inside the worker:
+after the engine's per-step-start work got cheaper (~3 → ~0.7 ms, mostly cached alg parsing), the worker round trips weren't the limit. Seeded with the plain run, so never longer than lookahead. Numbers (Node, 30 s after a warm-up run):
+- Exhaustive check: 9 two-step cases (2 edges then the cross, cross then a pair with any front, pseudo cross then ADF; 3 full scrambles each) all match an enumeration of every step-1 answer shorter than the best + step 2's shortest,
+  all proven optimal in 5 ms–4 s (up to 4,415 step starts). Cross then a pair: 9–12 move plain runs → 7 (an XCross plus a 0-move pair).
+- DR + finish (4 scrambles): plain 19 / 23 / 22 / 25 → 19 / 17 / 20 / 20; `solveFull` 19 / 20 / 20 / 21 (74–695 ms). Time to 20: seed / 1.3 s / 16 s / 1.4 s; to 19: seed / 1.75 s / not in 30 s / not in 30 s.
+  The limit is listing long DR answers (every 12-move DR: ~9 s on small tables, ~2,300 answers; 13 moves: 41k answers in ~2 min), i.e. 8a's ~4 µs per node vs Kociemba's coordinate tables (Part 9).
+- CFOP: 31 → 26 (first improvement 0.5 s, last 11 s), 31 → 23 (4.7 s, 10 s). Pseudo-slotting (seed already with lookahead): 23 → 22 at 12.7 s, and 23 → none in 30 s. ZZ: 23 → 21, 28 → 17 (2 s); ZZ with CP: 36 → 26, 42 → 27.
+  No proof in 30 s for any whole method: under a 6-move cross, every cross answer up to best − (pair bounds) is still open.
+- BLD example: works (rounds as levels) but its flip / parity searches take seconds each, so 30–40 s gave no improvement.
+- Built page: ZZ with CP 41 → 29 in 10 s (with 14 table builds), Stop ends it at once with the best run.
+Not done: a lower bound from later steps (see Facts; now Part 8e), running the loop inside the worker (not needed after the engine speed-ups), proofs for whole CFOP / DR runs.
+
+### Part 8e — Method lower bounds (pruning before per-node speed)
+
+**Why:** 8d prunes a step start with the next step's bound only. After a CFOP cross that is one pair (~7 moves) while ~25 really remain, so almost nothing is pruned. The tree grows ~13× per move of gap between the bound
+and what really remains, so a sharper bound cuts it exponentially; faster nodes (8f–8h, Part 9's hand-written tables, ~10–40×) only buy about one move of depth.
+Decided after 8d (2026-10-09): bounds first, hand-written tables only for the gap left afterwards (DR + finish, where the bound is already Kociemba's and only per-node speed is missing).
+Expect better runs sooner, not proofs: a whole CFOP or DR run likely stays unprovable either way (even two-phase solvers don't prove).
+
+**Do:**
+- Measure first: per 8d scenario (CFOP, pseudo-slotting, ZZ, ZZ with CP, DR + finish; same seeds), the bound at the root and after each step on the best run's path vs the moves that really remain (gap per level). Keep it as the baseline.
+- Goal walk (TS, no search): from the earlier pieces at a step start, follow the later steps' goal texts through their grips (and alternatives) with the same goal algebra the run uses (`rotateGoal`, `mergeGoals`, the covered-grip filter, `piecesAfter`),
+  giving the goals each later step can have; dedupe them and cap the count (e.g. 64; past it, fall back to the next step's bound). CFOP with any front: every pair order ends at the same goal, F2L.
+- Bound for the rest = the largest, over later steps j that keep earlier pieces, of the smallest measured distance among j's possible goals (with its offsets' targets, as a normal measure). Sound because step j's goal holds every piece
+  kept so far whatever happens in between, and fewer pieces can only need fewer moves; steps that don't keep only bound themselves (the next step's bound, as now). Keep the larger of this and the next step's bound.
+- Solvable-with steps count only their settled pieces; untouched (BLD) steps keep the next step's bound (their goals depend on the cube).
+- Cost: the extra goals' tables are ordinary split goals (cached, stored); measure them only when the next step's bound doesn't already prune, and remember measures per (held cube, goal) within a search.
+- Show the root bound in the search's status ("at least N moves"), so a run that reaches it is known to be the fewest without finishing the search.
+
+**Test:** never a bound above what really remains (check every level of the best runs found: used + bound ≤ best); the exhaustive 2-step cases still match and prove faster; per scenario, gap before / after,
+time to the first improvement and the best after 30 s vs 8d's numbers (same seeds); step starts per second (the extra measures' cost).
+
+### Part 8f — Table capacity (only if 8a–8c show the bounds are the limit)
 
 **Do:**
 - 2-bit tables: distance mod 3; the exact distance is recovered once at the start, children follow from parent ± 1 (`deepen` already tracks each table's last exact distance). 2× states per MB.
@@ -618,18 +672,18 @@ CFOP F2L and pseudo-slotting: time to the first improvement and to the proof (re
   From 8b: DR phase 2 gets 7 tables "all 12 edges + one corner" (edges first, then whatever fits), so the corners are never seen together. One candidate to try: fill a table with its seed's own orbit first
   (counted by hand, not built: all edges + UFR 7.7M, then all corners + UF UR FR 9.0M, 2 tables instead of 7); it also changes first layer, XXCross… plans, hence the sampling.
 - From 8c: extra rotated lookups (a table read on rotated copies no planned table covers) halve PLL / BLD-flip nodes, but all 80 of them cost ~2.5× per node; keeping the few that raise the bound most on the sample
-  could pay off. Inverse lookups cut nodes 7–37% at ~2–3× per node (the whole state per depth is the fixed cost); worth a retry only if lookups get cheaper (8f / 8g).
+  could pay off. Inverse lookups cut nodes 7–37% at ~2–3× per node (the whole state per depth is the fixed cost); worth a retry only if lookups get cheaper (8g / 8h).
 - Budget from `navigator.deviceMemory` instead of a fixed 10M.
 
 **Test:** same move counts; bound gap and nodes vs 8c.
 
-### Part 8f — Symmetry-reduced numbering (only if still needed)
+### Part 8g — Symmetry-reduced numbering (only if still needed)
 
 **Do:** one entry per symmetry class (up to 16× for DR goals, 48× for the whole cube), canonical form per lookup (symmetry move tables for the coordinate). Biggest table gain, hardest change.
 
-**Test:** same move counts; table sizes and nodes vs 8e.
+**Test:** same move counts; table sizes and nodes vs 8f.
 
-### Part 8g — Parallel search (only if still needed)
+### Part 8h — Parallel search (only if still needed)
 
 **Do:** split the first moves' subtrees over several workers (each loads the tables from IndexedDB, so memory × workers) or wasm threads (SharedArrayBuffer, needs COOP / COEP headers); parallel table builds the same way.
 
@@ -638,6 +692,7 @@ CFOP F2L and pseudo-slotting: time to the first improvement and to the proof (re
 ## Part 9 — Hand-written tables (last resort)
 
 **Why:** hand-written coordinates (Kociemba's phase 1 / phase 2) can still beat generic ones on per-node cost and symmetry; only worth it for gaps Part 8's benchmark still shows (likely DR phase 2 per-node speed).
+From 8d: the method search on DR + finish is held back by listing DR (phase 1) answers, ~4 µs per node (every 12-move DR ~9 s), not by the finishes. Do this after 8e, and only for what its numbers still show.
 
 **Do:**
 - A Rust registry that matches the compiled goal (masked targets + moves, the table key), never step names; a match uses a hand-written generator with the same calls as a generic table

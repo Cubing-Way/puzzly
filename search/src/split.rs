@@ -210,13 +210,31 @@ pub(crate) struct GoalCheck<'a> {
     pub groups: usize,
 }
 
-// Options of a search or list request: answers shorter than maxDepth (twips style), a node budget, and how many answers a list may give
-pub(crate) fn read_options(options_json: &str) -> Result<(u64, u64, usize), String> {
+// Options of a search or list request: answers shorter than maxDepth (twips style), a node budget, how many answers a list may give,
+// and for listing page by page: answers no shorter than minDepth, coming after the answer `after` (its move text) in the list's order
+pub(crate) struct SearchOptions {
+    pub limit: u64,
+    pub max_nodes: u64,
+    pub max_answers: usize,
+    pub min_depth: u64,
+    pub after: Option<String>,
+}
+
+// Read a request's options (missing ones: no limit, no budget, every answer, from the shortest, from the first)
+pub(crate) fn read_options(options_json: &str) -> Result<SearchOptions, String> {
     let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
-    let limit = options["maxDepth"].as_u64().unwrap_or(u64::MAX);
-    let max_nodes = options["maxNodes"].as_u64().unwrap_or(u64::MAX);
-    let max_answers = options["maxAnswers"].as_u64().unwrap_or(u64::MAX).clamp(1, usize::MAX as u64) as usize;
-    Ok((limit, max_nodes, max_answers))
+    Ok(SearchOptions {
+        limit: options["maxDepth"].as_u64().unwrap_or(u64::MAX),
+        max_nodes: options["maxNodes"].as_u64().unwrap_or(u64::MAX),
+        max_answers: options["maxAnswers"].as_u64().unwrap_or(u64::MAX).clamp(1, usize::MAX as u64) as usize,
+        min_depth: options["minDepth"].as_u64().unwrap_or(0),
+        after: options["after"].as_str().map(str::to_owned),
+    })
+}
+
+// An answer's move text as turn numbers (None when a move isn't one of the allowed turns)
+fn path_turns(full: &Coords, text: &str) -> Option<Vec<usize>> {
+    text.split_whitespace().map(|name| full.turns.iter().position(|turn| turn.name == name)).collect()
 }
 
 // Turn lists as a JSON list of move texts, e.g. ["R U R'", "F R"]
@@ -243,12 +261,20 @@ impl Slot {
     }
 }
 
-// IDA* over these tables from their start states (`whole` = the start in the whole goal's numbering), for answers shorter than `limit`:
-// the first shortest answer, or with `list` every answer, shortest first, up to that many (an answer never passes through the goal on its way);
+// IDA* over these tables from their start states (`whole` = the start in the whole goal's numbering), for answers shorter than the options' limit:
+// the first shortest answer, or with `list` every answer, shortest first, up to maxAnswers (an answer never passes through the goal on its way),
+// from minDepth moves on and after the answer `after` (one page of a long list: answers come in turn order, so the next page starts where this one ended);
 // gives the answers as turn lists (or NO_SOLUTION / NODE_LIMIT) and the nodes visited
-pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, limit: u64, max_nodes: u64, list: Option<usize>) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
+pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, options: &SearchOptions, list: bool) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
     // Never deeper than MAX_LENGTH (the search state has room for that many moves)
-    let limit = limit.min(MAX_LENGTH as u64 + 1);
+    let limit = options.limit.min(MAX_LENGTH as u64 + 1);
+    // A list page: its first depth, and the answer it comes after (none; or one the allowed turns can't spell, which gives nothing)
+    let (min_depth, resume) = if list { (options.min_depth, options.after.as_deref().map(|text| path_turns(check.full, text))) } else { (0, None) };
+    let resume = match resume {
+        Some(None) => return (Err(NO_SOLUTION), 0),
+        Some(Some(turns)) => turns,
+        None => vec![],
+    };
     // Search state: room for every depth up to MAX_LENGTH
     let count = tables.len();
     let turn_count = check.full.turns.len();
@@ -276,11 +302,13 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
         path: vec![],
         cut: false,
         nodes: 0,
-        max_nodes,
+        max_nodes: options.max_nodes,
         gave_up: false,
-        listing: list.is_some(),
-        max_answers: list.unwrap_or(1),
+        listing: list,
+        max_answers: if list { options.max_answers } else { 1 },
         answers: vec![],
+        resume,
+        resuming: false,
     };
     // Each table's start state; the largest distance is the first bound
     let mut bound = 0;
@@ -292,9 +320,13 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
         bound = bound.max(distance);
         (ida.outer[t], ida.inner[t], ida.bounds[t], ida.current[t]) = (outer, inner, distance, true);
     }
+    // A list page starts at its first depth (shorter answers were on earlier pages)
+    bound = bound.max(min_depth.min(MAX_LENGTH as u64) as u8);
     // Deepen one move at a time until the first answer (or enough answers) turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)
     while (bound as u64) < limit {
         ida.cut = false;
+        // At the depth of the answer a page comes after, every path up to it is skipped (they were on earlier pages)
+        ida.resuming = !ida.resume.is_empty() && ida.resume.len() == bound as usize;
         if ida.dfs(0, bound, NO_GROUP) {
             break;
         }
@@ -511,7 +543,8 @@ impl SplitSearch {
     }
 
     // Every answer from a start pattern shorter than {"maxDepth": n}, shortest first, up to {"maxAnswers": k}, as a JSON list of move texts
-    // (an answer never passes through the goal on its way); {"maxNodes": n} as in search
+    // (an answer never passes through the goal on its way); {"maxNodes": n} as in search; {"minDepth": d, "after": "R U"} lists one page:
+    // answers of d moves and more that come after that answer (same length) in turn order
     pub fn list(&mut self, start_json: &str, options_json: &str) -> Result<String, String> {
         let answers = self.run(start_json, options_json, true)?;
         Ok(answer_list(&self.full, &answers))
@@ -525,7 +558,7 @@ impl SplitSearch {
         // Start, depth limit (answers shorter than it), node budget, answers wanted, and the attached sub-tables
         self.nodes = 0.0;
         let start = pattern_data(&self.kpuzzle, start_json)?;
-        let (limit, max_nodes, max_answers) = read_options(options_json)?;
+        let options = read_options(options_json)?;
         let tables: Vec<Slot> = self
             .slots
             .iter()
@@ -540,7 +573,7 @@ impl SplitSearch {
         let starts = self.slots.iter().zip(&tables).map(|(&(s, r), slot)| slot.table.read(&self.subs[s].relabel.apply(&self.rotated(&start, r)))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
         // Deepen, checking answers on the whole goal
         let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
-        let (answers, nodes) = deepen(&tables, &starts, whole, &check, limit, max_nodes, list.then_some(max_answers));
+        let (answers, nodes) = deepen(&tables, &starts, whole, &check, &options, list);
         self.nodes = nodes as f64;
         answers.map_err(|error| error.to_owned())
     }
@@ -590,6 +623,9 @@ struct Ida<'a> {
     listing: bool,
     max_answers: usize,
     answers: Vec<Vec<usize>>,
+    // A list page's answer to come after (empty = from the first), and whether the path so far is still on the way to it (paths before it are skipped)
+    resume: Vec<usize>,
+    resuming: bool,
 }
 
 impl Ida<'_> {
@@ -603,6 +639,10 @@ impl Ida<'_> {
         self.nodes += 1;
         // Out of moves: every sub-table is at 0 here, so check the whole goal (sub-tables alone may miss pieces or mix targets)
         if remaining == 0 {
+            // The answer this page comes after: it was on the last page
+            if self.resuming {
+                return false;
+            }
             if self.is_goal() {
                 // At the goal: note the answer; a search ends here, a list once it has enough
                 self.answers.push(self.path.clone());
@@ -675,8 +715,16 @@ impl Ida<'_> {
         self.scratch.extend(self.order.iter().filter(|&&t| !self.ruled[t]));
         std::mem::swap(&mut self.order, &mut self.scratch);
         // Go into each child left, in turn order: each sub-table's bound is its looked-up distance or (not looked up) one more than before; its state is moved later, when needed
+        let resuming = self.resuming;
         for k in 0..alive {
             let turn = self.children[first + k] as usize;
+            // On the way to the answer a page comes after: children before its turn were listed already, the one on its path stays on the way
+            if resuming {
+                if turn < self.resume[depth] {
+                    continue;
+                }
+                self.resuming = turn == self.resume[depth];
+            }
             for t in 0..count {
                 self.bounds[next + t] = if self.bounds[here + t] + 1 < remaining { self.bounds[here + t] + 1 } else { self.looked_up[(here + t) * turns + turn] };
                 self.current[next + t] = false;

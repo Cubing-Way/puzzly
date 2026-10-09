@@ -9,7 +9,8 @@ import wasmBytes from "../search/pkg/puzzly_search_bg.wasm";
 
 // One request from the engine: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts), or an object with that list
 // plus "solvableWith" moves and / or "orbitTables" (BLD steps: split tables also get whole-orbit tables up to that many states); the text is the cache key as it is;
-// "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves, "list" for every answer shorter than maxDepth (up to maxAnswers)
+// "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves, "list" for every answer shorter than maxDepth (up to maxAnswers;
+// one page of a long list: answers from minDepth moves on that come after the answer `after`)
 interface Request {
   id: number;
   kind: "measure" | "search" | "list";
@@ -19,6 +20,8 @@ interface Request {
   moves: string[];
   maxDepth?: number;
   maxAnswers?: number;
+  minDepth?: number;
+  after?: string;
 }
 
 // What every solver offers: same search contract (twips-style options, "No solution found!" when nothing fits), and freeing its memory
@@ -348,6 +351,8 @@ async function search(request: Request): Promise<string> {
   const options = {
     ...(request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth }),
     ...(request.maxAnswers === undefined ? {} : { maxAnswers: request.maxAnswers }),
+    ...(request.minDepth === undefined ? {} : { minDepth: request.minDepth }),
+    ...(request.after === undefined ? {} : { after: request.after }),
   };
   if (entry.next) {
     const small = entry.solver as SplitSearch;
