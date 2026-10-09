@@ -23,7 +23,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8d — Anytime method search (method-optimal branch-and-bound, Kociemba-style)
 - [x] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
 - [x] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (one item per chat, each compared with the code before it)
-- [ ] Part 8g — Symmetry-reduced numbering (only if still needed)
+- [x] Part 8g — Symmetry: rotated sub-goals share one table (symmetry classes inside a table left for later, only if still needed)
 - [ ] Part 8h — Parallel search (only if still needed)
 - [ ] Part 9 — Hand-written tables for specific goals (last resort)
 
@@ -405,6 +405,22 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
     BLD flips, 4 passes at 8 GB: identical solutions, 50.1 / 5.1 / 4.7 / 3.7 s → 36.8 / 3.6 / 3.5 / 3.5 s (BLD's plans have no orbit past the old cap, so the first-pass gap is likely build-time noise).
   - Bench: `DEVICE_GB=8` (bench/setup.ts sets `navigator.deviceMemory` before the worker loads), `BIG=40000000 node bench/out/replay.js …` (exact tables stay 10M). `bench/out/replay-before.js` is now the planner code (before this item).
   - Testing: scratchpad `plans.ts` (plan sizes per goal and budget, nothing built) and `which.ts` (each sub-table's pieces, states, and whether it's in the table cache), a replay that logs every build's time.
+- Rotated sub-goals (Part 8g, first item): split.rs + symmetry.rs only; the engine, the worker and `TABLE_FORMAT` are unchanged (same numbering; only sub-table keys change, so stored tables under old keys are just no longer asked for).
+  - 8c's rotated copies, for every goal (8c only did identity goals: one target, each piece its own id). `Rotations::new(kpuzzle, turns)` = the rotations x and y generate whose R⁻¹ · turn · R is an allowed turn
+    for every turn (compared exactly on every orbit): face turns 24, DR moves 8, `D` alone 4; each with that turn map. `Symmetry`, `Shape` and the shape compare are gone.
+  - Each planned sub-table is printed in every rotation and the copy that prints first is its table (the key the worker builds and stores); the planned table becomes a `View { sub, rotation, relabel }` that reads it
+    through that rotation (IDA* `Slot.turns` as in 8c). `Relabel::rotated`: spot s takes the piece on `from[s]` (ids and twist mods travel with it), twist + the rotation's gain at s + a per-id amount that leaves
+    the first target untwisted, ids renumbered by the first spot they fill. Any per-id twist amount commutes with every turn, so distances stay exact for any goal; the amount only makes rotated copies print alike.
+    (Rotated EO-type goals don't match: y conjugates F/B-axis EO into R/L-axis EO, a different goal, and cubing's y flips E-slice edges.)
+  - `Relabel::new`: a spot set whose only rest piece is one piece keeps that piece's id (twist-free; same table size and distances), so 8c's "all edges + a corner" DR finish tables still match each other.
+  - Not rotated: goals with solvable-with moves (their sub-goals carry the moves) and goals with more than `MAX_ROTATED_TARGETS` (64) targets.
+  - Tables (replay, 10M, per scenario): xxxcross 9 → 4, cfop-oll-pll 48 → 25, pseudo 28 → 15, dr-finish 7 → 7 and bld-flip 5 → 5 (identity goals, 8c shared them already); whole replay 84 → 48 tables
+    (462M → 287M states, 111 → 69 MB), built from scratch in 35.5 → 25.2 s. 40M: 123 → 77 tables, 673 → 392 MB (cfop-oll-pll 352 → 220 MB, pseudo ~232 → 118 MB), built in 156 s.
+  - Replay (all 1,356 requests, 10M and 40M): identical answers, start bounds and nodes. Per node: xxxcross ~2% slower (4 alternating runs, 1067–1077 vs 1078–1099 ms; the rotated turn map), the rest within noise.
+  - Method runs (`record.js`, all 5 scenarios, 2 passes): identical moves in all 30 runs; first pass (table builds) dr-finish 2.2 → 1.6 s, xxxcross 12.2 → 5.1 s, cfop-oll-pll 17.4 → 10.7 s, pseudo 2.1 → 1.8 s,
+    bld-flip 29.1 → 28.8 s; warm pass the same (7.9 / 7.8 s in total).
+  - Testing: replay old (8f bundle, the budget session's cached tables) vs new (fresh tables, then cached), alternating; per-scenario replays for table counts; `record.js` old vs new with moves diffed.
+    `bench/out/replay-before.js` is now the budget code (before this item).
 ---
 
 ## Part 1 — Groups + centers
@@ -792,11 +808,22 @@ Two things had to change to get there: the fill's turn-table cap (6-edge tables 
 so the 2-pass benchmarks never reach them. Checked in a browser: only `navigator.deviceMemory` inside a worker (Chromium 152); the built page wasn't run.
 Not done from the Do list: extra rotated lookups chosen by sample (8c), and letting measures switch plans (8e's F2L bound).
 
-### Part 8g — Symmetry-reduced numbering (only if still needed)
+### Part 8g — Symmetry (one item per chat, each compared with the code before it)
 
-**Do:** one entry per symmetry class (up to 16× for DR goals, 48× for the whole cube), canonical form per lookup (symmetry move tables for the coordinate). Biggest table gain, hardest change.
+**Do:**
+1. Rotated sub-goals share one table: 8c's rotated copies for every goal, not only whole-cube ones (one table per rotation class of sub-goals, from any goal). Cheap, and it helps every F2L-type method.
+2. Symmetry-reduced numbering (only if still needed): one entry per symmetry class (up to 16× for DR goals, 48× for the whole cube), canonical form per lookup (symmetry move tables for the coordinate). Biggest table gain, hardest change.
+   Checked while doing item 1: with cubing's orientations, a rotation's effect on twists depends on where pieces sit for most rotations (y flips E-slice edges, x and z twist corners), so the Kociemba split
+   (reduce one coordinate, carry the others through small conjugation tables) only fits a few goals: DR's whole goal (reduce the edges' 1.01M positions × EO, conjugate CO) ≈ 278M entries with the 8 DR rotations
+   (≈ 139M with mirrors, which the KPuzzle doesn't define), past both budgets; all corners with twists under the 8 rotations that keep U/D ≈ 11M (fits 40M). Do it for DR + finish (exact DR distances would make
+   8d's DR listing cheap) only together with a budget rule for one big exact table on 8 GB devices.
 
 **Test:** same move counts; table sizes and nodes vs 8f.
+
+**Done (item 1, rotated sub-goals):** see "Rotated sub-goals (Part 8g, first item)" in Facts. Identical answers, start bounds and nodes on the whole replay (10M and 40M) and identical moves in every method run; table memory
+down by ~40% (10M: 84 → 48 tables, 111 → 69 MB; 40M: 123 → 77 tables, 673 → 392 MB), so first runs build less (XXXCross 12.2 → 5.1 s, CFOP + OLL + PLL 17.4 → 10.7 s with builds), at ~2% per node on XXXCross.
+Whole-cube goals (DR finish, BLD) were already shared by 8c and are unchanged. Not checked in a real browser (the worker didn't change; a stored table whose key changed is built again once under its new key).
+Next item: symmetry classes inside a table, only if the numbers point at it (see the note under item 2).
 
 ### Part 8h — Parallel search (only if still needed)
 

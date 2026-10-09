@@ -1,6 +1,5 @@
 // Goals too big for one exact table: split into sub-tables that each fit (the goal with some pieces, or their twists, left out), then IDA* guided by the largest of their distances
 
-use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -9,9 +8,9 @@ use cubing::alg::Move;
 use cubing::kpuzzle::{KPatternData, KPatternOrbitData, KPuzzle, KPuzzleOrbitName, KTransformationData};
 use wasm_bindgen::prelude::*;
 
-use crate::coords::{enumerate_turns, estimate_size, pattern_data, Coords, Turn, Units};
+use crate::coords::{enumerate_turns, estimate_size, pattern_data, twist_factor, Coords, Turn, Units};
 use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
-use crate::symmetry::{Shape, Symmetry};
+use crate::symmetry::{Rotation, Rotations};
 use crate::table::{near_values, DistanceTable, TableCore, UNSEEN};
 
 // Same error text as twips, so the engine treats every solver the same
@@ -26,6 +25,8 @@ const UNKNOWN: u8 = u8::MAX - 1;
 const MAX_LENGTH: u8 = 40;
 // No turn made yet (any turn may come first)
 const NO_GROUP: usize = usize::MAX;
+// Most targets a goal may have for its sub-goals to be compared in every rotation (each rotation relabels and prints them all)
+const MAX_ROTATED_TARGETS: usize = 64;
 
 // One piece class of the goal that sub-tables may track: a single piece or a group sharing an id, with or without a twist that counts,
 // and the moves that turn its spots in the first target (bit = turn group, mod 64)
@@ -49,11 +50,16 @@ struct Relabel {
     orbits: Vec<OrbitRelabel>,
 }
 
-// One orbit's relabeling: the new id for each old id, and whether that piece's twist still counts
+// One orbit's relabeling: the new id for each old id, whether that piece's twist still counts, and where each spot's piece comes from
+// (a rotated view: spot s takes the piece on spot from[s], twisted by add[s] plus its id's amount in per_id; a plain view takes each spot's own piece as it is)
 struct OrbitRelabel {
     name: KPuzzleOrbitName,
+    orientations: u8,
     ids: [u8; 256],
     twist: [bool; 256],
+    from: Vec<u8>,
+    add: Vec<u8>,
+    per_id: [u8; 256],
 }
 
 impl Relabel {
@@ -80,6 +86,16 @@ impl Relabel {
                     None => (temporary[id], twist[id]) = (id as u8, true),
                 }
             }
+            // A set whose only rest piece is a piece of its own keeps that piece's id (twist-free): the table knows where it is either way, and the sub-goal then
+            // reads the same whichever piece of the set was left out (a DR finish's "all edges" tables are rotated copies of each other)
+            for orbit in full.orbits().filter(|orbit| orbit.name == info.name) {
+                let rest: Vec<u8> = orbit.spots.iter().map(|&spot| first.pieces[spot as usize]).filter(|&id| temporary[id as usize] == REST).collect();
+                if let [id] = rest[..] {
+                    if first.pieces.iter().filter(|&&piece| piece == id).count() == 1 {
+                        temporary[id as usize] = id;
+                    }
+                }
+            }
             // Canonical ids: the first spot each temporary id fills in the first target
             let mut canonical = [UNKNOWN; 256];
             for (spot, &piece) in first.pieces.iter().enumerate() {
@@ -93,23 +109,65 @@ impl Relabel {
             for id in 0..256 {
                 ids[id] = canonical[temporary[id] as usize];
             }
-            orbits.push(OrbitRelabel { name: info.name.clone(), ids, twist });
+            let count = info.num_pieces as usize;
+            orbits.push(OrbitRelabel { name: info.name.clone(), orientations: info.num_orientations, ids, twist, from: (0..count as u8).collect(), add: vec![0; count], per_id: [0; 256] });
         }
         Relabel { orbits }
     }
 
-    // The pattern as the sub-table sees it (left-out twists become 0, ignored)
+    // This sub-goal read through a rotation (a plain relabeling's rotated view, given the goal's first target): each spot takes the piece the rotation brings there,
+    // each twisted id gains the amount that leaves the first target untwisted, and ids are renumbered by the first spot they fill in the rotated first target,
+    // so rotated copies of one sub-goal give equal targets (any per-id twist amount keeps distances; this choice only makes copies match)
+    fn rotated(&self, rotation: &Rotation, first: &KPatternData) -> Relabel {
+        let mut orbits = vec![];
+        for (o, orbit) in self.orbits.iter().enumerate() {
+            let data = &first[&orbit.name];
+            let count = data.pieces.len();
+            let mods = data.orientation_mod.clone().unwrap_or_else(|| vec![0; count]);
+            let (from, add) = (&rotation.from[o], &rotation.add[o]);
+            let mut per_id = [0u8; 256];
+            let mut set = [false; 256];
+            let mut canonical = [UNKNOWN; 256];
+            for spot in 0..count {
+                let source = from[spot] as usize;
+                let piece = data.pieces[source] as usize;
+                // The first spot an id lands on decides its new id, and (twist counted) the amount that brings that piece back to twist 0
+                if orbit.ids[piece] != UNKNOWN && canonical[orbit.ids[piece] as usize] == UNKNOWN {
+                    canonical[orbit.ids[piece] as usize] = spot as u8;
+                }
+                if orbit.twist[piece] && !set[piece] {
+                    let factor = twist_factor(mods[source], orbit.orientations);
+                    per_id[piece] = (factor - (data.orientation[source] + add[spot]) % factor) % factor;
+                    set[piece] = true;
+                }
+            }
+            // Old id → new id (ids no target holds stay unknown)
+            let mut ids = [UNKNOWN; 256];
+            for id in 0..256 {
+                if orbit.ids[id] != UNKNOWN {
+                    ids[id] = canonical[orbit.ids[id] as usize];
+                }
+            }
+            orbits.push(OrbitRelabel { name: orbit.name.clone(), orientations: orbit.orientations, ids, twist: orbit.twist, from: from.clone(), add: add.clone(), per_id });
+        }
+        Relabel { orbits }
+    }
+
+    // The pattern as the sub-table sees it (left-out twists become 0, ignored), through the view's rotation if any
     fn apply(&self, pattern: &KPatternData) -> KPatternData {
         let mut out = KPatternData::new();
         for orbit in &self.orbits {
             let data = &pattern[&orbit.name];
             let mods = data.orientation_mod.clone().unwrap_or_else(|| vec![0; data.pieces.len()]);
             let mut relabeled = KPatternOrbitData { pieces: vec![], orientation: vec![], orientation_mod: Some(vec![]) };
-            for (spot, &piece) in data.pieces.iter().enumerate() {
-                let keep_twist = orbit.twist[piece as usize];
-                relabeled.pieces.push(orbit.ids[piece as usize]);
-                relabeled.orientation.push(if keep_twist { data.orientation[spot] } else { 0 });
-                relabeled.orientation_mod.as_mut().unwrap().push(if keep_twist { mods[spot] } else { 1 });
+            for spot in 0..data.pieces.len() {
+                let source = orbit.from[spot] as usize;
+                let piece = data.pieces[source] as usize;
+                let keep_twist = orbit.twist[piece];
+                relabeled.pieces.push(orbit.ids[piece]);
+                let factor = twist_factor(mods[source], orbit.orientations);
+                relabeled.orientation.push(if keep_twist { (data.orientation[source] + orbit.add[spot] + orbit.per_id[piece]) % factor } else { 0 });
+                relabeled.orientation_mod.as_mut().unwrap().push(if keep_twist { mods[source] } else { 1 });
             }
             out.insert(orbit.name.clone(), relabeled);
         }
@@ -368,12 +426,18 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
     (result, ida.nodes)
 }
 
-// One sub-table: how a pattern is relabeled for it, its targets as JSON (the cache key), its estimated size, and the table once attached
+// One sub-table: its targets as JSON (the cache key), its estimated size, and the table once attached
 struct Sub {
-    relabel: Relabel,
     targets: String,
     states: u64,
     table: Option<Rc<TableCore>>,
+}
+
+// One lookup per node: the sub-table it reads, the rotation it reads it through (0 = as it is), and how a pattern becomes that table's
+struct View {
+    sub: usize,
+    rotation: usize,
+    relabel: Relabel,
 }
 
 // A goal searched with IDA*, bounded by the largest of its sub-tables' distances (each sub-table is a lower bound)
@@ -385,10 +449,10 @@ pub struct SplitSearch {
     // Each target's tracked pieces (outer, inner)
     goals: HashSet<(Units, Units)>,
     subs: Vec<Sub>,
-    // Lookups per node: (sub-table, rotation), a sub-table read on the state as it is (rotation 0) or on a rotated copy (a planned table that is a rotated copy of another)
-    slots: Vec<(usize, usize)>,
-    // Identity goals (one target, each piece its own id): the rotations that keep the moves
-    symmetry: Option<Symmetry>,
+    // Lookups per node: each planned sub-table, read through the rotation that turns it into its table's sub-goal
+    views: Vec<View>,
+    // The rotations that keep the moves (their turn maps, for rotated views)
+    rotations: Rotations,
     // Move pruning: may a turn of group b follow one of group a ([a * groups + b])
     follow: Vec<bool>,
     groups: usize,
@@ -472,54 +536,54 @@ impl SplitSearch {
                 }
             }
         }
-        // Identity goals (one target, each piece its own id): the rotations that keep the moves, and each table's pieces as (orbit, home spot, twist counted);
-        // a table holding every item of a spot set also knows where the set's left-out piece is, so that piece counts as held too (DR finish: all 12 edges)
-        let symmetry = Symmetry::new(&kpuzzle, &closed, &full.turns);
-        let orbit_index = |name: &KPuzzleOrbitName| kpuzzle.orbit_info_iter().position(|info| info.name == *name).unwrap_or(0);
-        let shape_of = |kept: &Kept, symmetry: &Symmetry| -> Shape {
-            let mut shape: Shape = kept.iter().map(|&(item, twist)| (items[item].orbit as u8, symmetry.home(items[item].orbit, items[item].id), twist)).collect();
-            for set in full.orbits() {
-                let o = orbit_index(&set.name);
-                let holds = |id: u8| shape.iter().any(|&(orbit, home, _)| orbit as usize == o && home == symmetry.home(o, id));
-                if let Some(left_out) = set.implicit.filter(|_| set.classes.iter().all(|class| holds(class.id))) {
-                    shape.push((o as u8, symmetry.home(o, left_out), false));
-                }
-            }
-            shape.sort_unstable();
-            shape
-        };
+        // The rotations that keep the moves (24 for face turns, 8 for DR moves); sub-goals are compared in each of them unless the goal has "solvable with" moves
+        // (its sub-goals carry those moves) or too many targets to print in every rotation
+        let rotations = Rotations::new(&kpuzzle, &full.turns);
+        let rotate = free.is_empty() && targets.len() <= MAX_ROTATED_TARGETS;
+        let json = |target: &KPatternData| pattern_json(&kpuzzle, target);
         let mut subs: Vec<Sub> = vec![];
-        let mut shapes: Vec<Shape> = vec![];
-        let mut slots: Vec<(usize, usize)> = vec![];
+        let mut views: Vec<View> = vec![];
+        let mut seen: Vec<String> = vec![];
         for kept in plans {
-            // A rotated copy of a table already planned (whole cube: "4 U edges + UFR" and "+ UBR") reads that table on the rotated state instead of being built
-            if let Some(symmetry) = &symmetry {
-                let shape = shape_of(&kept, symmetry);
-                if let Some(found) = (0..subs.len()).find_map(|s| (1..symmetry.rotations.len()).find(|&r| symmetry.turned(&shapes[s], r) == shape).map(|r| (s, r))) {
-                    // The same rotated copy from the other plan is read once
-                    if !slots.contains(&found) {
-                        slots.push(found);
-                    }
-                    continue;
-                }
-            }
-            // This sub-table's targets, its size, and its cache key (with the goal's moves when they add targets to this sub-goal)
+            // This sub-table's targets, its size, and its targets as JSON (with the goal's moves when they add targets to this sub-goal); one both plans found is read once
             let relabel = Relabel::new(&kpuzzle, &targets, &full, &items, &kept);
             let relaxed: Vec<KPatternData> = targets.iter().map(|target| relabel.apply(target)).collect();
             let states = estimate_size(&kpuzzle, &relaxed, &full.turns)?;
-            let targets = table_targets(&kpuzzle, &relaxed, &free, &full.turns, |target| pattern_json(&kpuzzle, target))?;
-            if !subs.iter().any(|sub| sub.targets == targets) {
-                shapes.push(symmetry.as_ref().map_or(vec![], |symmetry| shape_of(&kept, symmetry)));
-                slots.push((subs.len(), 0));
-                subs.push(Sub { relabel, targets, states, table: None });
+            let own = table_targets(&kpuzzle, &relaxed, &free, &full.turns, json)?;
+            if seen.contains(&own) {
+                continue;
             }
+            seen.push(own.clone());
+            // The table to read: of every rotated copy of this sub-goal, the one whose targets print first (the same table for every copy, from any goal:
+            // "cross + DFR" and "cross + DBL" share one), read through the rotation that turns this sub-goal into it
+            let mut best: (String, usize, Option<Relabel>) = (own, 0, None);
+            if rotate {
+                for (r, rotation) in rotations.list.iter().enumerate() {
+                    let candidate = relabel.rotated(rotation, &targets[0]);
+                    let turned: Vec<KPatternData> = targets.iter().map(|target| candidate.apply(target)).collect();
+                    let text = table_targets(&kpuzzle, &turned, &free, &full.turns, json)?;
+                    if best.2.is_none() || text < best.0 {
+                        best = (text, r, Some(candidate));
+                    }
+                }
+            }
+            let (key, rotation, view) = (best.0, best.1, best.2.unwrap_or(relabel));
+            // Its table: one already planned with the same targets, or a new one
+            let sub = match subs.iter().position(|sub| sub.targets == key) {
+                Some(sub) => sub,
+                None => {
+                    subs.push(Sub { targets: key, states, table: None });
+                    subs.len() - 1
+                }
+            };
+            views.push(View { sub, rotation, relabel: view });
         }
         if subs.is_empty() {
             return Err("No sub-table fits".to_owned());
         }
         // Move pruning: never two turns of one move in a row, and of two moves that commute only the lower-numbered one first
         let (follow, groups) = move_pruning(&kpuzzle, &full.turns);
-        Ok(SplitSearch { kpuzzle, full, goals, subs, slots, symmetry, follow, groups, nodes: 0.0 })
+        Ok(SplitSearch { kpuzzle, full, goals, subs, views, rotations, follow, groups, nodes: 0.0 })
     }
 
     // Number of sub-tables
@@ -555,10 +619,9 @@ impl SplitSearch {
             return Ok(f64::INFINITY);
         }
         let mut bound = 0;
-        for &(s, r) in &self.slots {
-            let sub = &self.subs[s];
-            let table = sub.table.as_ref().ok_or("A sub-table isn't attached")?;
-            match table.read(&sub.relabel.apply(&self.rotated(&start, r))).map(|(outer, inner)| table.distance(&outer, inner)) {
+        for view in &self.views {
+            let table = self.subs[view.sub].table.as_ref().ok_or("A sub-table isn't attached")?;
+            match table.read(&view.relabel.apply(&start)).map(|(outer, inner)| table.distance(&outer, inner)) {
                 Some(distance) if distance != UNSEEN => bound = bound.max(distance),
                 _ => return Ok(f64::INFINITY),
             }
@@ -591,30 +654,22 @@ impl SplitSearch {
         let start = pattern_data(&self.kpuzzle, start_json)?;
         let options = read_options(options_json)?;
         let tables: Vec<Slot> = self
-            .slots
+            .views
             .iter()
-            .map(|&(s, r)| {
-                let table = self.subs[s].table.clone().ok_or("A sub-table isn't attached")?;
-                let turns = self.symmetry.as_ref().filter(|_| r > 0).map(|symmetry| symmetry.rotations[r].turns.clone());
+            .map(|view| {
+                let table = self.subs[view.sub].table.clone().ok_or("A sub-table isn't attached")?;
+                let turns = (view.rotation > 0).then(|| self.rotations.list[view.rotation].turns.clone());
                 Ok(Slot { table, turns })
             })
             .collect::<Result<_, String>>()?;
-        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each lookup's start state (rotated for rotated lookups)
+        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each lookup's start state (rotated for rotated views)
         let whole = self.full.read(&start).ok_or(NO_SOLUTION)?;
-        let starts = self.slots.iter().zip(&tables).map(|(&(s, r), slot)| slot.table.read(&self.subs[s].relabel.apply(&self.rotated(&start, r)))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
+        let starts = self.views.iter().zip(&tables).map(|(view, slot)| slot.table.read(&view.relabel.apply(&start))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
         // Deepen, checking answers on the whole goal
         let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
         let (answers, nodes) = deepen(&tables, &starts, whole, &check, &options, list);
         self.nodes = nodes as f64;
         answers.map_err(|error| error.to_owned())
-    }
-
-    // A pattern as a lookup with this rotation reads it (rotation 0: as it is)
-    fn rotated<'p>(&self, pattern: &'p KPatternData, r: usize) -> Cow<'p, KPatternData> {
-        match &self.symmetry {
-            Some(symmetry) if r > 0 => Cow::Owned(symmetry.rotate(pattern, r)),
-            _ => Cow::Borrowed(pattern),
-        }
     }
 }
 
