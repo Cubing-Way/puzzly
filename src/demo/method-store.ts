@@ -3,7 +3,7 @@
 // Example methods (plain data, no method code)
 import examples from "./example-methods.json";
 // Checks and cleans up method data
-import { readMethod, type Method } from "./engine";
+import { readMethod, type Method } from "../engine";
 
 // localStorage key for the saved methods (an object of name → method)
 const STORAGE_KEY = "puzzly.methods";

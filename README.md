@@ -35,6 +35,8 @@ Blindfolded (BLD) steps keep every other piece exactly as it is, so their goal d
 
 A table takes a quarter byte per state (10M states = 2.4 MB): it keeps each state's distance mod 3, since one move changes a distance by at most one, so the search works out exact distances from the start's (found by walking down to the goal) move by move. Tables of 100k states and up are stored in the browser (IndexedDB, database `puzzly-tables`), so after a reload they load in a few ms instead of being rebuilt (e.g. CFOP + OLL: about 3 s the first time, under 1 s after a reload). While the worker builds or loads tables, the status line says *building tables…* / *loading stored tables…*, and the final status says how many it built or loaded. After 60 s without searches the worker stops, so its memory goes back to the system; the next search starts a fresh one, which loads the stored tables. Clearing the site's data in the browser removes them (they're rebuilt when needed).
 
+Long searches use more than one core. A split search first runs alone in the worker for up to 20k search nodes (~60 ms), and almost every search ends there. A longer one carries on from where it stopped, one IDA* round (one answer length) at a time. Each big round is cut into tasks by its first two moves (~240 with face turns), handed out one at a time to helper workers and to the worker itself. There is one helper per extra core the browser reports, at most 3, started on the first long search. A round's answer is the one under the first task (in move order) that has one, so every answer is exactly the one a single search gives; tasks after it aren't waited for. Each helper gets its own copy of the tables of the goals it helps with (sent once by the worker, up to 128 MB per helper, 256 MB on 8 GB devices). On a 2-core / 4-thread laptop, heavy searches run 1.4–1.75× faster (XXXCross 0.86 → 0.55 s, PLL that keeps F2L 2.1 → 1.2 s, a BLD flip 3.2 → 1.7 s); the first long search after the worker starts pays ~0.3 s to start the helpers. Lists (lookahead, method search) and table builds still use one core. Where a worker can't start workers of its own, searches stay on one core.
+
 Build it once before `npm run dev` / `npm run build`, and again after changing it (needs Rust, the `wasm32-unknown-unknown` target and wasm-pack):
 
 ```bash
@@ -49,8 +51,8 @@ npm run build-search
 npm run bench-build
 ```
 
-- `node bench/out/record.js [requests file] [scenarios] [passes]` runs five scenarios on fixed seeded scrambles through the real engine and worker: *dr-finish* (DR, then the whole cube with `U D R2 L2 F2 B2`), *xxxcross*, *cfop-oll-pll* (the CFOP example plus OLL and PLL that keep F2L), *pseudo-lookahead* (the pseudo-slotting example) and *bld-flip* (two pure 2-edge flips). It prints each run's moves and time, twice (first with table builds, then warm), and saves every request the engine sent to the worker (default `bench/out/requests.jsonl`). A full run takes 10–20 minutes. Node reports no device memory, so the worker keeps 10M tables; `DEVICE_GB=8` makes it act as on an 8 GB device.
-- `node bench/out/replay.js [requests file] [results file] [scenarios]` sends those requests straight to the Rust search, each goal on its biggest tables, and prints per scenario: time, search nodes, µs per node, and how far the start bound is below the real answer length. Tables are saved in `bench/out/tables` after the first run (`FRESH=1` builds them again). Split goals use 10M sub-tables, or `BIG=40000000` for the 8 GB size.
+- `node bench/out/record.js [requests file] [scenarios] [passes]` runs five scenarios on fixed seeded scrambles through the real engine and worker: *dr-finish* (DR, then the whole cube with `U D R2 L2 F2 B2`), *xxxcross*, *cfop-oll-pll* (the CFOP example plus OLL and PLL that keep F2L), *pseudo-lookahead* (the pseudo-slotting example) and *bld-flip* (two pure 2-edge flips). It prints each run's moves and time, twice (first with table builds, then warm), and saves every request the engine sent to the worker (default `bench/out/requests.jsonl`). A full run takes 10–20 minutes. Node reports no device memory, so the worker keeps 10M tables; `DEVICE_GB=8` makes it act as on an 8 GB device. The worker sees one core unless `CORES=4` is set: then it starts 3 search helpers in real threads (`bench/out/helper.js`), as on a 4-core device.
+- `node bench/out/replay.js [requests file] [results file] [scenarios]` sends those requests straight to the Rust search, each goal on its biggest tables, and prints per scenario: time, search nodes, µs per node, and how far the start bound is below the real answer length. Tables are saved in `bench/out/tables` after the first run (`FRESH=1` builds them again). Split goals use 10M sub-tables, or `BIG=40000000` for the 8 GB size. `CORES=4` spreads long searches over 3 helper threads, the way the worker does (default 1: one core).
 - `node bench/compare.mjs before.jsonl after.jsonl` checks that two replays give the same answers (and node counts) and prints the speed-up per scenario.
 
 The replay bundle carries the Rust search code it was built with, so to compare a Rust change: record once, copy `bench/out/replay.js` to `bench/out/replay-before.js` and replay with it into `before.jsonl`, then change the code, run `npm run build-search` and `npm run bench-build`, replay into `after.jsonl` and compare.
@@ -92,7 +94,7 @@ The replay bundle carries the Rust search code it was built with, so to compare 
 
 ## Method files
 
-A method is plain JSON, the same in saved methods, exported files and `src/example-methods.json`:
+A method is plain JSON, the same in saved methods, exported files and `src/demo/example-methods.json`:
 
 ```json
 {
@@ -115,18 +117,56 @@ The blindfolded fields are:
 
 A 3-style edges step is `{ "name": "Edges", "pieces": "", "buffer": "UF", "targetsPerStep": 2, "parity": "UFR UBR", "repeat": true }` (the other fields default). Left-out fields get defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no lookahead, no repeat), and a bad field is reported with its step number.
 
+## Using the engine in another app
+
+The engine (`src/engine/`) has no page code: the test bench (`src/demo/`) is just one app on top of it. Everything a page needs comes from `src/engine/index.ts`. Another app brings three small scripts of its own, like the test bench's in `src/demo/page/`:
+
+```ts
+// The app, page side: say how the search worker is started, then use the engine
+import { loadEngine, solveStep } from "./engine";
+
+await loadEngine({ searchWorker: () => new Worker("search-worker.js", { type: "module" }) });
+const result = await solveStep("R U R' U' F2 D L2", "DF DR DB DL");
+console.log(result.solution.toString());
+```
+
+```ts
+// search-worker.ts: the search worker's script
+import wasm from "../search/pkg/puzzly_search_bg.wasm";
+import { runSearchWorker } from "./engine/worker/search-worker";
+
+runSearchWorker({ wasm, helper: () => new Worker("search-helper.js", { type: "module" }) });
+```
+
+```ts
+// search-helper.ts: helper workers for long searches (optional: without `helper` above, every search stays on one core)
+import wasm from "../search/pkg/puzzly_search_bg.wasm";
+import { runSearchHelper } from "./engine/worker/search-helper";
+
+runSearchHelper({ wasm });
+```
+
+- `wasm` is the compiled Rust search code: its bytes (esbuild's binary loader, as here), a URL to fetch it from, or a compiled module, so it works with any bundler.
+- `loadEngine` also takes `workerIdleMs` (how long an idle search worker is kept, default 60 s). `runSearchWorker` also takes `maxHelpers` (default 3) and `tableDatabase` (the IndexedDB database built tables are stored in, default `puzzly-tables`; `null` = don't store them).
+- A step search without a `searchWorker` stops with a message; reading goal text, checking answers (`reachesGoal`) and the other text helpers work without one.
+- `searchWorker` and `helper` may return anything shaped like a Worker (`postMessage`, `onmessage`, `onerror`, `terminate`): the benchmark runs the search worker in the same Node process that way (`bench/setup.ts`).
+- Keep `src/engine/` and `search/` (with its built `pkg`) side by side: the worker modules import the Rust glue from `search/pkg`.
+
 ## Folder layout
 
 | Path | What's in it |
 | --- | --- |
-| `src/engine.ts` | Cube engine: piece names, goal masks (and the targets of relative groups), untouched / BLD goals (buffer tracing, parity, relabeling to the solved cube), solvers (`solveStep`, `stepCandidates` for every answer up to N extra moves), methods with lookahead and repeated steps (`runMethod`), the method search for the fewest moves in total (`searchMethod`), goal check (with offsets, solvable-with moves and untouched pieces). No page code, so it can move to another app. |
-| `src/main.ts` | Test bench page logic |
-| `src/method-store.ts` | Example, saved (localStorage) and file methods for the page |
-| `src/example-methods.json` | Example methods, as data only |
-| `src/index.html`, `src/index.css` | Test bench page |
-| `src/search-worker.ts` | Search worker: an exact table for small goals, split tables + IDA* for bigger ones (small sub-tables first), twips as the fallback; measures each combo's distance before searching, lists every answer up to a length for lookahead (or a page of one length, for the method search); kept up to 256 MB, tables of 100k+ states stored in IndexedDB; stopped after 60 s idle |
-| `search/` | Rust search crate: `src/table.rs` exact distance tables (and their saved bytes), `src/coords.rs` their state numbering, `src/split.rs` split tables + IDA* (first answer, or every answer up to a length, or a page of them; BLD goals also get whole-orbit tables), `src/symmetry.rs` cube rotations that keep a step's moves (rotated copies of a sub-goal, from any goal, read through one table), `src/solvable.rs` targets closed under a step's solvable-with moves (and the targets' JSON options), `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |
-| `script/build.js` | Dev server and build (barely-a-dev-server + esbuild) |
+| `src/engine/` | The cube engine, with no page code, so it can be used by any app (see *Using the engine in another app*). `index.ts`: everything an app imports. `setup.ts`: `loadEngine`. `types.ts`: goals, step options and results, methods and their runs. `messages.ts`: error messages |
+| `src/engine/core/` | The cube itself. `cube.ts`: piece names and grips. `moves.ts`: joining, inverting and counting moves. `puzzle.ts`: the loaded cube definition and the cube held after a scramble and some moves. `turns.ts`: moves as other grips see them. `cells.ts`: patterns as one number per spot. `cache.ts`: lookup caches |
+| `src/engine/goal/` | What a step asks for. `goal.ts`: roles, goal text, merging goals, goal masks. `grips.ts`: a goal named for another grip. `offsets.ts`: offsets. `solvable.ts`: solvable-with moves. `targets.ts`: a goal's targets (and the placements of relative groups). `untouched.ts`: goals that keep every other piece untouched (relabeling to the solved cube). `bld.ts`: buffer tracing and parity. `stickering.ts`: a goal as a sticker mask for cubing.js's 3D viewer |
+| `src/engine/step/` | Solving one step. `grip-goals.ts`: its goal in each grip worth trying. `estimate.ts`: how far each piece is on its own. `step-combos.ts`: every alternative × grip, measured and sorted closest first. `combo.ts`: one combo's shortest answer. `step.ts`: `solveStep`, `stepCandidates` (every answer up to N extra moves), `solveFull`. `check.ts`: `reachesGoal` (with offsets, solvable-with moves and untouched pieces) |
+| `src/engine/method/` | Methods. `config.ts`: `readMethod` (checks method data). `run.ts`: `runMethod`, with lookahead and repeated steps. `later-goals.ts`: lower bounds from the goals of later steps. `search.ts`: `searchMethod`, the run with the fewest moves in total |
+| `src/engine/worker/` | The search worker. Page side: `client.ts` (starts it the way the app says, sends requests, stops it after 60 s idle) and `protocol.ts` (the messages). Worker side: `search-worker.ts` (`runSearchWorker`: measures each combo's distance before searching, searches, lists every answer up to a length for lookahead, or a page of one length for the method search), `solvers.ts` (an exact table for small goals, split tables + IDA* for bigger ones, small sub-tables first, twips as the fallback; kept up to 256 MB), `table-store.ts` (tables of 100k+ states stored in IndexedDB), `limits.ts` (table sizes and memory budgets), `parallel.ts` (helper pool for long split searches: a short solo search first, then each big IDA* round cut by its first two moves and handed out to the helpers and the search worker, keeping the single-search answer) and `search-helper.ts` (`runSearchHelper`: holds table copies, plans each goal like the search worker, searches the round tasks it's sent) |
+| `src/demo/` | Test bench page code. `app.ts`: wires the form and starts the page. `dom.ts`: page elements. `status.ts`: status line. `form.ts`: reads the step form. `chips.ts`: piece chips and presets. `viewer.ts`: 3D cube. `results.ts`: result panel and runs tables. `solve.ts`: scramble and solve. `step-form.ts`, `method-editor.ts`, `method-run.ts`: the method panel. `method-store.ts`: example, saved (localStorage) and file methods. `example-methods.json`: example methods, as data only |
+| `src/demo/page/` | What the dev server and the build serve: `index.html`, `index.css`, and the page's three scripts, each bundled as its own file: `main.ts` (starts the page), `search-worker.ts` and `search-helper.ts` (the engine's worker and helper with this build's Rust code) |
+| `search/` | Rust search crate: `src/table.rs` exact distance tables and their saved bytes (`table/fill.rs` fills them), `src/coords.rs` their state numbering (`coords/orbit.rs` reads an orbit from the targets, `coords/rank.rs` ranks its states, `coords/tables.rs` its turn tables, `coords/part.rs` orbits numbered together), `src/split.rs` split tables + IDA* (first answer, or every answer up to a length, or a page of them, or one round through given first moves for parallel searches; BLD goals also get whole-orbit tables; `split/plan.rs` picks each sub-table's pieces, `split/relabel.rs` turns a pattern into a sub-table's, `split/driver.rs` deepens one bound at a time, `split/ida.rs` is one IDA* run), `src/symmetry.rs` cube rotations that keep a step's moves (rotated copies of a sub-goal, from any goal, read through one table), `src/solvable.rs` targets closed under a step's solvable-with moves (and the targets' JSON options), `src/lib.rs` twips searches; built to `search/pkg` by `npm run build-search` |
+| `bench/` | Node benchmark of the search (see *Benchmark*): `record.ts`, `replay.ts`, `compare.mjs`, `setup.ts` (runs the search worker in the same process), `helper.ts` and friends (search helpers in real threads), `build.mjs` |
+| `script/build.js` | Dev server and build (barely-a-dev-server + esbuild), serving `src/demo/page` |
 
 ## Browser support
 

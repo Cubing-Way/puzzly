@@ -1,16 +1,20 @@
-// Engine-level benchmark (fake Worker): heavy method runs and steps on seeded scrambles, timed per step; pass 1 also records every worker request
+// Engine-level benchmark (the search worker runs in this process): heavy method runs and steps on seeded scrambles, timed per step; pass 1 also records every worker request
 // for the direct-wasm replay (bench/replay.ts); pass 2 runs the same again with every table already built (warm)
 // Usage: node bench/out/record.js [requests file, - = none] [scenarios, comma-separated, all = every one] [passes, default 2]
-import { recorded, recording, random, scramble } from "./setup";
-import "../src/search-worker.ts";
-import { loadEngine, solveStep, runMethod, readMethod, reachesGoal, countMoves } from "../src/engine.ts";
-import examples from "../src/example-methods.json";
+import { recorded, recording, random, scramble, inProcessWorker } from "./setup";
+import { nodeHelper } from "./node-helper";
+import wasm from "../search/pkg/puzzly_search_bg.wasm";
+import { runSearchWorker } from "../src/engine/worker/search-worker.ts";
+import { loadEngine, solveStep, runMethod, readMethod, reachesGoal, countMoves } from "../src/engine/index.ts";
+import examples from "../src/demo/example-methods.json";
 import { cube3x3x3 } from "cubing/puzzles";
 import { KPattern } from "cubing/kpuzzle";
 import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 import { writeFileSync } from "node:fs";
 
-await loadEngine();
+// The search worker runs in this process (its helpers, with CORES > 1, in real threads), and the engine talks to it there
+runSearchWorker({ wasm, helper: nodeHelper });
+await loadEngine({ searchWorker: inProcessWorker });
 const FACE = ["U", "R", "F", "D", "L", "B"];
 const ALL = "UF UR UB UL DF DR DB DL FR FL BR BL UFR UBR UBL UFL DFR DFL DBL DBR";
 const DR = "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o2 FL:o2 BR:o2 BL:o2 UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o";

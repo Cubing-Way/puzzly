@@ -1,8 +1,10 @@
 // Direct-wasm benchmark: replays recorded worker requests (bench/record.ts) on the Rust search code bundled in, each goal on its big plan (exact table up to 10M states,
 // else split tables of up to BIG states each, as the worker ends up using), and reports per scenario: bound vs real length, nodes, µs per node, time, table builds
 // Usage: node bench/out/replay.js [requests file] [results file, - = none] [scenarios, comma-separated, all = every one]; FRESH=1 builds every table,
-// BIG=40000000 plans split goals like the worker on a device with 8 GB or more (default 10M)
+// BIG=40000000 plans split goals like the worker on a device with 8 GB or more (default 10M); CORES=4 spreads long split searches over 3 helper threads (default 1: none)
 import { initSync, SplitSearch, DistanceTable } from "../search/pkg/puzzly_search.js";
+import { HelperPool, type ParallelGoal } from "../src/engine/worker/parallel";
+import { nodeHelper } from "./node-helper";
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -49,8 +51,8 @@ function table(moves: string, targets: string, maxStates: number): DistanceTable
   return built;
 }
 
-// Each goal's solver: an exact table if it fits, else a split search with its sub-tables attached, else null (twips: not benchmarked)
-type Solver = { kind: "table"; solver: DistanceTable } | { kind: "split"; solver: SplitSearch } | null;
+// Each goal's solver: an exact table if it fits, else a split search with its sub-tables attached (and its goal for the helpers), else null (twips: not benchmarked)
+type Solver = { kind: "table"; solver: DistanceTable } | { kind: "split"; solver: SplitSearch; goal: ParallelGoal } | null;
 const solvers = new Map<string, Solver>();
 function solverFor(r: any): Solver {
   const moves = JSON.stringify(r.moves);
@@ -63,7 +65,8 @@ function solverFor(r: any): Solver {
     try {
       const split = new SplitSearch(kpuzzle, r.targets, moves, BIG);
       for (let i = 0; i < split.tables(); i++) split.attach(i, table(moves, split.targets(i), Math.max(BIG, split.states(i))));
-      solver = { kind: "split", solver: split };
+      const subs = () => Array.from({ length: split.tables() }, (_, i) => ({ key: `${moves}/${split.targets(i)}`, targets: split.targets(i), table: tables.get(`${moves}/${split.targets(i)}`)! }));
+      solver = { kind: "split", solver: split, goal: { id: solvers.size, split, kpuzzle, targets: r.targets, moves, limit: BIG, tables: subs } };
     } catch (error) {
       console.log(`no table for a goal (${String(error).slice(0, 60)}): skipped`);
     }
@@ -71,6 +74,10 @@ function solverFor(r: any): Solver {
   solvers.set(key, solver);
   return solver;
 }
+
+// Helper threads for long split searches (CORES − 1 of them; no memory limit here)
+const CORES = Number(process.env.CORES ?? 1);
+const pool = CORES > 1 ? new HelperPool(nodeHelper, CORES - 1, Infinity) : null;
 
 // Replay every request, timing searches and lists (measures are timed apart)
 const rows: any[] = [];
@@ -94,7 +101,7 @@ for (const [i, r] of requests.entries()) {
     t = performance.now();
     try {
       if (r.kind === "search") {
-        row.answer = s.solver.search(r.start, options);
+        row.answer = pool && s.kind === "split" ? await pool.search(s.goal, r.start, r.maxDepth, Infinity) : s.solver.search(r.start, options);
         row.length = row.answer === "" ? 0 : row.answer.split(" ").length;
       } else {
         const answers: string[] = JSON.parse(s.solver.list(r.start, options));
@@ -106,11 +113,12 @@ for (const [i, r] of requests.entries()) {
       row.error = String(error);
     }
     row.ms = performance.now() - t;
-    row.nodes = s.kind === "split" ? s.solver.nodes() : 0;
+    row.nodes = s.kind !== "split" ? 0 : pool && r.kind === "search" ? pool.nodes : s.solver.nodes();
   }
   rows.push(row);
 }
 const total = performance.now() - t0;
+pool?.close();
 
 // Summary per scenario and kind: requests, time, nodes, µs per node (split searches with ≥ 1000 nodes), bound gap (answer length − start bound)
 const pad = (x: any, n: number) => String(x).padStart(n);

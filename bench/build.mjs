@@ -1,8 +1,9 @@
-// Bundle the benchmark scripts for Node into bench/out: the engine, the search worker and the Rust search code are bundled in (the .wasm as bytes)
+// Bundle the benchmark scripts for Node into bench/out: the engine, the search worker and the Rust search code are bundled in (the .wasm as bytes),
+// plus the search helper that runs in worker threads (helper.js)
 import { build } from "esbuild";
 
 await build({
-  entryPoints: ["bench/record.ts", "bench/replay.ts"],
+  entryPoints: ["bench/record.ts", "bench/replay.ts", "bench/helper.ts"],
   bundle: true,
   platform: "node",
   format: "esm",
@@ -12,4 +13,4 @@ await build({
   outdir: "bench/out",
   logLevel: "warning",
 });
-console.log("Bundled bench/out/record.js and bench/out/replay.js");
+console.log("Bundled bench/out/record.js, bench/out/replay.js and bench/out/helper.js");

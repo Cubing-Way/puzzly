@@ -3,7 +3,8 @@
 import { barelyServe } from "barely-a-dev-server";
 
 export const COMMON_BUILD_OPTIONS = {
-  entryRoot: "./src",
+  // Only the page's folder: each .ts in it is bundled as its own script (main, search worker, search helper), next to index.html
+  entryRoot: "./src/demo/page",
   // Shared chunks go in chunks/; a .wasm import becomes its bytes (the Rust search code)
   esbuildOptions: { chunkNames: "chunks/[name]-[hash]", loader: { ".wasm": "binary" } },
 };

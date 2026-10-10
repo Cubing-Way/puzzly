@@ -13,6 +13,17 @@ use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
 use crate::symmetry::{Rotation, Rotations};
 use crate::table::{near_values, DistanceTable, TableCore, UNSEEN};
 
+// The parts of a split search: how a pattern becomes a sub-table's, which pieces each sub-table keeps, the IDA* driver, and one IDA* run
+mod driver;
+mod ida;
+mod plan;
+mod relabel;
+
+pub(crate) use driver::*;
+use ida::*;
+use plan::*;
+use relabel::*;
+
 // Same error text as twips, so the engine treats every solver the same
 pub(crate) const NO_SOLUTION: &str = "No solution found!";
 // Error when a search used up its maxNodes (the caller may switch to bigger sub-tables)
@@ -45,387 +56,6 @@ enum Order {
     Related,
 }
 
-// How a pattern becomes one sub-table's, orbit by orbit
-struct Relabel {
-    orbits: Vec<OrbitRelabel>,
-}
-
-// One orbit's relabeling: the new id for each old id, whether that piece's twist still counts, and where each spot's piece comes from
-// (a rotated view: spot s takes the piece on spot from[s], twisted by add[s] plus its id's amount in per_id; a plain view takes each spot's own piece as it is)
-struct OrbitRelabel {
-    name: KPuzzleOrbitName,
-    orientations: u8,
-    ids: [u8; 256],
-    twist: [bool; 256],
-    from: Vec<u8>,
-    add: Vec<u8>,
-    per_id: [u8; 256],
-}
-
-impl Relabel {
-    // Kept items keep their ids (and twists when asked), every other piece on a moving spot joins one twist-free rest class;
-    // ids are then renumbered by the first spot they fill in the first target, so the same sub-goal gives the same table whatever goal it came from
-    fn new(kpuzzle: &KPuzzle, targets: &[KPatternData], full: &Coords, items: &[Item], kept: &[(usize, bool)]) -> Relabel {
-        let mut orbits = vec![];
-        for (o, info) in kpuzzle.orbit_info_iter().enumerate() {
-            let first = &targets[0][&info.name];
-            // Ids on spots some turn moves, in any of the orbit's sets (pieces on untouched spots are always checked, so they keep their ids)
-            let mut on_moving = [false; 256];
-            for orbit in full.orbits().filter(|orbit| orbit.name == info.name) {
-                for &spot in &orbit.spots {
-                    on_moving[first.pieces[spot as usize] as usize] = true;
-                }
-            }
-            // Temporary ids: kept or untouched-only ids stay, other ids become REST
-            let mut temporary = [UNKNOWN; 256];
-            let mut twist = [false; 256];
-            for id in 0..256 {
-                match kept.iter().find(|&&(item, _)| items[item].orbit == o && items[item].id as usize == id) {
-                    Some(&(_, with_twist)) => (temporary[id], twist[id]) = (id as u8, with_twist),
-                    None if on_moving[id] => temporary[id] = REST,
-                    None => (temporary[id], twist[id]) = (id as u8, true),
-                }
-            }
-            // A set whose only rest piece is a piece of its own keeps that piece's id (twist-free): the table knows where it is either way, and the sub-goal then
-            // reads the same whichever piece of the set was left out (a DR finish's "all edges" tables are rotated copies of each other)
-            for orbit in full.orbits().filter(|orbit| orbit.name == info.name) {
-                let rest: Vec<u8> = orbit.spots.iter().map(|&spot| first.pieces[spot as usize]).filter(|&id| temporary[id as usize] == REST).collect();
-                if let [id] = rest[..] {
-                    if first.pieces.iter().filter(|&&piece| piece == id).count() == 1 {
-                        temporary[id as usize] = id;
-                    }
-                }
-            }
-            // Canonical ids: the first spot each temporary id fills in the first target
-            let mut canonical = [UNKNOWN; 256];
-            for (spot, &piece) in first.pieces.iter().enumerate() {
-                let id = temporary[piece as usize] as usize;
-                if canonical[id] == UNKNOWN {
-                    canonical[id] = spot as u8;
-                }
-            }
-            // Old id → canonical id
-            let mut ids = [UNKNOWN; 256];
-            for id in 0..256 {
-                ids[id] = canonical[temporary[id] as usize];
-            }
-            let count = info.num_pieces as usize;
-            orbits.push(OrbitRelabel { name: info.name.clone(), orientations: info.num_orientations, ids, twist, from: (0..count as u8).collect(), add: vec![0; count], per_id: [0; 256] });
-        }
-        Relabel { orbits }
-    }
-
-    // This sub-goal read through a rotation (a plain relabeling's rotated view, given the goal's first target): each spot takes the piece the rotation brings there,
-    // each twisted id gains the amount that leaves the first target untwisted, and ids are renumbered by the first spot they fill in the rotated first target,
-    // so rotated copies of one sub-goal give equal targets (any per-id twist amount keeps distances; this choice only makes copies match)
-    fn rotated(&self, rotation: &Rotation, first: &KPatternData) -> Relabel {
-        let mut orbits = vec![];
-        for (o, orbit) in self.orbits.iter().enumerate() {
-            let data = &first[&orbit.name];
-            let count = data.pieces.len();
-            let mods = data.orientation_mod.clone().unwrap_or_else(|| vec![0; count]);
-            let (from, add) = (&rotation.from[o], &rotation.add[o]);
-            let mut per_id = [0u8; 256];
-            let mut set = [false; 256];
-            let mut canonical = [UNKNOWN; 256];
-            for spot in 0..count {
-                let source = from[spot] as usize;
-                let piece = data.pieces[source] as usize;
-                // The first spot an id lands on decides its new id, and (twist counted) the amount that brings that piece back to twist 0
-                if orbit.ids[piece] != UNKNOWN && canonical[orbit.ids[piece] as usize] == UNKNOWN {
-                    canonical[orbit.ids[piece] as usize] = spot as u8;
-                }
-                if orbit.twist[piece] && !set[piece] {
-                    let factor = twist_factor(mods[source], orbit.orientations);
-                    per_id[piece] = (factor - (data.orientation[source] + add[spot]) % factor) % factor;
-                    set[piece] = true;
-                }
-            }
-            // Old id → new id (ids no target holds stay unknown)
-            let mut ids = [UNKNOWN; 256];
-            for id in 0..256 {
-                if orbit.ids[id] != UNKNOWN {
-                    ids[id] = canonical[orbit.ids[id] as usize];
-                }
-            }
-            orbits.push(OrbitRelabel { name: orbit.name.clone(), orientations: orbit.orientations, ids, twist: orbit.twist, from: from.clone(), add: add.clone(), per_id });
-        }
-        Relabel { orbits }
-    }
-
-    // The pattern as the sub-table sees it (left-out twists become 0, ignored), through the view's rotation if any
-    fn apply(&self, pattern: &KPatternData) -> KPatternData {
-        let mut out = KPatternData::new();
-        for orbit in &self.orbits {
-            let data = &pattern[&orbit.name];
-            let mods = data.orientation_mod.clone().unwrap_or_else(|| vec![0; data.pieces.len()]);
-            let mut relabeled = KPatternOrbitData { pieces: vec![], orientation: vec![], orientation_mod: Some(vec![]) };
-            for spot in 0..data.pieces.len() {
-                let source = orbit.from[spot] as usize;
-                let piece = data.pieces[source] as usize;
-                let keep_twist = orbit.twist[piece];
-                relabeled.pieces.push(orbit.ids[piece]);
-                let factor = twist_factor(mods[source], orbit.orientations);
-                relabeled.orientation.push(if keep_twist { (data.orientation[source] + orbit.add[spot] + orbit.per_id[piece]) % factor } else { 0 });
-                relabeled.orientation_mod.as_mut().unwrap().push(if keep_twist { mods[source] } else { 1 });
-            }
-            out.insert(orbit.name.clone(), relabeled);
-        }
-        out
-    }
-}
-
-// A pattern as JSON with orbits in the puzzle's order, so equal patterns give equal text (the sub-table cache key)
-fn pattern_json(kpuzzle: &KPuzzle, pattern: &KPatternData) -> String {
-    let orbits: Vec<String> = kpuzzle
-        .orbit_info_iter()
-        .map(|info| {
-            let data = &pattern[&info.name];
-            format!(
-                "\"{}\":{{\"pieces\":{:?},\"orientation\":{:?},\"orientationMod\":{:?}}}",
-                info.name,
-                data.pieces,
-                data.orientation,
-                data.orientation_mod.clone().unwrap_or_default()
-            )
-        })
-        .collect();
-    format!("{{{}}}", orbits.join(","))
-}
-
-// Items a sub-table keeps: (item index, whether its twist counts)
-type Kept = Vec<(usize, bool)>;
-
-// Sub-tables for a goal: each starts from an item no earlier sub-table of this plan covers, then adds the goal's other items in the plan's order
-// while the table still fits, with their twists if possible, else their positions only
-fn plan(items: &[Item], order: Order, fits: impl Fn(&[(usize, bool)]) -> bool) -> Vec<Kept> {
-    let mut tables = vec![];
-    let mut placed = vec![false; items.len()];
-    let mut twisted = vec![false; items.len()];
-    // Add an item if the table still fits: with its twist when it has one, else its positions only
-    let add = |kept: &mut Kept, item: usize| {
-        for with_twist in [items[item].twisted, false] {
-            kept.push((item, with_twist));
-            if fits(kept) {
-                return;
-            }
-            kept.pop();
-            if !items[item].twisted {
-                return;
-            }
-        }
-    };
-    while let Some(seed) = (0..items.len()).find(|&i| !placed[i] || (items[i].twisted && !twisted[i])) {
-        let mut kept = vec![];
-        add(&mut kept, seed);
-        // An item too big even alone (or whose twist doesn't fit) is left to the final goal check
-        if kept.first().is_none_or(|&(_, with_twist)| with_twist != items[seed].twisted) {
-            twisted[seed] = true;
-        }
-        if kept.is_empty() {
-            placed[seed] = true;
-            continue;
-        }
-        // Then every other item, in the plan's order
-        let mut tried = vec![false; items.len()];
-        tried[seed] = true;
-        while let Some(item) = next_item(items, order, seed, &kept, &tried) {
-            tried[item] = true;
-            add(&mut kept, item);
-        }
-        for &(item, with_twist) in &kept {
-            placed[item] = true;
-            twisted[item] |= with_twist;
-        }
-        tables.push(kept);
-    }
-    tables
-}
-
-// The next item a sub-table tries (None when every item was tried): the seed's orbit first, else the item the most moves turn together with the kept ones; ties in item order
-fn next_item(items: &[Item], order: Order, seed: usize, kept: &Kept, tried: &[bool]) -> Option<usize> {
-    let untried = (0..items.len()).filter(|&item| !tried[item]);
-    match order {
-        Order::Orbit => untried.min_by_key(|&item| (items[item].orbit != items[seed].orbit, item)),
-        Order::Related => untried.max_by_key(|&item| (kept.iter().map(|&(other, _)| (items[item].moves & items[other].moves).count_ones()).sum::<u32>(), Reverse(item))),
-    }
-}
-
-// True when the two turns give the same result in either order (then only one order is searched)
-fn commute(kpuzzle: &KPuzzle, a: &KTransformationData, b: &KTransformationData) -> bool {
-    kpuzzle.orbit_info_iter().all(|info| {
-        let (x, y) = (&a[&info.name], &b[&info.name]);
-        let n = info.num_orientations;
-        (0..info.num_pieces as usize).all(|spot| {
-            // Piece each order brings to this spot, and the twist it gains on the way
-            let (xy, yx) = (y.permutation[spot] as usize, x.permutation[spot] as usize);
-            x.permutation[xy] == y.permutation[yx]
-                && (x.orientation_delta[xy] + y.orientation_delta[spot]) % n == (y.orientation_delta[yx] + x.orientation_delta[spot]) % n
-        })
-    })
-}
-
-// Move pruning for a set of turns: may a turn of group b follow one of group a ([a * groups + b]); never two turns of one move in a row,
-// and of two moves that commute only the lower-numbered one first; also returns the number of groups
-pub(crate) fn move_pruning(kpuzzle: &KPuzzle, turns: &[Turn]) -> (Vec<bool>, usize) {
-    let groups = turns.iter().map(|turn| turn.group + 1).max().unwrap_or(0);
-    let mut follow = vec![true; groups * groups];
-    // Rule out each pair of turns that repeats a move, or puts two commuting moves in the higher-numbered order
-    for a in turns {
-        for b in turns {
-            if a.group == b.group || (b.group < a.group && commute(kpuzzle, &a.data, &b.data)) {
-                follow[a.group * groups + b.group] = false;
-            }
-        }
-    }
-    (follow, groups)
-}
-
-// What an IDA* run checks answers with: the whole goal's numbering, each target's state in it, and the move pruning
-pub(crate) struct GoalCheck<'a> {
-    pub full: &'a Coords,
-    pub goals: &'a HashSet<(Units, Units)>,
-    pub follow: &'a [bool],
-    pub groups: usize,
-}
-
-// Options of a search or list request: answers shorter than maxDepth (twips style), a node budget, how many answers a list may give,
-// and for listing page by page: answers no shorter than minDepth, coming after the answer `after` (its move text) in the list's order
-pub(crate) struct SearchOptions {
-    pub limit: u64,
-    pub max_nodes: u64,
-    pub max_answers: usize,
-    pub min_depth: u64,
-    pub after: Option<String>,
-}
-
-// Read a request's options (missing ones: no limit, no budget, every answer, from the shortest, from the first)
-pub(crate) fn read_options(options_json: &str) -> Result<SearchOptions, String> {
-    let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
-    Ok(SearchOptions {
-        limit: options["maxDepth"].as_u64().unwrap_or(u64::MAX),
-        max_nodes: options["maxNodes"].as_u64().unwrap_or(u64::MAX),
-        max_answers: options["maxAnswers"].as_u64().unwrap_or(u64::MAX).clamp(1, usize::MAX as u64) as usize,
-        min_depth: options["minDepth"].as_u64().unwrap_or(0),
-        after: options["after"].as_str().map(str::to_owned),
-    })
-}
-
-// An answer's move text as turn numbers (None when a move isn't one of the allowed turns)
-fn path_turns(full: &Coords, text: &str) -> Option<Vec<usize>> {
-    text.split_whitespace().map(|name| full.turns.iter().position(|turn| turn.name == name)).collect()
-}
-
-// Turn lists as a JSON list of move texts, e.g. ["R U R'", "F R"]
-pub(crate) fn answer_list(full: &Coords, answers: &[Vec<usize>]) -> String {
-    let texts: Vec<String> = answers.iter().map(|path| path_text(full, path)).collect();
-    serde_json::to_string(&texts).unwrap_or_default()
-}
-
-// One answer's moves as text
-fn path_text(full: &Coords, path: &[usize]) -> String {
-    path.iter().map(|&turn| full.turns[turn].name.clone()).collect::<Vec<_>>().join(" ")
-}
-
-// One table lookup of the IDA*: a table, and for a table that reads a rotated state, the table's turn for each allowed turn (its rotated copy)
-pub(crate) struct Slot {
-    pub table: Rc<TableCore>,
-    pub turns: Option<Vec<u8>>,
-}
-
-impl Slot {
-    // A table read as it is (each turn is itself)
-    pub(crate) fn plain(table: &Rc<TableCore>) -> Slot {
-        Slot { table: Rc::clone(table), turns: None }
-    }
-}
-
-// IDA* over these tables from their start states (`whole` = the start in the whole goal's numbering), for answers shorter than the options' limit:
-// the first shortest answer, or with `list` every answer, shortest first, up to maxAnswers (an answer never passes through the goal on its way),
-// from minDepth moves on and after the answer `after` (one page of a long list: answers come in turn order, so the next page starts where this one ended);
-// gives the answers as turn lists (or NO_SOLUTION / NODE_LIMIT) and the nodes visited
-pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Units), check: &GoalCheck, options: &SearchOptions, list: bool) -> (Result<Vec<Vec<usize>>, &'static str>, u64) {
-    // Never deeper than MAX_LENGTH (the search state has room for that many moves)
-    let limit = options.limit.min(MAX_LENGTH as u64 + 1);
-    // A list page: its first depth, and the answer it comes after (none; or one the allowed turns can't spell, which gives nothing)
-    let (min_depth, resume) = if list { (options.min_depth, options.after.as_deref().map(|text| path_turns(check.full, text))) } else { (0, None) };
-    let resume = match resume {
-        Some(None) => return (Err(NO_SOLUTION), 0),
-        Some(Some(turns)) => turns,
-        None => vec![],
-    };
-    // Search state: room for every depth up to MAX_LENGTH
-    let count = tables.len();
-    let turn_count = check.full.turns.len();
-    let depths = MAX_LENGTH as usize + 1;
-    let mut ida = Ida {
-        tables,
-        full: check.full,
-        goals: check.goals,
-        whole,
-        follow: check.follow,
-        groups: check.groups,
-        outer: vec![Units::new(); depths * count],
-        inner: vec![0; depths * count],
-        bounds: vec![0; depths * count],
-        exact: vec![false; depths * count],
-        current: vec![false; depths * count],
-        moved: Units::new(),
-        children: vec![0; depths * turn_count],
-        looked_up: vec![0; depths * count * turn_count],
-        rotated: vec![0; turn_count],
-        indices: vec![0; turn_count],
-        distances: vec![0; turn_count],
-        order: (0..count).collect(),
-        ruled: vec![false; count],
-        scratch: Vec::with_capacity(count),
-        path: vec![],
-        cut: false,
-        nodes: 0,
-        max_nodes: options.max_nodes,
-        gave_up: false,
-        listing: list,
-        max_answers: if list { options.max_answers } else { 1 },
-        answers: vec![],
-        resume,
-        resuming: false,
-    };
-    // Each table's start state and its exact distance; the largest distance is the first bound
-    let mut bound = 0;
-    for (t, &(outer, inner)) in starts.iter().enumerate() {
-        let distance = tables[t].table.distance(&outer, inner);
-        if distance == UNSEEN {
-            return (Err(NO_SOLUTION), 0);
-        }
-        bound = bound.max(distance);
-        (ida.outer[t], ida.inner[t], ida.bounds[t], ida.exact[t], ida.current[t]) = (outer, inner, distance, true, true);
-    }
-    // A list page starts at its first depth (shorter answers were on earlier pages)
-    bound = bound.max(min_depth.min(MAX_LENGTH as u64) as u8);
-    // Deepen one move at a time until the first answer (or enough answers) turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)
-    while (bound as u64) < limit {
-        ida.cut = false;
-        // At the depth of the answer a page comes after, every path up to it is skipped (they were on earlier pages)
-        ida.resuming = !ida.resume.is_empty() && ida.resume.len() == bound as usize;
-        if ida.dfs(0, bound, NO_GROUP) {
-            break;
-        }
-        if ida.gave_up || !ida.cut {
-            break;
-        }
-        bound += 1;
-    }
-    // Out of nodes, nothing within the limit, or the answers
-    let result = if ida.gave_up {
-        Err(NODE_LIMIT)
-    } else if ida.answers.is_empty() {
-        Err(NO_SOLUTION)
-    } else {
-        Ok(std::mem::take(&mut ida.answers))
-    };
-    (result, ida.nodes)
-}
-
 // One sub-table: its targets as JSON (the cache key), its estimated size, and the table once attached
 struct Sub {
     targets: String,
@@ -456,8 +86,9 @@ pub struct SplitSearch {
     // Move pruning: may a turn of group b follow one of group a ([a * groups + b])
     follow: Vec<bool>,
     groups: usize,
-    // Search nodes visited by the last search (for benchmarks)
+    // Search nodes visited by the last search (for benchmarks), and where it stopped when it ran out of nodes
     nodes: f64,
+    stop: Option<Stop>,
 }
 
 #[wasm_bindgen]
@@ -583,7 +214,7 @@ impl SplitSearch {
         }
         // Move pruning: never two turns of one move in a row, and of two moves that commute only the lower-numbered one first
         let (follow, groups) = move_pruning(&kpuzzle, &full.turns);
-        Ok(SplitSearch { kpuzzle, full, goals, subs, views, rotations, follow, groups, nodes: 0.0 })
+        Ok(SplitSearch { kpuzzle, full, goals, subs, views, rotations, follow, groups, nodes: 0.0, stop: None })
     }
 
     // Number of sub-tables
@@ -643,16 +274,47 @@ impl SplitSearch {
         let answers = self.run(start_json, options_json, true)?;
         Ok(answer_list(&self.full, &answers))
     }
+
+    // Where the last search stopped when it ran out of nodes, as JSON {"bound", "path": the moves it was about to search (every path before them is done),
+    // "cut": whether the bound cut a state so far}, or null when it didn't run out
+    pub fn stopped(&self) -> String {
+        self.stop.as_ref().map_or("null".to_owned(), |stop| serde_json::json!({ "bound": stop.bound, "path": path_text(&self.full, &stop.path), "cut": stop.cut }).to_string())
+    }
+
+    // Every path of `length` moves an iteration may start with (move pruning only), in the order it visits them, as a JSON list of move texts:
+    // the tasks a long search is split into
+    pub fn prefixes(&self, length: usize) -> String {
+        let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
+        answer_list(&self.full, &prefixes(&check, length))
+    }
+
+    // One IDA* iteration of a search split over workers: answers of exactly `bound` moves (at least the start's measure) through these first moves
+    // (a JSON list of move texts, tried in order; "" = every path), with a node budget; gives JSON {"found": index of the first prefix with an answer or -1,
+    // "answer": its moves, "cut": whether a deeper bound could still find one, "nodes", "gaveUp": the budget ran out}
+    pub fn iterate(&mut self, start_json: &str, bound: u8, prefixes_json: &str, max_nodes: f64) -> Result<String, String> {
+        // The first moves as turn numbers, the sub-tables and the start's states
+        let texts: Vec<String> = serde_json::from_str(prefixes_json).map_err(|e| e.to_string())?;
+        let prefixes = texts.iter().map(|text| path_turns(&self.full, text).ok_or("A prefix move isn't allowed")).collect::<Result<Vec<_>, _>>()?;
+        let (tables, whole, starts) = self.begin(start_json)?;
+        // The iteration (a start that can't reach the goal has no answer at any bound)
+        let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
+        let budget = if max_nodes >= u64::MAX as f64 { u64::MAX } else { max_nodes.max(0.0) as u64 };
+        let result = iterate(&tables, &starts, whole, &check, bound, &prefixes, budget).ok_or(NO_SOLUTION)?;
+        self.nodes = result.nodes as f64;
+        let (found, answer) = result.found.map_or((-1, String::new()), |(index, path)| (index as i64, path_text(&self.full, &path)));
+        Ok(serde_json::json!({ "found": found, "answer": answer, "cut": result.cut, "nodes": result.nodes, "gaveUp": result.gave_up }).to_string())
+    }
 }
+
+// A search's lookups (each sub-table, through its view's rotation), the whole start, and each lookup's start state
+type Begin = (Vec<Slot>, (Units, Units), Vec<(Units, u64)>);
 
 // Rust-only part of SplitSearch (not exported to JS)
 impl SplitSearch {
-    // IDA* from a start pattern on the attached sub-tables: the first shortest answer, or with `list` every answer up to maxAnswers
-    fn run(&mut self, start_json: &str, options_json: &str, list: bool) -> Result<Vec<Vec<usize>>, String> {
-        // Start, depth limit (answers shorter than it), node budget, answers wanted, and the attached sub-tables
-        self.nodes = 0.0;
+    // Read a start pattern for a search: the attached sub-tables as lookups, the whole start (an untouched spot that's wrong: NO_SOLUTION, no turn can fix it),
+    // and each lookup's start state (rotated for rotated views)
+    fn begin(&self, start_json: &str) -> Result<Begin, String> {
         let start = pattern_data(&self.kpuzzle, start_json)?;
-        let options = read_options(options_json)?;
         let tables: Vec<Slot> = self
             .views
             .iter()
@@ -662,230 +324,22 @@ impl SplitSearch {
                 Ok(Slot { table, turns })
             })
             .collect::<Result<_, String>>()?;
-        // The whole start (None: an untouched spot is wrong, no turn can fix it), and each lookup's start state (rotated for rotated views)
         let whole = self.full.read(&start).ok_or(NO_SOLUTION)?;
         let starts = self.views.iter().zip(&tables).map(|(view, slot)| slot.table.read(&view.relabel.apply(&start))).collect::<Option<Vec<_>>>().ok_or(NO_SOLUTION)?;
+        Ok((tables, whole, starts))
+    }
+
+    // IDA* from a start pattern on the attached sub-tables: the first shortest answer, or with `list` every answer up to maxAnswers
+    fn run(&mut self, start_json: &str, options_json: &str, list: bool) -> Result<Vec<Vec<usize>>, String> {
+        // Start, depth limit (answers shorter than it), node budget, answers wanted, and the attached sub-tables
+        self.nodes = 0.0;
+        let options = read_options(options_json)?;
+        let (tables, whole, starts) = self.begin(start_json)?;
         // Deepen, checking answers on the whole goal
         let check = GoalCheck { full: &self.full, goals: &self.goals, follow: &self.follow, groups: self.groups };
-        let (answers, nodes) = deepen(&tables, &starts, whole, &check, &options, list);
+        let (answers, nodes, stop) = deepen(&tables, &starts, whole, &check, &options, list);
         self.nodes = nodes as f64;
+        self.stop = stop;
         answers.map_err(|error| error.to_owned())
-    }
-}
-
-// One IDA* run: sub-table states per depth (depth * tables + table) with their distance (or a bound above it), the moves so far, and whether the bound cut anything
-struct Ida<'a> {
-    tables: &'a [Slot],
-    full: &'a Coords,
-    goals: &'a HashSet<(Units, Units)>,
-    whole: (Units, Units),
-    follow: &'a [bool],
-    groups: usize,
-    outer: Vec<Units>,
-    inner: Vec<u64>,
-    bounds: Vec<u8>,
-    // Whether each (depth, table) bound is the exact distance (tables store distances mod 3, so a child's distance is only known from an exact parent's)
-    exact: Vec<bool>,
-    // Whether each (depth, table) state is up to date: a sub-table's pieces are only moved along the path when a lookup needs them (an up-to-date state's distance is exact too)
-    current: Vec<bool>,
-    // Room for a child's pieces when a sub-table can't rank a child straight from its parent
-    moved: Units,
-    // Children still in at each depth (their turns, in turn order: depth * turns + k), and each looked-up child distance (depth, table, turn)
-    children: Vec<u8>,
-    looked_up: Vec<u8>,
-    // One node's child turns as a rotated lookup makes them, child table indices and their distances (filled and read before going deeper)
-    rotated: Vec<u8>,
-    indices: Vec<u64>,
-    distances: Vec<u8>,
-    // Sub-tables in the order they are checked (the ones that ruled children out at the last node go first), which ones did, and room to reorder them
-    order: Vec<usize>,
-    ruled: Vec<bool>,
-    scratch: Vec<usize>,
-    path: Vec<usize>,
-    cut: bool,
-    nodes: u64,
-    // Node budget, and whether it ran out
-    max_nodes: u64,
-    gave_up: bool,
-    // Listing every answer (else the first one ends the search), how many answers end it, and the answers so far
-    listing: bool,
-    max_answers: usize,
-    answers: Vec<Vec<usize>>,
-    // A list page's answer to come after (empty = from the first), and whether the path so far is still on the way to it (paths before it are skipped)
-    resume: Vec<usize>,
-    resuming: bool,
-}
-
-impl Ida<'_> {
-    // Depth-first search below the state at `depth`, with `remaining` moves left in this bound; true once the search is over (first answer, or enough answers)
-    fn dfs(&mut self, depth: usize, remaining: u8, last: usize) -> bool {
-        // Out of nodes: stop the whole search
-        if self.nodes >= self.max_nodes {
-            self.gave_up = true;
-            return false;
-        }
-        self.nodes += 1;
-        // Out of moves: every sub-table is at 0 here, so check the whole goal (sub-tables alone may miss pieces or mix targets)
-        if remaining == 0 {
-            // The answer this page comes after: it was on the last page
-            if self.resuming {
-                return false;
-            }
-            if self.is_goal() {
-                // At the goal: note the answer; a search ends here, a list once it has enough
-                self.answers.push(self.path.clone());
-                return self.answers.len() >= self.max_answers;
-            }
-            self.cut = true;
-            return false;
-        }
-        // Listing: a path already at the goal goes no further (a shorter answer plus moves that keep the goal, which later steps can always make themselves)
-        if self.listing && self.at_goal(depth) {
-            return false;
-        }
-        let count = self.tables.len();
-        let turns = self.full.turns.len();
-        let (here, next) = (depth * count, (depth + 1) * count);
-        // Children the move pruning allows, in turn order: never the same move as the last one, nor a commuting move that should have come first
-        let first = depth * turns;
-        let mut alive = 0;
-        for turn in 0..turns {
-            if last == NO_GROUP || self.follow[last * self.groups + self.full.turns[turn].group] {
-                self.children[first + alive] = turn as u8;
-                alive += 1;
-            }
-        }
-        // Sub-tables that could rule children out (one move changes a distance by at most one), one at a time over every child still in
-        for position in 0..count {
-            let t = self.order[position];
-            self.ruled[t] = false;
-            if alive == 0 || self.bounds[here + t] + 1 < remaining {
-                continue;
-            }
-            // The state and its exact distance (a bound carried down may be above it: then no child can be ruled out after all)
-            self.ensure(depth, t);
-            if self.bounds[here + t] + 1 < remaining {
-                continue;
-            }
-            let decode = near_values(self.bounds[here + t]);
-            let tables = self.tables;
-            let table = &*tables[t].table;
-            // The children's turns as this table makes them (a rotated lookup turns them first)
-            let own = match &tables[t].turns {
-                None => &self.children[first..first + alive],
-                Some(map) => {
-                    for k in 0..alive {
-                        self.rotated[k] = map[self.children[first + k] as usize];
-                    }
-                    &self.rotated[..alive]
-                }
-            };
-            // Each child's table index (ranked from this state, the child's pieces aren't kept), then all their distances (independent memory reads, so they overlap),
-            // each the parent's distance − 1, + 0 or + 1 as its stored value mod 3 says
-            for k in 0..alive {
-                self.indices[k] = table.child_index(&self.outer[here + t], self.inner[here + t], own[k] as usize, &mut self.moved);
-            }
-            for k in 0..alive {
-                self.distances[k] = decode[table.value_at(self.indices[k]) as usize];
-            }
-            // Children needing more moves than are left drop out (a deeper bound may get past them, unreachable states never will)
-            let mut kept = 0;
-            for k in 0..alive {
-                let (turn, distance) = (self.children[first + k], self.distances[k]);
-                if distance >= remaining {
-                    self.cut |= distance != UNSEEN;
-                    self.ruled[t] = true;
-                    continue;
-                }
-                self.looked_up[(here + t) * turns + turn as usize] = distance;
-                self.children[first + kept] = turn;
-                kept += 1;
-            }
-            alive = kept;
-        }
-        // Sub-tables that ruled a child out are checked first from now on (keeping their order)
-        self.scratch.clear();
-        self.scratch.extend(self.order.iter().filter(|&&t| self.ruled[t]));
-        self.scratch.extend(self.order.iter().filter(|&&t| !self.ruled[t]));
-        std::mem::swap(&mut self.order, &mut self.scratch);
-        // Go into each child left, in turn order: each sub-table's bound is its looked-up distance (exact) or (not looked up) one more than before; its state is moved later, when needed
-        let resuming = self.resuming;
-        for k in 0..alive {
-            let turn = self.children[first + k] as usize;
-            // On the way to the answer a page comes after: children before its turn were listed already, the one on its path stays on the way
-            if resuming {
-                if turn < self.resume[depth] {
-                    continue;
-                }
-                self.resuming = turn == self.resume[depth];
-            }
-            for t in 0..count {
-                let skipped = self.bounds[here + t] + 1 < remaining;
-                self.bounds[next + t] = if skipped { self.bounds[here + t] + 1 } else { self.looked_up[(here + t) * turns + turn] };
-                self.exact[next + t] = !skipped;
-                self.current[next + t] = false;
-            }
-            self.path.push(turn);
-            if self.dfs(depth + 1, remaining - 1, self.full.turns[turn].group) {
-                return true;
-            }
-            self.path.pop();
-            if self.gave_up {
-                return false;
-            }
-        }
-        false
-    }
-
-    // True when the state at `depth` is already at the goal: every table at 0 (a bound of 0 is exact, others are made exact), then the whole goal checked
-    fn at_goal(&mut self, depth: usize) -> bool {
-        let here = depth * self.tables.len();
-        for t in 0..self.tables.len() {
-            if self.bounds[here + t] == 0 {
-                continue;
-            }
-            self.ensure(depth, t);
-            if self.bounds[here + t] != 0 {
-                return false;
-            }
-        }
-        self.is_goal()
-    }
-
-    // Bring sub-table t's state at `depth` up to date: replay the path's turns from the deepest depth where it is current (the start always is),
-    // and give each replayed state whose distance isn't exact yet its exact distance, from its stored value and the state before it (always exact by then)
-    fn ensure(&mut self, depth: usize, t: usize) {
-        let count = self.tables.len();
-        let mut from = depth;
-        while !self.current[from * count + t] {
-            from -= 1;
-        }
-        for d in from..depth {
-            let (here, next) = (d * count + t, (d + 1) * count + t);
-            let (before, after) = self.outer.split_at_mut(next);
-            let slot = &self.tables[t];
-            let turn = slot.turns.as_ref().map_or(self.path[d], |map| map[self.path[d]] as usize);
-            // Exact distance first, its index ranked straight from the parent (cheaper than ranking the moved pieces)
-            if !self.exact[next] {
-                let index = slot.table.child_index(&before[here], self.inner[here], turn, &mut self.moved);
-                self.bounds[next] = near_values(self.bounds[here])[slot.table.value_at(index) as usize];
-                self.exact[next] = true;
-            }
-            self.inner[next] = slot.table.step(&before[here], self.inner[here], turn, &mut after[0]);
-            self.current[next] = true;
-        }
-    }
-
-    // Replay the moves so far on the whole start and look it up among the targets
-    fn is_goal(&self) -> bool {
-        let (mut outer, mut inner) = self.whole;
-        for &turn in &self.path {
-            // Fresh copies, so entries a part doesn't write stay as they were
-            let (mut next_outer, mut next_inner) = (outer, inner);
-            self.full.outer.apply(&outer, turn, &mut next_outer);
-            self.full.inner.apply(&inner, turn, &mut next_inner);
-            (outer, inner) = (next_outer, next_inner);
-        }
-        self.goals.contains(&(outer, inner))
     }
 }
