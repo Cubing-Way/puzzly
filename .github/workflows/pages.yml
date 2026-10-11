@@ -1,0 +1,54 @@
+# Builds the test bench and publishes it to GitHub Pages
+name: Deploy demo to GitHub Pages
+
+# Run on every push to main, or by hand from the Actions tab
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Let the job read the repo and publish to Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push replaces a waiting one
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Shows the site's address on the run page
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Get the code
+      - uses: actions/checkout@v4
+      # Node for the build script
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # Rust's WebAssembly target (Rust itself is already on the runner)
+      - run: rustup target add wasm32-unknown-unknown
+      # wasm-pack, as a ready-made binary
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      # Install the exact dependencies from package-lock.json
+      - run: npm ci
+      # Compile the Rust search into search/pkg
+      - run: npm run build-search
+      # Bundle the page into dist/web
+      - run: npm run build
+      # Hand dist/web to Pages
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web
+      # Publish it
+      - id: deployment
+        uses: actions/deploy-pages@v4

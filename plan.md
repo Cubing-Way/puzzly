@@ -1,340 +1,267 @@
-# puzzly — more puzzles (context for new chats)
+# puzzly — tables for specific goals (context for new chats)
 
 Start a new chat with: "Read plan.md, then do Part N." Do **one part per chat**, then tick it below and commit.
 
-The earlier roadmap (the 3x3x3 engine and its search, Parts 1–9) is now `plan-engine.md`, unchanged. Three of its items are still open (5d table files, 8h parallel table builds, 9 hand-written tables).
-To go on with it: "Read plan-engine.md, then do Part N." Its *Facts* section is still the reference for how the search works.
+This plan is Part 9 of `plan-engine.md` (hand-written tables) worked out for the example methods. Two other plans are still open:
+- `plan-engine.md`: the 3x3x3 engine and its search. Its *Facts* section is still the reference for how the search works; its 5d (table files) and 8h (parallel table builds) stay there.
+- `plan-puzzles.md`: more puzzles (12 parts, none started). To go on with it: "Read plan-puzzles.md, then do Part N."
 
 ## Progress
 
-- [ ] Part 1 — Puzzle description: everything 3x3x3-only behind one object (no behaviour change)
-- [ ] Part 2 — Grips without centers + 2x2x2
-- [ ] Part 3 — Test bench built from the puzzle description + `puzzle` in method files
-- [ ] Part 4 — Pyraminx and Skewb
-- [ ] Part 5 — Megaminx and Kilominx
-- [ ] Part 6 — 4x4x4 (identical pieces, wings, inner slices)
-- [ ] Part 7 — 5x5x5 to 7x7x7
-- [ ] Part 8 — FTO and the other geometry puzzles (derived names and grips)
-- [ ] Part 9 — Custom puzzles from a puzzle-geometry description (shape + cuts)
-- [ ] Part 10 — Custom puzzles from a KPuzzle definition (JSON)
-- [ ] Part 11a — Square-1 in the engine: bonded pieces, legal moves, notation
-- [ ] Part 11b — Square-1 in the Rust search
-- [ ] Part 12 — Clock
+- [ ] Part 1 — Method benchmark: every example method, step by step, first run and warm
+- [ ] Part 2 — Case tables: a slow step's answer is remembered per case and stored in the browser
+- [ ] Part 3 — Case sheets: a step's cases solved ahead of time and shipped as files (the short ones)
+- [ ] Part 4 — Room for hand-written tables in the Rust search (no behaviour change)
+- [ ] Part 5 — The cube by hand: coordinates, turn tables, the 16 symmetries with mirrors
+- [ ] Part 6 — Phase 1 table: exact distance to domino reduction
+- [ ] Part 7 — Phase 2 tables: the domino finish (only if Part 6's numbers ask)
+- [ ] Part 8 — Long sheets: ZBLL, TTLL, the whole last layer (hours of solving, run outside the chat)
 
-**Order:** 1 → 2 → 3 are the base and must go in that order. After 3, Parts 4–7 don't depend on each other (6 before 7). 8 gives the generic naming that 9 and 10 need. 11 and 12 can come any time after 3.
-**How hard:** 1 hard · 2, 3, 4 medium · 5 medium-hard · 6 hard · 7, 8, 9, 10 medium · 11 hard (two chats, maybe three) · 12 medium-hard. About 14 chats in all.
+**Order:** 1 first. Then two lines that don't depend on each other: 2 → 3 → 8 (case tables) and 4 → 5 → 6 → 7 (hand-written tables). Do 2 and 3 before 4: they cover the slow steps of about 12 of the 19 methods; the hand-written line helps one (Two-phase), and mostly its method search.
+**How hard:** 1 easy · 2, 3 medium · 4 medium-hard · 5, 6 hard (each may take two chats) · 7 medium · 8 medium, plus a long run. About 10 chats in all; the hand-written line alone (4–7) is 4 to 6.
 
 ## Goal
 
-The same engine for any twisty puzzle: a user picks a puzzle (or enters their own) and sets up steps and methods with plain inputs, exactly as on the 3x3x3 today.
+Every example method (`src/demo/example-methods.json`: 19 methods, each from scramble to solved) runs with no step slower than a few seconds, and the method search (plan-engine 8d) gets through domino-type methods like a two-phase solver.
 
-**A puzzle is data, like a step is data.** The engine never knows a puzzle by name: no `if (puzzle.id === "square1")` anywhere. Whatever makes a puzzle different (its piece names, its rotations,
-pieces that are glued together, moves that commute) is a field of its description, so a puzzle typed in by a user gets the same treatment as a built-in one.
+**The engine still never knows a step by name.** A table for a specific goal is picked from what the search worker receives (the masked targets, the allowed moves, the start), never from a step's or a method's name. A goal that doesn't match exactly falls back to the generic tables, and the result says which kind answered.
 
 Rules for every part:
-- 3x3x3 answers never change: `npm run check` (added in Part 1) must print the same lines before and after.
-- Each new puzzle is checked on seeded scrambles: every answer replayed by `reachesGoal`, and compared with a known number where one exists (see each part's **Test**).
-- Say how long the part will take before starting, test what the part asks, then stop (no extra benchmarks).
+- Same lengths as the generic path on every step, and identical answers where the part says so.
+- The benchmark replay (`bench/replay.ts`) gives the same answers and node counts whenever the part doesn't touch what it measures.
+- Say how long the part will take before starting, test what the part asks, then stop.
 - When a part is done: tick it, add what was found to *Facts*, update the README.
+
+## What the first numbers say (2026-10-10)
+
+It isn't one set of tables per method. The 19 methods share their steps' goals, and those fall into five families:
+
+| Family | Steps | Today | What it needs |
+| --- | --- | --- | --- |
+| Blocks, pairs, orientation steps | cross, pairs, Roux / Petrus / ZZ blocks, EOLine, EO, corners first | 2–160 ms warm, 0.1–5 s on the first run (table builds) | nothing |
+| Last pieces with face turns, everything else kept | OLL, PLL, CLL, ELL, COLL, EPLL, ZBLL, CMLL, 6CP, L5EP, top corners, last 3 corners | by answer length: up to 11 moves under 0.1 s warm, 12 moves 0.25–10 s, 13 moves 6–30 s, 14 moves 26–73 s (warm too) | case tables (Parts 2, 3, 8) |
+| Last pieces with fewer moves | ZBLL and TTLL with `U R L`, last layer with `R U`, last six edges with `M U`, half-turn finish | under 6 s on the first run, 5–110 ms warm | nothing |
+| Blindfolded rounds (whole cube, relabeled) | 3-cycles, one-target swaps, flips | first round 12–15 s (builds), then 3 ms–6 s each | already remembered while the page is open; Part 2 stores them |
+| Domino steps | DR, half-turn reduction, domino finish | plain runs 0.2–2 s; the method search is held back by listing long DR answers (every 12-move DR about 9 s, plan-engine 8d) | hand-written tables (Parts 4–7) |
+
+Why hand-written coordinate tables (Kociemba's) are only planned for the domino family:
+- They measure how far a state is from an axis' domino group. A PLL lies inside the U/D one (distance 0) and near the other two, and most last-layer states are close to all three. The generic piece tables already give 9–11 there.
+- A lookup is already at memory speed: a search node is ~3 µs for 16–27 lookups (plan-engine 8a), about 0.15 µs each, on tables bigger than this PC's cache. Hand-written numbering can't make a cache miss cheaper.
+- What they do give is an **exact** distance for the whole DR goal (the generic split is two tables, each a lower bound), which turns "list every DR of n moves" from a search into a walk.
+
+What last-pieces steps have instead is **few cases**: the answer depends only on the pieces left, not on the scramble. Counted by hand (Part 3's tool prints the real numbers), each count with the turned copies and the solved case:
+
+| Step (everything else kept) | Cases |
+| --- | --- |
+| Top cross (EO of the last layer) | 8 |
+| The beginner method's other top steps: edges, corners in place, corners turned | 24, 12, 27 |
+| EPLL | 12 |
+| L5EP | 60 |
+| ELL | 96 |
+| OLL | 216 |
+| 6CO | 243 |
+| PLL | 288 |
+| CLL, COLL, CMLL | 648 each |
+| 6CP | 720 |
+| ZBLL | 7,776 |
+| Whole last layer | 62,208 |
 
 ## Current state (2026-10-10)
 
-- Branch `modularize`, **not committed yet**: the code was split into `src/engine/` (the reusable engine), `src/demo/` (the test bench) and Rust submodules, with identical answers.
-  **Commit it before Part 1**, so each part has a clean before and after. The state before the split is saved as `refs/backup/pre-modularize`.
-- Layout: README, *Folder layout*. How an app uses the engine: README, *Using the engine in another app* (`loadEngine({ searchWorker })`, `runSearchWorker({ wasm, helper })`, `runSearchHelper({ wasm })`).
-- cubing.js **0.63.8**, twips 0.12.3 (Rust crate). One search worker, tables in IndexedDB, helper workers for long searches.
+- `main`, commit 824d416 "modularization". Layout: README, *Folder layout*.
+- `src/demo/example-methods.json` was rewritten in the same session as this plan: 19 methods, each ending with the cube solved (it held 6, most stopping at F2L). **If the file still holds 6 methods, stop and ask for the new one before Part 1.**
+  The same change makes `bench/record.ts` take its CFOP + OLL + PLL scenario straight from example 0 and cut the pseudo-slotting example back to its first 6 steps, so the recorded requests stay the same.
+- Where things are: the worker picks a solver in `src/engine/worker/solvers.ts` (exact table, split tables, twips) and stores tables through `table-store.ts`; the engine remembers blindfolded answers in `src/engine/step/combo.ts` (`knownAnswers`, `searchCombo`);
+  Rust tables are `search/src/table.rs` (`TableCore`), the IDA* reads them through `Slot` in `search/src/split/driver.rs` and `split/ida.rs`, rotations are `search/src/symmetry.rs`.
+- This PC: i5-3210M, 2 cores / 4 threads, 6 GB (the browser reports 4, so plans stop at 10M states).
 
 ## Facts worth knowing (checked 2026-10-10, save re-checking)
 
-### What is 3x3x3-only today
+### The example methods and where each spends its time
 
-| Where | What |
-| --- | --- |
-| `core/cube.ts` | `PIECE_NAMES`, `ORBIT_BY_LENGTH` (1 letter = center, 2 = edge, 3 = corner), `BOTTOM_TURNS`, `FRONT_TURNS`, `ALL_GRIPS` (24, from x y z), `normalizeName` (sorts a name's letters) |
-| `core/moves.ts` | `FACE_MOVES`, `ROTATIONS` = x y z (used by `countMoves` and `rotationsIn`) |
-| `core/puzzle.ts` | `cube3x3x3.kpuzzle()`; the grip is judged by where the `CENTERS` are (`gripByCenters`, `centerLayout`, `netRotation`); `randomScrambleForEvent("333")` |
-| `core/turns.ts` | `TURN_FAMILIES` (U R F D L B M E S Uw…); `turnName` / `distinctTurns` think in quarter and half turns |
-| `goal/goal.ts` | `parseGoalText` picks the piece type from the name's length; "no center typed = all six kept" (`allCenters`, `goalFromText`, `goalToText`) |
-| `goal/targets.ts` | `centersReachable` reads `CENTERS`; relative groups are placed by the 24 grips |
-| `goal/untouched.ts`, `goal/bld.ts`, `goal/grips.ts`, `goal/targets.ts` | "the solved cube holds piece n on spot n" (`placedPatterns`, `untouchedWanted`, `traceWanted`, `relabel`, `goalOnCube`, `rotateGoal`): wrong when a piece type has identical pieces |
-| `step/step.ts`, `step/check.ts` | `solveFull` and the full-cube check call cubing.js's 3x3x3 functions |
-| `method/config.ts` | bottom faces must be U D F B R L; default moves are the six face turns |
-| `src/demo/` | three chip boxes, bottom-face boxes, move boxes, presets and quick picks written in `page/index.html`; `TwistyPlayer({ puzzle: "3x3x3" })` in `viewer.ts`; the example methods |
+One seeded scramble each (`bench/setup.ts`, the first scramble of `random(7)`; methods 7, 9, 11 and 12 of `random(21)`), a fresh Node process per method, so every time includes its table builds. Three methods ran at once on two cores, so read the times as upper bounds. Every run ended with the cube solved (`experimentalIsSolved`, any orientation).
 
-Things that would break quietly with a second puzzle (Part 1 fixes them):
-- **No puzzle in any table key.** The worker keeps solvers and tables by `moves/targets` (`worker/solvers.ts`, `tableKey`), IndexedDB by `format/moves/targets`, the helper pool by the same keys.
-  Two puzzles with the same piece-type names and move names (4x4x4 and 6x6x6 corners, two custom puzzles) would read each other's tables.
-- Caches that are never emptied: `puzzleJson` in `worker/client.ts` (made once), `knownAnswers` in `step/combo.ts`, `offsetGroupsMade` in `goal/offsets.ts`. The lookup caches of `core/cache.ts` are emptied on load already.
+| # | Method | Moves | First run | Slowest steps (moves) |
+| --- | --- | --- | --- | --- |
+| 0 | CFOP (cross, 4 pairs, OLL, PLL) | 51 | 13 s | OLL 7.4 s (builds), PLL 3 s (10) |
+| 1 | CFOP (cross or XCross, lookahead) | 46 | 21 s | PLL 10 s (12) |
+| 2 | Pseudo-slotting (CFOP up to ADF, lookahead) | 48 | 45 s | PLL 33 s (14) |
+| 3 | CFOP with ZBLL (last pair + EO, then one look) | 47 | 35 s | ZBLL 26 s (14), last pair + EO 6.4 s |
+| 4 | CFCE (cross, 4 pairs, CLL, ELL) | 52 | 8.6 s | CLL 4.6 s (12), ELL 1.8 s (9) |
+| 5 | Beginner (layer by layer) | 62 | 17 s | top corners turned 4.3 s (12) |
+| 6 | Roux (blocks, CMLL, last six edges) | 41 | 4.4 s | CMLL 2.7 s |
+| 7 | ZZ (EOLine, blocks, ZBLL) | 42 | 7 s | ZBLL 6 s (17, `U R L`) |
+| 8 | ZZ (left block + CP, then R U only) | 40 | 3.3 s | left block + CP 2.2 s |
+| 9 | ZZ-CT (EOLine, F2L minus a pair, TSLE, TTLL) | 40 | 8.2 s | TTLL 5.6 s (15, `U R L`) |
+| 10 | Petrus (2x2x2, 2x2x3, EO, F2L, COLL, EPLL) | 49 | 37 s | COLL 30 s (13), EO 5 s |
+| 11 | Heise (blocks, EO, edges + 2 corners, last 3 corners) | 42 | 15 s | edges + 2 corners 8.9 s, last 3 corners 3 s (12) |
+| 12 | LEOR (left block, EO stripe, right block, ZBLL) | 41 | 9 s | EO stripe 4.1 s, ZBLL 3.9 s (16, `U R L`) |
+| 13 | Mehta (FB, 3QB, EOLE, 6CO, 6CP, L5EP) | 42 | 9.4 s | L5EP 3.1 s (11), 6CP 2.3 s |
+| 14 | Corners first (corners, left edges, right edges, middle slice) | 36 | 15 s | right edges 8.7 s |
+| 15 | Two-phase (domino reduction, then finish) | 25 | 2.9 s | finish 2.1 s (15) |
+| 16 | Four-phase (EO, domino, half-turn reduction, finish) | 32 | 1.5 s | half-turn reduction 0.8 s |
+| 17 | 3-style BLD | 106 | 14 s | first round 12 s (builds), one 13-move cycle 1.7 s |
+| 18 | One target at a time BLD | 238 | 28 s | first round 15 s (builds), swaps up to 6.4 s |
 
-### The Rust search
+Warm (more scrambles in the same process):
+- CFOP: cross and pairs 4–82 ms, OLL 17–76 ms, PLL 8 ms (11 moves) and **51 s (14 moves)**.
+- ZZ, ZZ-CT and LEOR with `U R L` last steps: whole runs 24–135 ms.
+- Beginner: everything under 160 ms except top corners turned, 10 s (13 moves).
+- Heise: last 3 corners 6.2 s (13 moves).
 
-- It works from the puzzle definition it is sent as JSON; no piece-type names in the code.
-- Limits: 64 moving spots per piece type (`MAX_SPOTS`), 64 tracked pieces per part (`MAX_UNITS`), 16 piece types (`MAX_ORBITS`), piece ids and twists in a `u8`.
-- `symmetry.rs` builds the rotation group from the moves named `x` and `y` only, at most 48 rotations (`MAX_ROTATIONS`). On a puzzle whose rotations have other names it finds only "no rotation":
-  answers stay right, but rotated copies of a sub-goal no longer share one table.
-- It assumes **every move can be made in every state** (wrong for Square-1) and searches move by move (wasteful for Clock, where order never matters).
-- twips (the fallback when no table fits) is generic too, with the same two assumptions.
+Found while writing the methods:
+- **`U R L` instead of face turns** for a last step after ZZ-type edge orientation: on two scrambles the same ZBLL took 14 moves in 69–73 s with face turns and 15–17 moves in about 6 s with `U R L`, table builds included (a 13-move TTLL took 24 s with face turns). The three ZZ-type examples use `U R L`; "CFOP with ZBLL" keeps face turns.
+- **A repeated step stops at its first round with 0 moves**, so "the easiest piece, any front, repeat" ends early when one of its pieces is already home by luck (the beginner method's middle edges stopped after round 1 with three edges unsolved). The examples use four explicit steps instead. `method/run.ts`, the `!finished.moves` break; the README says such a step runs "until F2L is done".
+- Half-turn reduction is a plain step: all corners solved, the edges as three swap groups (`UF:s UB:s DF:s DB:s`, `UR:s2 …`, `FR:s3 …`), *solvable with* `U2 D2 R2 L2 F2 B2`, moves `U D R2 L2 F2 B2`: 96 end states, 10 moves in 0.8 s.
+- Centers take roles too: Roux's edge orientation step is `U:s D:s UF:o UR:o UB:o UL:o DF:o DB:o` with `M U` (the U and D centers on the U / D spots in either order).
+- Wide moves work in a step's moves (`Rw` in Roux's second block).
+- Testing: a long search blocks the Node process (the worker runs in it), so a time limit has to come from outside (`timeout 240 node …`, one process per method), with a line printed when each step starts (`MethodOptions.onStart`, `writeSync`).
 
-### cubing.js's puzzles (0.63.8)
+### Numbers for the hand-written line (well known, to confirm when built)
 
-Piece types are written `NAME count×twists`. *Frame* = pieces that never change place relative to each other, so they say how the puzzle is held (the 3x3x3's centers).
+- Phase 1 (domino reduction on one axis): flip 2,048 × twist 2,187 × E-slice positions 495 = 2,217,093,120 states, deepest 12.
+  Under the 16 symmetries that keep the axis, flip × slice (1,013,760) falls into 64,430 classes: table 64,430 × 2,187 = 140,908,410 entries, 35.2 MB at 2 bits.
+- Phase 2 (domino finish, `U D R2 L2 F2 B2`): 8! · 8! · 4! / 2 = 19,508,428,800 states, deepest 18. Corner permutations 40,320 fall into 2,768 classes: table 2,768 × 40,320 U/D-edge permutations = 111,605,760 entries, 27.9 MB at 2 bits.
+- cubing.js's order and twists (plan-engine *Facts*): EDGES `UF UR UB UL DF DR DB DL FR FL BR BL`, CORNERS `UFR UBR UBL UFL DFR DFL DBL DBR`, corners judged by their U/D sticker, edges by the F/B axis. That is Kociemba's convention for the U/D axis.
+- The left-right mirror isn't in the KPuzzle (plan-engine 8g), so the generic code only has the 24 rotations. By hand a mirror is a permutation of the pieces with corner twists negated.
+- Today's generic DR plan is two lower-bound tables, flip × slice (1.01M) and twist × slice positions (1.08M) (plan-engine 8b); the generic domino finish takes 6–260 ms (3k–10k nodes).
 
-| Puzzle id | Piece types | Notes |
-| --- | --- | --- |
-| `3x3x3` | EDGES 12×2, CORNERS 8×3, CENTERS 6×4 | frame: CENTERS; rotations x y z |
-| `2x2x2` | CORNERS 8×3 | **no frame**; moves U x y, the rest derived |
-| `4x4x4` | CORNERS 8×3, EDGES 24×2, CENTERS 24×1 | **CENTERS are identical pieces** (4 per face share an id); no frame; inner slices `2R`, wide `Rw` |
-| `5x5x5` | EDGES 24×2, EDGES2 12×2, CORNERS 8×3, CENTERS 24×1, CENTERS2 24×1, CENTERS3 6×4 | frame: CENTERS3 |
-| `6x6x6` | CORNERS, 2 edge types of 24, 4 center types of 24 | no frame |
-| `7x7x7` | 11 piece types | frame: CENTERS6 (6×4) |
-| `40x40x40` | far more than 16 piece types | over the Rust limit: not offered |
-| `pyraminx` | EDGES 6×2, CORNERS 4×3, CORNERS2 4×3 | CORNERS are the middle pieces (they only twist: the frame), CORNERS2 the tips; 12 rotations |
-| `skewb` | CORNERS 8×3, CENTERS 6×4 | centers move: no frame |
-| `megaminx` | CORNERS 20×3, EDGES 30×2, CENTERS 12×5 | frame: CENTERS; 60 rotations; face turns have 5 positions |
-| `kilominx` | EDGES 30×2, EDGES2 30×2, CORNERS 20×3, CENTERS 12×5 | more piece types than a Kilominx has: find out what this definition is before promising it |
-| `fto` | C4RNER 6×4, CENTERS 24×1 (identical), EDGES 12×2 | 24 rotations (octahedron) |
-| `baby_fto`, `master_tetraminx`, `gigaminx`, `redi_cube` | — | gigaminx has piece types of 60 (limit 64) |
-| `melindas2x2x2x2`, `loopover`, `tri_quad` | CORNERS 64×1 / SQUARES 25×3 / six small types | no faces or rotations in the usual sense |
-| `square1` | WEDGES 24×9, EQUATOR 2×6 | see below |
-| `clock` | DIALS 18×12, FACES 18×1, FRAME 1×2, HOUR_MARKS 18×4 | see below |
+### How a table reaches the search today (read in the code)
 
-- **Rotation names.** Definitions made by puzzle geometry (everything but 3x3x3, 2x2x2, redi cube, Square-1, Clock and the last three) name whole-puzzle rotations `<face>v`: `Uv`, `Fv`, and on the megaminx also `U_F_Rv`, `U_Fv`… (31 of them).
-  Cubes also take `x y z`; megaminx and pyraminx take `y`; Square-1 has none; Clock has `y2`, `z`, `x2`.
-- **Moves.** The same definitions use puzzle-geometry move names (pyraminx `r 2r BL rv …`, skewb `D U Dv L UR …`), but the usual names parse too (`R` on both). Check per puzzle which names to show.
-- **Solvers in `cubing/search`:** `experimentalSolve2x2x2`, `experimentalSolve3x3x3IgnoringCenters`, `solveSkewb`, `solvePyraminx`, `solveMegaminx`, and the generic `experimentalSolveTwips`. Nothing for 4x4x4 and up, Square-1 or Clock.
-- **`cubing/puzzle-geometry`:** `getPuzzleGeometryByDesc`, `getPuzzleGeometryByName`, `getPG3DNamedPuzzles`, `parsePuzzleDescription`, `getPuzzleDescriptionString`, `EXPERIMENTAL_PUZZLE_BASE_SHAPES`, `EXPERIMENTAL_PUZZLE_CUT_TYPES`, `PuzzleGeometry`.
-- **Square-1.** 24 wedge slots (0–11 top, 12–23 bottom); a corner is two neighbouring wedges, an edge is one. `U_SQ_` cycles the top 12 slots, `D_SQ_` the bottom 12, `_SLASH_` swaps slots 6–11 with 12–17 and turns half the equator.
-  Alg text `(1, 0) / (3, -3) /` parses (to `U_SQ_ D_SQ_0 / U_SQ_3 D_SQ_3' /`). **The definition makes a slash even when it cuts a corner in two** (`(1, 0) /` on the solved puzzle gives a pattern, not an error),
-  so which moves are legal is not in the definition: the engine has to know it.
-- **Clock.** 18 dials (9 front, 9 back); a dial's twist is its hour. No pin move ever moves a dial, it only turns some (front +1, the back corners −1); `y2` turns the puzzle over, `z` turns it in place.
-  All pin moves commute and come back after 12. Alg text `UR3+ DR2- ALL1+ y2 U4+` parses. The whole clock has 12^14 ≈ 1.3 × 10^15 states.
+- The IDA* takes `&[Slot]`, a `Slot` being `{ table: Rc<TableCore>, turns: Option<Vec<u8>> }` (a table, and a turn map when it is read through a rotation). It calls `TableCore::step`, `child_index`, `value` and `distance`.
+- Tables hold each state's distance mod 3 in 2 bits; the search carries exact distances from parent to child (a neighbour is one less, equal or one more). A hand-written table stored the same way fits that bookkeeping.
+- `SplitSearch::new` plans the sub-tables, the worker builds the missing ones (`attachTables`), keeps them up to `MAX_CACHE_MB` and stores those of 100k states or more in IndexedDB under `tableKey` (format / moves / targets).
+- A worker request is `{ kind: "measure" | "search" | "list", start, targets, moves, maxDepth?, … }` with `start` already masked by the goal, so **moves + targets + start is the whole case**: two scrambles that leave the same last-layer case send the same request.
 
-Not checked yet (do it in the part that needs it): that `TwistyPlayer` shows a custom puzzle from a description (`experimentalPuzzleDescription`), what it shows for Clock, and the exact puzzle-geometry call that gives a KPuzzle definition.
+## Part 1 — Method benchmark
 
-## Part 1 — Puzzle description (no behaviour change)
-
-**Why:** everything else builds on this. Today the 3x3x3 is spread over about ten files as constants (see *Facts*); after this part it is one object, and a second puzzle is a second object.
+**Why:** the numbers above are one scramble per method, run three at a time. The benchmark in `bench/` has five scenarios and none of the new methods. The order of Parts 2–8 should rest on a real table.
 
 **Do:**
-1. **The check first, before touching the engine.** Add `bench/check.ts` and `npm run check`: a fixed list of scenarios on seeded scrambles, one printed line per result, plus a hash of every request the engine sent the worker.
-   Scenarios (the list used to check the split into modules): the text helpers with their error messages; steps on two scrambles (cross, pseudo-cross in any grip, cross or XCross, XXCross, a relative pair, EO,
-   a Roux block with M, the CP line solvable with R U, an untouched 3-cycle, a buffer step, a max depth that fails, first-found, a step after `done` with kept pieces); `stepCandidates`; every example method;
-   `searchMethod` on a two-step method it can finish. Save its output as the baseline (66 lines, about 20 s).
-2. `src/engine/puzzle/spec.ts`: the `PuzzleSpec` type. Fields: `id`, `name`; how to load the definition; piece names per type and the lookup from a typed name; the `frame` piece type (or none);
-   faces, default moves, extra moves (slices, wide); rotation moves and the grips they give (with which face each grip puts on the bottom); scramble; full solver (optional); what the 3D viewer needs.
-3. `src/engine/puzzle/cube3.ts`: the 3x3x3's description with exactly today's values (same names, same 24 grips in the same order, centers as the frame, `333` scrambles, cubing.js's solver).
-4. `loadEngine({ puzzle, searchWorker })` (`puzzle` left out = the 3x3x3). One puzzle is active at a time; loading another empties every cache (the three in *Facts* too).
-5. Replace each constant in the *Facts* table with a read from the active puzzle. The engine's exports stay usable by the test bench (which Part 3 rebuilds).
-6. A puzzle id (a hash of the definition) in every table key: `tableKey`, the IndexedDB key, the helper pool's keys. Stored tables from before get new keys, so they are built once more.
+1. `bench/methods.ts` (added to `bench/build.mjs`): one example method by index, on 5 seeded scrambles, two passes in one process (first run with builds, then warm). It prints a line when each step starts and when it ends: moves, ms, ok.
+2. A small runner that starts one process per method with a time limit and collects the lines (a search can't be stopped from inside the process).
+3. For the slow steps, the recorded requests through `bench/replay.ts`: nodes, µs per node, start bound against the answer's length.
+4. Write the table into *Facts* (per method: first run, warm, worst step) and the families' numbers into *What the first numbers say*. Change the order of Parts 2–8 here if the table says so.
 
-**Test:** `npm run check` prints the baseline again (compare the request hash with the new puzzle field left out); `npm run build`; the page by hand (solve, run a method, method search, edit a step).
-Rust untouched in this part.
+**Test:** every method ends with the cube solved on every scramble, every step ok.
 
-**Size:** hard, one long chat. If it runs long, stop after item 5 and do item 6 in the next chat.
+**Size:** easy; about 30 minutes of running.
 
-## Part 2 — Grips without centers + 2x2x2
+## Part 2 — Case tables
 
-**Why:** the engine reads the grip from where the centers are. The 2x2x2 has only corners, and so do several later puzzles (4x4x4, 6x6x6, Skewb).
+**Why:** a 14-move PLL takes up to a minute every time it comes up, and there are only 288 PLL starts. The engine already remembers blindfolded cases while the page is open (`knownAnswers`); this does it for every slow search and keeps it across reloads.
 
 **Do:**
-1. The grip rule becomes a field of the description. With a `frame`: as today (the scramble is judged by its frame pieces, after that only rotation moves change the grip).
-   Without one: the puzzle is taken as held, and only the rotation moves in the scramble and in *Done so far* change the grip. A user who wants "in any orientation" ticks every bottom face and *any front*, as today.
-2. "No center typed = all six kept" becomes "no frame piece typed = the frame is kept"; nothing is added on a puzzle without a frame.
-3. The whole-puzzle check without cubing.js's 3x3x3 function: solved in some grip of the puzzle.
-4. `src/engine/puzzle/cube2.ts`: corner names as on the 3x3x3, moves R U F by default (L D B allowed), rotations x y z, no frame, `222` scrambles, `experimentalSolve2x2x2`.
-5. Page: only a puzzle picker with the two puzzles, and whatever must change for the 2x2x2 to be usable (Part 3 does the rest).
+1. In the worker (it sees every request and owns IndexedDB): a `search` that took longer than a limit (say 200 ms) stores its answer under a key made of the moves, the targets text (with its options) and the start. A second IndexedDB store, `cases`, with a memory map in front and a cap (oldest dropped).
+2. A stored case answers at once: its moves when they fit `maxDepth`, "No solution found!" when they don't (the stored answer is the shortest, so nothing shorter exists). A search that failed under a depth limit stores nothing.
+3. `measure` gives a stored case's length as an exact distance, so the method search prunes those steps exactly.
+4. `list` requests aren't remembered.
+5. `knownAnswers` moves into this (one mechanism), keeping "already at the goal = no moves".
+6. The reply says where the answer came from (table, search, remembered case); the page shows it in the status line and the runs table.
 
-**Test:** `npm run check` unchanged. 2x2x2 on 20 seeded scrambles: "all corners" with R U F (3,674,160 states: one exact table) never needs more than 11 moves and is never longer than cubing.js's answer;
-a layer, a face, and an orient-everything step; every answer replayed by `reachesGoal`.
+**Test:** every example method on the same scrambles twice: identical solutions, the second pass's slow steps near 0 ms. On fresh scrambles, the share of remembered cases per step. A reload keeps them (the file-backed fake IndexedDB of plan-engine 5c). The replay is unchanged with case tables off.
 
-**Size:** medium.
+**Size:** medium, TypeScript only.
 
-## Part 3 — Test bench built from the puzzle description + `puzzle` in method files
+## Part 3 — Case sheets (the short ones)
 
-**Why:** the page is still written for the cube (see *Facts*). After this part a new puzzle needs no page code.
-
-**Do:**
-1. Chips made from the puzzle's piece types (any number of types, long lists scroll); move boxes from its moves (the "half turn only" row only for moves that have one);
-   bottom-face boxes from its faces, with *any front*; the viewer's puzzle and mask from the description.
-2. Presets and quick picks out of `index.html` into data per puzzle (`src/demo/presets.json`): goal presets, offsets picks (AUF / ADF become "turns of the top / bottom face"), solvable-with picks, move picks, BLD picks.
-3. Method files get `"puzzle": "2x2x2"` (left out = `3x3x3`, so every existing file still loads). `readMethod` checks a method against its own puzzle. Saved and example methods are listed for the picked puzzle.
-4. Example methods for the 2x2x2 (layer then the rest; face, orient, permute both layers).
-5. Switching puzzle on the page: keeps the runs table per puzzle, asks before dropping an unsaved method.
-
-**Test:** the 3x3x3 page behaves as before (solve, alternatives, offsets, BLD fields, method run, method search, save / export / import); the 2x2x2 end to end; an old method file without `puzzle` loads.
-
-**Size:** medium, almost all page code.
-
-## Part 4 — Pyraminx and Skewb
-
-**Why:** the first puzzles that aren't cubes inside: 12 rotations instead of 24 on the Pyraminx, turns with 3 positions, tips, and on the Skewb centers that move.
+**Why:** a remembered case still costs its first search. A sheet is every case of a step solved ahead of time, shipped as a small file and loaded into the case table the first time that step's goal comes up.
 
 **Do:**
-1. Grips worked out from the description's rotation moves instead of the `BOTTOM_TURNS` / `FRONT_TURNS` tables: every rotation they generate, each with its shortest name, grouped as "bottom face × front"
-   (which face a rotation puts on the bottom is found by rotating the face turns, as `symmetry.rs` does). The 3x3x3 keeps its 24 grips, same names, same order.
-2. Rust `Rotations::new`: the rotation moves come with the request instead of the fixed `x` and `y`; `MAX_ROTATIONS` 48 → 120 (the megaminx needs 60).
-3. Turns with 3 positions: `turnName`, `distinctTurns`, `moveInGrip`, offset groups and the page's move boxes stop assuming quarter and half turns.
-4. `pyraminx.ts`: frame = the middle pieces (CORNERS), tips as their own pieces (lower-case moves `u l r b`); `skewb.ts`: no frame. Piece names written by hand for these two.
-5. Scrambles `pyram` and `skewb`; full solvers `solvePyraminx`, `solveSkewb`.
+1. Engine helper `stepCases(method, index)`: the step's goal and what the earlier steps keep, worked out without a cube (as `gripGoals` and `laterGoals` do). Then every arrangement of the pieces the earlier steps don't pin, made per piece type from the kept roles
+   (a kept `:o` piece keeps its twist, a kept `:p` piece its place), joined under the cube's parity and twist rules, masked by the step's goal, each start once. It says the count first and refuses past 100,000.
+   First version: steps with one grip and one alternative.
+2. `bench/sheet.ts`: solves every case of a step through the in-process worker (`CORES` for helpers), writes as it goes and can go on from where it stopped. It prints the count, how many answers of each length, and the time.
+3. Sheets to make, every step up to 720 cases: the beginner method's four top steps, EPLL, L5EP, ELL, OLL, 6CO, PLL, CLL, COLL, CMLL, 6CP. Estimate from Part 1 before starting each (PLL: 288 searches, some of them a minute).
+4. Loading: an index of sheet keys; when a request's moves + targets match one, the worker fetches that sheet into the case table. The app says where sheets are (an option of `runSearchWorker`, like `wasm` and `helper`); the demo ships them in `dist/web/sheets/` (`script/build.js`).
 
-**Test:** `npm run check` unchanged, and the replay benchmark gives the same answers and node counts (item 2 touches the Rust side). 20 seeded scrambles each: the whole puzzle through the engine's own tables
-(Pyraminx without tips 933,120 states, Skewb 3,149,280) never needs more than 11 moves; a first-layer step on each; every answer replayed.
+**Test:** every sheet answer replayed with `reachesGoal`; 20 random cases per sheet give the same length in a fresh search; the case counts against the table above; methods 0, 4, 5, 6, 10 and 13 on fresh scrambles with sheets: their last steps answer on the first run.
 
-**Size:** medium.
+**Size:** medium. The solving runs in the background (minutes for most sheets, up to an hour or two for PLL and COLL).
 
-## Part 5 — Megaminx and Kilominx
+## Part 4 — Room for hand-written tables in the Rust search (no behaviour change)
 
-**Why:** the big rotation group (60) and the first puzzle where table sizes and search width hurt: 12 faces × 4 turns each, about 44 choices per move instead of 15.
-
-**Do:**
-1. 60 grips as 12 bottoms × 5 fronts; the page's bottom-face picker with 12 faces.
-2. Face names of two letters (`BL`, `DR`…): piece names joined with `_` (`U_F_R`), the way cubing.js writes its own corner rotations. Turns with 5 positions (`U`, `U2`, `U2'`, `U'`) in `turnName` and the move boxes.
-3. Scrambles (`minx`; check that its `R++ D--` text parses into moves the definition takes), `solveMegaminx` as the full solver.
-4. Measure before promising: a star (5 edges, about 547M states: split tables), an F2L-style pair, a last-layer step. Write time, memory and table sizes into *Facts*, and say on the page when a step is too deep to finish.
-5. Kilominx only once it's clear what cubing.js's `kilominx` definition is (see *Facts*).
-
-**Test:** `npm run check` unchanged. Megaminx on 5 seeded scrambles: the star and two pair steps, replayed by `reachesGoal`; the numbers from item 4.
-
-**Size:** medium-hard; the code is small, the measuring isn't.
-
-## Part 6 — 4x4x4
-
-**Why:** the first puzzle with **identical pieces** (four centers per face share one id), which breaks the engine's "piece n lives on spot n" (see *Facts*), and the first with inner slices.
+**Why:** the IDA* only reads `TableCore`. A hand-written table needs its own state (a few coordinates stepped by turn tables) behind the same calls, a way to be picked from the compiled goal, and the same life cycle as any table (build, store, load, progress).
 
 **Do:**
-1. Goals name **spots**, and a spot's wanted piece comes from the solved pattern. Go through `placedPatterns`, `untouchedWanted`, `traceWanted`, `relabel`, `goalOnCube`, `rotateGoal`, `maskPattern` and `estimate`.
-   On identical pieces "solved" means "a piece of the right kind is here"; roles that need single pieces (BLD buffers, `:r` groups) refuse them with a message.
-2. Names in the usual big-cube way: wings `UFr` (two faces, then the side it leans to), centers `Ufr`. Inner slices `2R` and wide moves `Rw` on the page.
-3. `cube4.ts`: no frame, `444` scrambles (check how long cubing.js takes to make one), no full solver.
-4. Rust: check a piece type of 24 in six classes of four, and 24 + 24 + 8 tracked pieces against `MAX_UNITS` 64.
-5. Steps to measure: one center, two opposite centers, all centers (24! / 4!^6 ≈ 3 × 10^15 arrangements: split by face), two wings joined (`UFr:r UFl:r`), a 3x3x3 stage with outer and wide moves.
+1. `search/src/hand.rs`: what a hand-written table must offer: read a pattern into its state, step a state by a turn, a state's stored value (distance mod 3), its exact distance by walking down, bytes out and in, and whether it is exact for the whole goal.
+2. `Slot` becomes "a generic table or a hand-written one"; the IDA* keeps a hand-written slot's coordinates per depth the way it keeps `(Units, u64)` now, with the same mod-3 bookkeeping.
+3. A registry: given the closed targets and the turns, the hand-written tables whose goal this is, in whichever of the 24 rotations (`Rotations`). `SplitSearch` adds them next to its own views, so the bound is the larger of the two and never worse than today.
+   When one is exact for the whole goal: `measure` is exact, `search` walks down, `list` deepens with no dead ends.
+4. Worker: hand-written tables are built, stored and loaded like sub-tables (their own key, the same progress messages, counted in the memory budget), and helpers get their bytes.
+5. The reply names the tables a search used (Part 2's field), so a goal that almost matches (an offset, a `:p`, another move) visibly falls back to generic speed.
+6. The proof, as the first registered tables: flip × E-slice positions (1,013,760) and twist × E-slice positions (1,082,565) for the DR goal with face turns. They are the two tables the generic planner already builds for it, so the bound is the same.
 
-**Test:** `npm run check` unchanged (item 1 is the risk). 5 seeded scrambles: one center, two centers, a joined wing pair, each replayed by `reachesGoal`; numbers into *Facts*. Not a full solve.
+**Test:** the DR step on 100 seeded scrambles: identical answers and node counts with the registry on and off; time per node both ways (what stepping by turn tables is worth against generic ranking, written into *Facts*). The replay is identical with the registry empty.
 
-**Size:** hard. If it runs long, stop after item 2 (with the check passing) and finish in a second chat.
+**Size:** medium-hard.
 
-## Part 7 — 5x5x5 to 7x7x7
+## Part 5 — The cube by hand
 
-**Why:** more of Part 6: more piece types (11 on the 7x7x7, limit 16), more slices. 5x5x5 and 7x7x7 have a center frame again; 6x6x6 doesn't.
-
-**Do:**
-1. The Part 6 names for every piece type of bigger cubes (midges `UF`, wings by depth, `Uf` and `Ufr` centers, obliques), made by rule from the slices that move each piece, not written by hand.
-2. Move boxes for many slices (`3R`, `3Rw`) without filling the page.
-3. `cube5.ts`, `cube6.ts`, `cube7.ts`; scrambles `555`, `666`, `777`. The `40x40x40` is left out (over the limit) with a line saying why.
-4. Memory: check the worker's budget with many small tables per step.
-
-**Test:** `npm run check` unchanged. Per size, 3 seeded scrambles: a center step and a joined-wings step, replayed; numbers into *Facts*.
-
-**Size:** medium once Part 6 is in.
-
-## Part 8 — FTO and the other geometry puzzles
-
-**Why:** everything left in cubing.js's list, and the generic naming that custom puzzles (Parts 9 and 10) need: after this part a puzzle needs no hand-written names or grips.
+**Why:** phase 1 and phase 2 tables only fit in memory because of symmetry classes with mirrors, which the generic code can't express.
 
 **Do:**
-1. **Derived names.** A piece's name = the faces whose outer turn moves or twists it (in the puzzle's face order); if two pieces share that, the inner slices that move it, in lower case; if still shared, `#n`.
-   It must give today's names on the 3x3x3 and Part 6 / 7's names on big cubes. `TYPE#n` (`EDGES#5`) is always accepted in goal text, on every puzzle.
-2. **Derived grips** from whatever rotation moves a definition has; none = one grip, and the page hides the bottom-face boxes.
-3. Descriptions with derived values for `fto`, `baby_fto`, `master_tetraminx`, `gigaminx`, `redi_cube`; `melindas2x2x2x2`, `loopover` and `tri_quad` get `TYPE#n` names and one grip.
-4. A filter box over the chips (the gigaminx has 60 of a kind).
+1. `search/src/hand/cube.rs`: the cube as pieces (8 corners with twists, 12 edges with flips), read from a pattern and written back in cubing.js's order; the 18 face turns; multiply and invert.
+2. Coordinates with turn tables: twist (2,187), flip (2,048), E-slice positions (495), corner permutation (40,320), U/D-edge permutation (40,320), E-slice permutation (24).
+3. The 16 symmetries that keep the U/D axis (quarter turns about it, a half turn about another axis, the left-right mirror) as cubes; conjugating a cube and a turn by one.
+4. Symmetry classes: flip × slice → class + symmetry, with its turn table (64,430 × 18) and the twist's conjugation table (2,187 × 16); corner permutation → class + symmetry (2,768) with the U/D-edge conjugation table (40,320 × 16).
+5. Nothing is registered in this part: it ends with tests.
 
-**Test:** `npm run check` unchanged with the 3x3x3's names derived instead of written. Per puzzle, 5 scrambles (cubing.js's where it has one, random moves otherwise) and one small step, replayed.
-Write per puzzle what works, what is slow and what is refused into *Facts*. A puzzle that needs more than this (gigaminx speed, Melinda's) gets its own chat.
+**Test:** class counts 64,430 and 2,768. On 1,000 random walks, coordinates stepped by the tables equal coordinates read from the pattern cubing.js gives. A state and its 16 images land in one class. The class turn table equals "turn, then classify".
 
-**Size:** medium.
+**Size:** hard; the classes are the fiddly part. Stop after item 2 with its tests passing if it runs long, and do 3–4 in a second chat.
 
-## Part 9 — Custom puzzles from a puzzle-geometry description
+## Part 6 — Phase 1 table
 
-**Why:** the easy way for a user to enter their own puzzle: a shape and its cuts, the text cubing.js's puzzle geometry reads (a base shape, then cuts by type and depth: the 3x3x3 is `c f 0.333333333333333`).
-cubing.js turns it into a definition, and should draw it too (to check, see *Facts*).
+**Why:** the exact distance to domino reduction. It makes the DR step a walk down and lets the method search list every DR of a length without dead ends, which is what holds "DR, then finish" back today (plan-engine 8d).
 
 **Do:**
-1. Engine: `customPuzzle({ name, description })` gives a `PuzzleSpec`: definition from puzzle geometry, names and grips derived (Part 8), default moves = the outer face turns,
-   scrambles = random moves (length is an option; there is no random-state scrambler for an unknown puzzle), no full solver.
-2. Limits checked before anything is built, with plain messages: at most 16 piece types, 64 moving pieces per type, twists that fit a byte. A warning for big puzzles ("only small steps will be fast").
-3. Page, a *Custom puzzle* panel: start from one of puzzle geometry's named puzzles (`getPG3DNamedPuzzles`) or build one (base shape, a list of cuts with type and depth), with a live 3D preview and a name.
-   *Save* keeps it in this browser (`puzzly.puzzles`); *Export file* / *Import file* as JSON `{ name, description }`.
-4. Method files: `puzzle` is a built-in id, or `{ name, description }` inside the file, so an exported method carries its puzzle.
-5. Table keys already carry the definition's hash (Part 1): a custom puzzle's tables are stored like any other, and changing a cut gives a new id.
+1. The table: (flip-slice class, twist) → distance mod 3, 140,908,410 entries, 35.2 MB. Filled breadth-first from the solved class, forward then backward as `table/fill.rs` does; a class with symmetries of its own marks every image of the twist.
+2. Registered for the DR goal with all 18 face turns. Check what the three axes' requests really look like (the engine holds the cube so the goal is as written, but a rotated EO goal is written differently, see plan-engine 8g) and match each.
+3. `measure` exact, `search` a walk down, `list` and its pages with the exact bound.
+4. Measure the build in wasm (aim: under 2 minutes, with progress) and the memory while it fills. If it's too slow for a first run, the table becomes a file to fetch (plan-engine 5d).
+5. A sample, not wired in: the table read on all three axes as a bound for whole-cube goals (PLL, ZBLL, blindfolded flips), against the generic start bound on 40 states each. Expected to lose (see *What the first numbers say*); keep it only if the sample says otherwise.
 
-**Test:** the 3x3x3 entered as a description gives the same move counts as the built-in one on the check's step scenarios; two unusual puzzles (a corner-turning cube, one of the named list) with a small step each, replayed;
-a description that can't be read and one over a limit each stop with a message.
+**Test:** the DR step on 100 seeded scrambles: same lengths as the generic path. States per depth add up to 2,217,093,120, deepest 12. Every 12-move DR of one scramble: same answers as before, time against the ~9 s it takes now.
+The method search on Two-phase (example 15), same seeds as 8d: time to reach 20 and 19 moves against 8d's numbers and `solveFull`.
 
-**Size:** medium; the engine side is small after Part 8, the panel is most of it.
+**Size:** hard.
 
-## Part 10 — Custom puzzles from a KPuzzle definition (JSON)
+## Part 7 — Phase 2 tables (only if Part 6's numbers ask)
 
-**Why:** for puzzles puzzle geometry can't describe: the user gives the definition itself (piece types, the solved pattern, each move as a permutation with twists).
-It is what the engine and the Rust search already work from.
+**Why:** once DR answers come for free, the method search on Two-phase spends its time in finishes (6–260 ms each on generic tables).
 
-**Do:**
-1. `customPuzzle({ name, definition, rotations?, pieceNames?, bonds? })`. With only a definition: names `TYPE#n`, default moves = every move not listed as a rotation, one grip unless rotations are listed, no frame.
-2. Checks with plain messages: the JSON's shape, every permutation really is one, lengths match the piece counts, twists in range, each move comes back after a bounded number of turns, the Part 9 limits.
-3. Page: a paste box and a file input in the *Custom puzzle* panel; optional fields for piece names and for which moves are rotations.
-   No 3D picture for these: a table of each piece type's spots (what sits where, goal pieces marked) stands in for the cube.
-4. Saved, exported and carried inside method files like Part 9's (`{ name, definition, … }`).
-5. README, *Using the engine in another app*: custom puzzles from code.
-
-**Test:** the 3x3x3's own definition exported and loaded back as a custom puzzle gives the check's move counts (names mapped to `TYPE#n`); a tiny hand-written puzzle (three pieces, two moves) whose distances are known by hand;
-one broken definition per check in item 2.
-
-**Size:** medium.
-
-## Part 11 — Square-1 (two chats)
-
-**Why it's hard:** the search assumes every move can be made in every state, and on the Square-1 a slash is only possible when no corner sits across the cut. The definition doesn't say so (see *Facts*),
-and a masked start hides which wedges are the two halves of one corner. twips has the same blind spot, so it can't be the fallback here.
-
-### Part 11a — In the engine
+**Decide first:** from Part 6's last test, the share of the time spent in finishes. Under a third: tick this part as not needed.
 
 **Do:**
-1. Two new fields of a puzzle description, usable by any bandaged puzzle (and by Part 10's custom ones): **bonds** (pairs of pieces that are one physical piece: the two wedges of each corner)
-   and, per move, the **cuts** it makes (pairs of neighbouring spots it separates). A move is legal in a state when no cut separates a bonded pair.
-2. Pieces the user names: 8 corners and 8 edges, each standing for its wedge or wedges; a role on a corner applies to both.
-3. Masks keep the shape: wedges the goal ignores are hidden as "corner, first half / corner, second half / edge" (three shared ids instead of one), so legality can be read from any masked state.
-   A shape-only goal (cube shape) is then every wedge in its shape group.
-4. Legality on the TypeScript side: `reachesGoal` replays an answer and fails on an illegal move; the walks that try moves (solvable-with, reachable targets) skip illegal ones.
-5. Notation `(x, y) /` in and out; one grip (no rotations). Decide what one move is and write it down here: the usual choice for shortest Square-1 answers is to count slashes (twist metric).
-6. `square1.ts` with `sq1` scrambles; goal presets: cube shape, each layer's pieces in their layer, corners, edges.
+1. Tables: corner-permutation class × U/D-edge permutation (111,605,760 entries, 27.9 MB), and corner permutation × E-slice permutation (967,680). The bound is the larger.
+2. Registered for the whole cube with `U D R2 L2 F2 B2`, next to the generic views.
+3. Budget: with Part 6 that is 63 MB of hand-written tables; say on the page when they are being built, and never build them for a method that doesn't ask.
 
-**Test:** `npm run check` unchanged. Goal checks by hand on known algs (a parity alg, a cube-shape alg): `reachesGoal` true on legal ones, false when a slash is made illegal. No searches yet.
+**Test:** domino finishes on 100 DR states: same lengths (none over 18), nodes and time against the generic plan. The Two-phase method search against Part 6's numbers.
 
-### Part 11b — In the Rust search
+**Size:** medium once Parts 5 and 6 are in.
 
-**Do:**
-1. Requests carry the bonds and cuts. A turn is `(x, y)` followed by a slash; the table fill (`table/fill.rs`) and the IDA* run (`split/ida.rs`) skip turns that aren't legal in the state they start from.
-   (Filling goes backward from the targets: a slash is its own inverse and is legal before exactly when it is legal after, layer turns are always legal, so backward and forward agree.)
-2. Sub-tables: keeping the shape groups in every sub-table makes them exact about legality but bigger; leaving legality out keeps them small and still a lower bound. Measure both on cube shape and two more steps, keep the better.
-3. Check the numbering: 24 wedges in one piece type, where two halves never part. If the tables come out far bigger than the states that exist, number bonded pieces as one.
-4. No twips fallback for a puzzle with bonds: a goal too big for tables stops with a message.
+## Part 8 — Long sheets
 
-**Test:** cube shape from 20 seeded scrambles, every answer replayed legally; compare the longest with the known maximum for cube shape (7 slashes, to confirm on Jaap's Square-1 page before relying on it).
-Then a whole method as an example (cube shape, layers, corners, edges) as far as speed allows; numbers into *Facts*.
-
-**Size:** hard: 11a and 11b one chat each, a third for speed if the numbers ask for it.
-
-## Part 12 — Clock
-
-**Why it's different:** nothing ever changes place, dials only turn, and all pin moves commute. It still fits "pieces with twists", so small goals can use today's tables,
-but searching move by move is hopeless for the whole clock: about 330 turns to choose from (each pin move × 11 amounts), and their order never matters.
+**Why:** ZBLL has 7,776 starts and the whole last layer 62,208, each a search of up to a minute today. That is hours of solving, done once, for a file of a few hundred KB.
 
 **Do:**
-1. `clock.ts`: the 18 dials as pieces, named by side and place (front `UL U UR L C R DL D DR`, back the same with a prefix); "solved" = pointing at 12, the other roles are refused with a message.
-   Grips = front or back up × four turns (`y2`, `x2`, `z`). Moves written as cubing.js does (`UR3+`, `ALL2-`); one move = one pin move of any amount, turning the clock over doesn't count.
-2. Try the generic path first: a goal of a few dials (the front cross, 5 dials = 248,832 states) is one exact table. Confirm the tables and the turn list cope with moves that come back after 12.
-3. For goals too big for a table: a small solver that uses what the Clock is. An answer is a set of pin moves with amounts; the hours are sums mod 12, so for a chosen set the amounts follow from arithmetic.
-   Try sets fewest moves first. In Rust, next to `DistanceTable`, with the same calls (measure, search, list).
-   **The worker picks it from the definition, not from the puzzle's name:** every allowed move commutes with every other and none moves a piece. A custom puzzle like that gets it too.
-4. Page: dial chips as two 3×3 grids; check what the viewer shows for Clock (see *Facts*).
+1. Rotation classes in the sheet tool: cases that are copies of each other under the rotations keeping the moves and the targets share one search, the answer renamed through the turn map (`Rotations`). With Part 5 done, the mirror too, and for whole-cube goals the inverse.
+   A sheet answer is then a shortest answer, but maybe not the one a fresh search would pick first: say so in the README.
+2. Estimate before each run: 30 random cases, then hours = classes × mean time. Write it down and start the run outside the chat; it goes on from where it stopped.
+3. ZBLL with face turns (CFOP with ZBLL), ZBLL and TTLL with `U R L` (ZZ, LEOR, ZZ-CT) if Part 1 shows them slow at all.
+4. The whole last layer, if the estimate fits a night or two: one sheet then answers every last-layer step. For a step that keeps everything outside the top layer, any answer is itself a last-layer case,
+   so the engine goes through the sheet's answers shortest first and takes the first that reaches the step's goal. Part 3's last-layer sheets (OLL, PLL, CLL, ELL, COLL, EPLL, top cross) are then no longer needed.
 
-**Test:** `npm run check` unchanged. 20 seeded `clock` scrambles: the whole clock solved and replayed by `reachesGoal`, never longer than the scramble itself, and within the known maximum (12 moves, to confirm before relying on it).
-On small goals both ways (table and arithmetic) give the same length.
+**Test:** lengths against fresh searches on 50 random cases per sheet; PLL lengths equal Part 3's; every answer replayed. The longest last-layer answer against the known maximum (believed 16 face turns; confirm before relying on it).
 
-**Size:** medium-hard, one or two chats.
+**Size:** medium to write; the runs take hours.
 
 ## Left for later (not planned)
 
-- Two puzzles loaded at the same time (engine instances instead of one active puzzle).
-- Random-state scrambles for custom puzzles.
-- Nicer hand-written names for the puzzles that get derived ones.
-- Anything from `plan-engine.md` that is still open.
+- Sharper F2L bounds for the method search (a whole CFOP run proven shortest): no table of a size a browser can hold sees four pairs together (plan-engine 8e).
+- A whole-cube optimal solver ("Full cube" keeps cubing.js's two-phase).
+- Methods left out of the examples: M2 blindfolded (its parity is a slice turn, which parity pieces can't say), and the less common ones (PCMS, Belt, SSC, ECE, Tripod, the Francisco methods, APB, Nautilus, 8355): each is expressible, none adds a new kind of goal.
+- The repeated-step rule (see *Facts*): a round of 0 moves that still added a piece should go on to the next round.
+- plan-engine's 5d (table files) and 8h (parallel table builds).

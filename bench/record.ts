@@ -34,15 +34,11 @@ const drFinish = readMethod({
     { name: "Finish", pieces: ALL, keep: true, grips: D_ONLY, moves: ["U", "D", "R2", "L2", "F2", "B2"] },
   ],
 });
-const cfopFull = readMethod({
-  name: "CFOP + OLL + PLL",
-  steps: [
-    ...(examples as any[])[0].steps,
-    { name: "OLL", pieces: "UF:o UR:o UB:o UL:o UFR:o UBR:o UBL:o UFL:o", keep: true, grips: D_ONLY, moves: FACE },
-    { name: "PLL", pieces: "UF UR UB UL UFR UBR UBL UFL", keep: true, grips: D_ONLY, moves: FACE },
-  ],
-});
-const pseudo = readMethod((examples as any[]).find((m) => m.name.startsWith("Pseudo")));
+// CFOP with OLL and PLL is example 0 as it is
+const cfopFull = readMethod((examples as any[])[0]);
+// Pseudo-slotting up to its ADF step (the example goes on with OLL and PLL, which the CFOP scenario already covers)
+const pseudoExample = (examples as any[]).find((m) => m.name.startsWith("Pseudo"));
+const pseudo = readMethod({ ...pseudoExample, steps: pseudoExample.steps.slice(0, 6) });
 
 // A scramble that only flips two edges in place (a BLD flip step with the buffer home)
 const kpuzzle = await cube3x3x3.kpuzzle();
