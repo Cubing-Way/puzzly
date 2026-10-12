@@ -19,6 +19,9 @@ export interface GoalPiece {
   role: Role;
 }
 
+// How a step picks among its answers: the fewest moves, or the lowest speed cost (how fast the moves turn in the hands, see speed/)
+export type Rank = "moves" | "speed";
+
 // Options for a step search
 export interface StepOptions {
   // Moves the search may use (face turns by default)
@@ -48,6 +51,21 @@ export interface StepOptions {
   targetsPerStep?: number;
   // BLD: pieces that may also swap when the targets left can't be done alone (an odd number of them), e.g. "UFR UBR" for edges (default: none)
   parity?: string;
+  // Which answer is best: the fewest moves (default), or by speed the fastest to turn among the shortest answers and those up to extraMoves longer
+  rank?: Rank;
+  // Answers up to this many moves longer than the shortest count too: for rank "speed", and for listing candidates (default 0: the shortest answers only)
+  extraMoves?: number;
+  // Faces the answer avoids when it can, e.g. ["F", "B"] for a first-two-layers pair: among the answers compared (the shortest and those up to extraMoves
+  // longer), one that turns none of them and needs no rotation that costs comes before all others, whatever its length or speed. When avoiding them takes
+  // a rotation, the ranking decides between rotating and turning them (see StepResult.tier) (default: none)
+  avoid?: string[];
+  // The answer goes on to undo the offset it reached (a pseudo-cross ends with its D turn), and those moves count in its length and its speed: the best answer
+  // is the shortest (or fastest) with them, and the result has no offset left (default: the offset is left in, for a later step)
+  undoOffset?: boolean;
+  // By speed: a face turn of an answer may also be made as the opposite wide turn (R as Lw: the other hand turns two layers), with the cube's turn made up
+  // by a rotation at the start or at the end, so the cube ends as the plain answer leaves it. For turns about these axes: "x" (R and L), "y" (U and D),
+  // "z" (F and B) (default: none)
+  wideAxes?: string[];
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
@@ -62,6 +80,13 @@ export interface TableProgress {
 // Best answer of a step search
 export interface StepResult {
   solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
+  // The same turns as the hands make them, when one is made as the other hand's wide turn (Lw' where `solution` says R' x): the writing to score and show.
+  // `solution` stays the one to check and to go on from, since the engine tells how the cube is held from x, y, z turns alone
+  wide?: string;
+  // With faces to avoid, where the answer stands (a lower tier always comes first): 0 = it turns none of them and starts with no rotation that costs
+  // (by moves, or on a solve's first step, none costs); 1 = it turns none after a rotation, or turns some where no answer held the same way does without;
+  // 2 = it turns some although an answer held the same way doesn't
+  tier?: number;
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
   pieces: string; // goal text it solved (the winning alternative plus kept pieces), named in the grip it ends in
@@ -87,7 +112,10 @@ export interface StepConfig {
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
   lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way), fewest moves in total wins (0 = none, the step's own shortest)
-  extraMoves?: number; // with lookahead: candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
+  extraMoves?: number; // with lookahead or rank "speed": candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
+  avoid?: string; // faces the answer avoids when it can, e.g. "F B" ("" = none): answers that turn none of them come first among those compared
+  wideAxes?: string; // by speed, axes its answer may make a wide turn about, e.g. "x" or "x z" ("" = none): R as Lw with an x turn to make up for it, F as Bw with a z turn
+  rank?: Rank; // how the step picks its answer: "moves" = the fewest moves (default), "speed" = the fastest to turn; with lookahead, what its candidates' totals count
   repeat?: boolean; // run the step again and again until it has nothing left to do (e.g. one BLD 3-cycle per round, or "the easiest pair" until F2L is done)
 }
 
@@ -107,13 +135,16 @@ export interface MethodStepResult extends StepResult {
   moves: number; // move count of the solution
   ms: number; // search time
   ok: boolean; // scramble + done + solution really reaches the step's goal
-  lookahead: { candidates: number; steps: number; total: number | null } | null; // with lookahead: answers compared, later steps they were judged over, and the winner's moves over this step and those (null = no answer got through them)
+  // With lookahead: answers compared, later steps they were judged over, the winner's total over this step and those (null = no answer got through them),
+  // and what that total counts (moves when left out)
+  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank } | null;
 }
 
 // A whole method run
 export interface MethodResult {
   steps: MethodStepResult[];
   solution: string; // every step's solution in order
+  wide?: string; // the same with each step's wide writing where it has one (as the hands make it: the one to score and show)
   pieces: string; // every step's pieces, named in the grip the run ends in
   offset: string; // offset the last step left in ("" = none)
   moves: number;

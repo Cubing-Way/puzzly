@@ -25,6 +25,7 @@ export interface Combo {
   twips?: boolean; // the worker answers it with twips (no tables fit): a list gives only its one shortest answer
   cube?: KPattern; // untouched steps: the cube held in that grip as it really is (held is it relabeled, so the wanted end state is the solved cube)
   untouched?: { pieces: string; changed: string }; // untouched steps: the pieces it solves and every spot it may change (pieces text)
+  twins?: Combo[]; // the same pieces and turns held in other grips (combos skipped as repeats of this one): ranking by speed tries each answer in those grips too
 }
 
 // One answer of a step: the combo it came from and its moves (after the grip rotation)

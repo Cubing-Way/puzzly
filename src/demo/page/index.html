@@ -84,8 +84,8 @@
                     <div id="edge-chips" class="chips" aria-label="Edges"></div>
                     <div id="corner-chips" class="chips" aria-label="Corners"></div>
                     <div id="center-chips" class="chips" aria-label="Centers"></div>
-                    <!-- Grips to try: faces that may go on the bottom (the shortest answer wins) -->
-                    <span class="label">Bottom face <small>as held now; shortest wins</small></span>
+                    <!-- Grips to try: faces that may go on the bottom, and any front (the best answer wins); by speed, x and z turns too, made up for by a wide turn -->
+                    <span class="label">Bottom face <small>as held now; with the turns the answer may start with</small></span>
                     <div class="moves">
                         <label><input type="checkbox" name="bottom" value="D" checked />D</label>
                         <label><input type="checkbox" name="bottom" value="U" />U</label>
@@ -94,6 +94,8 @@
                         <label><input type="checkbox" name="bottom" value="R" />R</label>
                         <label><input type="checkbox" name="bottom" value="L" />L</label>
                         <label><input id="any-front" type="checkbox" />any front (y turns)</label>
+                        <label title="By speed, a turn of R or L may also be made as the other hand's wide turn (R as Lw), with an x turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Saved with a method step"><input id="x-turns" type="checkbox" checked />x turns (wide R, L)</label>
+                        <label title="By speed, a turn of F or B may also be made as the opposite wide turn (F as Bw), with a z turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Saved with a method step"><input id="z-turns" type="checkbox" />z turns (wide F, B)</label>
                     </div>
 
                     <!-- Offsets: the goal also counts when the cube is off by one of these moves (the solution leaves it in) -->
@@ -106,6 +108,10 @@
                         <button type="button" data-offsets="D D2 D'">ADF</button>
                     </div>
                     <p id="offsets-error" class="error"></p>
+                    <!-- A step solve ends with the move that undoes the offset it reached, so that move counts in the moves and the speed (unticked: the offset is left in) -->
+                    <div class="moves">
+                        <label title="A step solve's answer ends with the move that undoes its offset (a pseudo-cross with its D turn), and the best answer is the shortest or fastest counting that move. Unticked, the offset is left in and shown under Offset. A method step always leaves its offset in, for the steps after it"><input id="undo-offset" type="checkbox" checked />finish with the move that undoes the offset</label>
+                    </div>
 
                     <!-- Solvable with: the goal also counts when only these moves are needed to finish it later (e.g. R U: corners a 2-gen finish can solve) -->
                     <label for="solvable-input" class="label">Solvable with <small>goal also counts when these moves alone can finish it</small></label>
@@ -178,6 +184,21 @@
                     <div class="moves">
                         <label><input id="first-found" type="checkbox" />stop at first answer (any within max depth)</label>
                     </div>
+
+                    <!-- Which answer is best: the fewest moves, or the fastest to turn (its speed cost); answers up to the extra moves longer than the shortest count too -->
+                    <span class="label">Best answer <small>what wins among the answers compared</small></span>
+                    <!-- Faces the answer avoids when it can: answers that turn none of them come first, whatever their length or speed -->
+                    <div class="row bld">
+                        <label class="check-label" title="Among the answers compared, the ones that turn none of these faces come before the ones that do, whatever their length or speed (give them room with extra moves). E.g. F B for a first-two-layers pair on R, U and L">Avoid faces <input id="avoid-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. F B)" /></label>
+                    </div>
+                    <div class="segmented">
+                        <label><input type="radio" name="rank" value="moves" checked /> Fewest moves</label>
+                        <label><input type="radio" name="rank" value="speed" /> Speed</label>
+                    </div>
+                    <div class="row">
+                        <label class="check-label number-label" title="Answers up to this many moves longer than the shortest are compared too (by speed, one of them may win; a method step's lookahead judges them as well)">up to <input id="step-extra" type="number" min="0" max="4" value="0" /> extra moves</label>
+                        <label class="check-label number-label" title="A step solve also lists this many other answers, best first (0 = only the best one, the fastest search)">list <input id="candidates-input" type="number" min="0" max="50" value="5" /> other answers</label>
+                    </div>
                 </fieldset>
 
                 <button id="solve-button" type="submit" class="primary">Solve</button>
@@ -194,6 +215,7 @@
                         <!-- Numbers for the shown solve -->
                         <dl class="stats">
                             <div><dt>Moves</dt><dd id="moves-stat">—</dd></div>
+                            <div><dt>Speed</dt><dd id="speed-stat" title="Cost of the cheapest fingering: an easy turn (R, or a U flick) = 1">—</dd></div>
                             <div><dt>Time</dt><dd id="time-stat">—</dd></div>
                             <div><dt>Check</dt><dd id="check-stat">—</dd></div>
                             <div><dt>Offset</dt><dd id="offset-stat">—</dd></div>
@@ -202,6 +224,30 @@
                         <div class="row">
                             <button id="continue-button" type="button" disabled>Continue from here</button>
                             <button id="copy-button" type="button" class="quiet" disabled>Copy</button>
+                        </div>
+                        <!-- How the solution turns in the hands: one row per move (and per regrip) with who makes it, its score, and the other ways from that hand position -->
+                        <div id="fingering" class="fingering" hidden>
+                            <span class="label">Fingering <small>each move's score; the solution's speed is their sum</small></span>
+                            <div class="table-wrap scroll">
+                                <table>
+                                    <thead>
+                                        <tr><th>Move</th><th>Made by</th><th>Score</th><th>Other ways</th><th>Hands after</th></tr>
+                                    </thead>
+                                    <tbody id="fingering-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <!-- The answers the step compared, best first, each with its moves and speed (click one to see it) -->
+                        <div id="candidates" class="candidates" hidden>
+                            <span class="label">Answers compared <small id="candidates-note"></small></span>
+                            <div class="table-wrap scroll">
+                                <table>
+                                    <thead>
+                                        <tr><th>#</th><th>Moves</th><th>Speed</th><th>Check</th><th>Solution</th></tr>
+                                    </thead>
+                                    <tbody id="candidates-body"></tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -234,10 +280,9 @@
                             <label class="check-label"><input id="step-keep" type="checkbox" /> keep earlier steps' pieces</label>
                             <label class="check-label" title="Run the step again until it has nothing left to do (e.g. one BLD 3-cycle per round)"><input id="step-repeat" type="checkbox" /> repeat until done</label>
                         </div>
-                        <!-- Lookahead: later steps that judge this step's answers (0 = take its own shortest), and how many moves longer than its shortest a candidate may be -->
+                        <!-- Lookahead: later steps that judge this step's answers (0 = take its own best); its candidates may be as much longer than the shortest as the form's extra moves say -->
                         <div class="row">
                             <label class="check-label number-label">Lookahead <input id="step-lookahead" type="number" min="0" max="5" value="0" /> steps</label>
-                            <label class="check-label number-label">up to <input id="step-extra" type="number" min="0" max="4" value="0" /> extra moves</label>
                         </div>
                         <div class="row">
                             <button id="add-step" type="button">Add form as step</button>
@@ -256,7 +301,7 @@
                     <div class="table-wrap">
                         <table>
                             <thead>
-                                <tr><th>Step</th><th>Moves</th><th>Offset</th><th title="Candidate answers compared → the winner's moves over this step and the next ones">Lookahead</th><th>Check</th><th>Time</th><th>Solution</th></tr>
+                                <tr><th>Step</th><th>Moves</th><th>Speed</th><th>Offset</th><th title="Candidate answers compared → the winner's total (moves, or speed cost) over this step and the next ones">Lookahead</th><th>Check</th><th>Time</th><th>Solution</th></tr>
                             </thead>
                             <tbody id="method-body"></tbody>
                         </table>
@@ -271,7 +316,7 @@
                 <div class="table-wrap">
                     <table>
                         <thead>
-                            <tr><th>#</th><th>Goal</th><th>Moves</th><th>Offset</th><th>Time</th><th>Check</th><th>Solution</th></tr>
+                            <tr><th>#</th><th>Goal</th><th>Moves</th><th>Speed</th><th>Offset</th><th>Time</th><th>Check</th><th>Solution</th></tr>
                         </thead>
                         <tbody id="runs-body"></tbody>
                     </table>

@@ -83,12 +83,14 @@ export async function stepCombos(scramble: string, pieces: string, options: Step
         : [...new Set(offsets)].map((offset) => estimate(held, start, targets.filter((_, index) => offsets[index] === offset), goal, tables));
       const bound = Math.min(...scores.map((score) => score.bound));
       const total = Math.min(...scores.map((score) => score.total));
-      return [{ alternative, rotation, done, goal, gripMatters, fresh, held, start, offsets, targets, bound, total }];
+      return [{ alternative, rotation, done, goal, gripMatters, fresh, held, start, offsets, targets, bound, total, twins: [] as Combo[] }];
     });
   });
   if (!combos.length) throw new Error(NOTHING_NEW);
   // Easiest-looking first (ties keep alternative and grip order), keeping only combos worth measuring
   const candidates: typeof combos = [];
+  // The first combo to ask for each set of pieces and turns on the cube itself (a later one asking for the same in another grip is its twin)
+  const byCube = new Map<string, (typeof combos)[number]>();
   for (const combo of combos.sort((a, b) => a.total - b.total || a.bound - b.bound)) {
     const { rotation, done, goal, gripMatters, start } = combo;
     // Same grip and same hidden targets (offsets the goal can't see), or the same pieces, turns and offsets as the cube itself turns them
@@ -106,7 +108,13 @@ export async function stepCombos(scramble: string, pieces: string, options: Step
     // Skip a combo that asks for the same thing as an earlier one (still noting its keys, so later repeats are caught too)
     const repeat = keys.some((key) => asked.has(key));
     for (const key of keys) asked.add(key);
-    if (repeat) continue;
+    if (repeat) {
+      // The same pieces and turns in another grip: a twin of the combo that asked first (the same answers, turned differently in the hands)
+      const original = byCube.get(keys[1]);
+      if (original && original.rotation !== rotation) original.twins.push(combo);
+      continue;
+    }
+    byCube.set(keys[1], combo);
     // Skip a combo whose hardest piece alone needs more moves than the user's limit
     if (combo.bound > (options.maxDepth ?? Infinity)) continue;
     // Keep only the targets whose centers the allowed moves can bring home (a search for the others would never end)

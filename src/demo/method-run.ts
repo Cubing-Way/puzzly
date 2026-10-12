@@ -52,6 +52,7 @@ function methodStepRun(scramble: string, running: Method, step: MethodStepResult
     ms: step.ms,
     ok: step.ok,
     lookahead: step.lookahead,
+    ...(step.wide ? { turned: step.wide } : {}),
     bld: { untouched: Boolean(config.untouched), buffer: config.buffer ?? "", targetsPerStep: config.targetsPerStep ?? 2, parity: config.parity ?? "" },
     untimed,
   };
@@ -74,6 +75,7 @@ function methodTotalRun(scramble: string, done: string, running: Method, result:
     moves: result.moves,
     ms,
     ok: result.ok,
+    ...(result.wide ? { turned: result.wide } : {}),
   };
 }
 

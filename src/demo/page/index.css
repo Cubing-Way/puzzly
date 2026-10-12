@@ -419,6 +419,33 @@ tbody tr.bad td[data-col="check"] {
   color: var(--muted);
 }
 
+/* Fingering table and answers list under the result: stacked under their captions, scrolling when long */
+.fingering,
+.candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+.scroll {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+/* Fingering rows aren't clickable; the move is in the mono font, the last column in the text font; regrips are muted */
+.fingering tbody tr {
+  cursor: default;
+}
+.fingering td:first-child {
+  font-family: var(--mono);
+}
+.fingering td:last-child {
+  font-family: inherit;
+  white-space: nowrap;
+}
+.fingering tr.regrip td {
+  color: var(--muted);
+}
+
 
 /* Right column: viewer and method panels stacked */
 .side {

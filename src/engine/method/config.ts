@@ -28,8 +28,8 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
-// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, no repeat)
-// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves and lookahead
+// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, fewest moves, no repeat)
+// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces and wide axes
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
@@ -70,6 +70,15 @@ function readStep(data: unknown, index: number): StepConfig {
     const lookahead = Number(step.lookahead ?? 0);
     const extraMoves = Number(step.extraMoves ?? 0);
     if (![lookahead, extraMoves].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Lookahead and extra moves must be whole numbers (0 = none).");
+    // Faces the answer avoids when it can: face letters, written back one space apart
+    const avoid = [...new Set(String(step.avoid ?? "").toUpperCase().split(/[\s,]+/).filter(Boolean))];
+    if (!avoid.every((face) => FACE_MOVES.includes(face))) throw new Error("Avoid must be faces out of U R F D L B.");
+    // Axes its answer may make a wide turn about: x, y, z, written back one space apart
+    const wideAxes = [...new Set(String(step.wideAxes ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean))];
+    if (!wideAxes.every((axis) => ["x", "y", "z"].includes(axis))) throw new Error("Wide axes must be some of x y z.");
+    // Rank: what the step's best answer is, the fewest moves or the fastest to turn
+    const rank = step.rank ?? "moves";
+    if (rank !== "moves" && rank !== "speed") throw new Error('Rank must be "moves" or "speed".');
     return {
       name,
       pieces,
@@ -86,6 +95,9 @@ function readStep(data: unknown, index: number): StepConfig {
       firstFound: Boolean(step.firstFound),
       lookahead,
       extraMoves,
+      rank,
+      avoid: avoid.join(" "),
+      wideAxes: wideAxes.join(" "),
       repeat: Boolean(step.repeat),
     };
   } catch (error) {

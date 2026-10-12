@@ -1,17 +1,19 @@
 // Test bench page: the New scramble and Solve actions
 
 // Cube engine
-import { randomScramble, splitAlternatives, solveFull, solveStep, joinMoves, reachesGoal, countMoves } from "../engine";
+import { type Rank, randomScramble, splitAlternatives, solveFull, solveStep, stepCandidates, joinMoves, reachesGoal, countMoves, speedCost } from "../engine";
 // Piece chips and presets
 import { goalLabel } from "./chips";
 // Page elements
-import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox } from "./dom";
+import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox, extraMovesInput, candidatesInput, xTurnsBox, zTurnsBox, undoOffsetBox } from "./dom";
 // Reads the step form
-import { readMoves, currentMode, readBld, chosenMoves, chosenGrips, readOffsets, readSolvable } from "./form";
+import { readMoves, currentMode, readBld, chosenMoves, chosenGrips, chosenRank, chosenAvoid, readOffsets, readSolvable } from "./form";
 // Result panel and runs tables
 import { showResult, type Run, runs } from "./results";
 // Status line and busy state
 import { setBusy, setStatus, busy, plural, tableTracker, formatMs } from "./status";
+// Method steps to and from the form
+import { wholeNumber } from "./step-form";
 // 3D cube viewer
 import { onInputChange, syncViewer } from "./viewer";
 
@@ -61,6 +63,10 @@ export async function solve(): Promise<void> {
   // Offsets and solvable-with moves only apply to steps (syncViewer already checked the fields)
   const offsets = mode === "step" ? (readOffsets() ?? [""]) : [""];
   const solvableWith = mode === "step" ? (readSolvable() ?? []) : [];
+  // What a step's best answer is (fewest moves, or speed), how much longer than the shortest an answer may be, and how many other answers to list
+  const rank: Rank = mode === "step" ? chosenRank() : "moves";
+  const extraMoves = wholeNumber(extraMovesInput.value);
+  const others = wholeNumber(candidatesInput.value);
   // A step search needs at least one move and one grip to work with
   if (mode === "step" && generatorMoves.length === 0) {
     setStatus("Pick at least one allowed move.", "error");
@@ -80,40 +86,50 @@ export async function solve(): Promise<void> {
   tick();
   const timer = setInterval(tick, 100);
   try {
-    // Solve from scramble + done (a step tries every alternative × chosen grip × offset and keeps the shortest answer)
-    let solution: string;
-    // Goal pieces the winner solved (named in the grip it ends in), and which alternative it was
-    let solved = "";
-    let alternative = 0;
-    let offset = "";
+    // Solve from scramble + done (a step tries every alternative × chosen grip × offset; its best answer is the shortest, or by speed the fastest to turn)
+    let run: Run;
     let searches = 1;
     // Untouched steps: the spots the answer may change, checked against the cube before it (in its grip)
     let untouched: { from: string; changed: string } | undefined;
-    if (mode === "full") solution = (await solveFull(scramble, done)).toString();
-    else {
-      const result = await solveStep(scramble, pieces, { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, onProgress: tables.onProgress });
-      solution = result.solution.toString();
-      solved = result.pieces;
-      alternative = result.alternative;
-      offset = result.offset;
-      searches = result.searches;
-      if (result.changed !== undefined) untouched = { from: joinMoves(done, result.rotation), changed: result.changed };
+    if (mode === "full") {
+      const solution = (await solveFull(scramble, done)).toString();
+      const ms = performance.now() - started;
+      // Double-check the answer on our own pattern
+      const ok = reachesGoal(scramble, joinMoves(done, solution), null, offsets, solvableWith);
+      run = { scramble, done, mode, pieces: "", alternatives, alternative: 0, offsets, solvableWith, goal, solution, offset: "", moves: countMoves(solution), ms, ok, bld };
+    } else {
+      const options = { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, rank, extraMoves, avoid: chosenAvoid(), wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])], undoOffset: undoOffsetBox.checked, onProgress: tables.onProgress };
+      // The best answer alone, or with the other answers it was compared with (best first)
+      const results = others > 0 ? await stepCandidates(scramble, pieces, { ...options, maxCandidates: others + 1 }) : [await solveStep(scramble, pieces, options)];
+      const ms = performance.now() - started;
+      // Each answer as a run of its own, double-checked on our own pattern (the alternative it solved; any of the step's offsets counts, what the solvable-with
+      // moves can still do, and the untouched pieces); they share one list, so any of them can be shown with the others beside it
+      const candidates: Run[] = [];
+      for (const result of results) {
+        const solution = result.solution.toString();
+        const changed = result.changed === undefined ? undefined : { from: joinMoves(done, result.rotation), changed: result.changed };
+        const ok = reachesGoal(scramble, joinMoves(done, solution), result.pieces, offsets, solvableWith, changed);
+        const answer: Run = { scramble, done, mode, pieces: result.pieces, alternatives, alternative: result.alternative, offsets, solvableWith, goal, solution, offset: result.offset, moves: countMoves(solution), ms, ok, bld, rank, ...(result.wide ? { turned: result.wide } : {}) };
+        candidates.push(results.length > 1 ? { ...answer, candidates } : answer);
+      }
+      run = candidates[0];
+      searches = results[0].searches;
+      if (results[0].changed !== undefined) untouched = { from: joinMoves(done, results[0].rotation), changed: results[0].changed };
     }
-    const ms = performance.now() - started;
     clearInterval(timer);
-    // Double-check the answer on our own pattern (the winning alternative; any of the step's offsets counts, what the solvable-with moves can still do, and the untouched pieces)
-    const ok = reachesGoal(scramble, joinMoves(done, solution), mode === "full" ? null : solved, offsets, solvableWith, untouched);
+    const { ok, ms, alternative, offset, pieces: solved } = run;
     // Record and show the run
-    const run: Run = { scramble, done, mode, pieces: solved, alternatives, alternative, offsets, solvableWith, goal, solution, offset, moves: countMoves(solution), ms, ok, bld };
     runs.unshift(run);
     showResult(run);
     // Mention how many searches ran (all compared, or up to the first answer), the alternative that won, the offset left in and the moves that may finish it
     const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
     const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
+    // By speed: the winner's speed cost; and how many other answers are listed under the result
+    const rankNote = (rank === "speed" ? `, fastest to turn: speed ${speedCost(run.turned ?? run.solution, undefined, !done.trim())}` : "") + (run.candidates ? `, ${plural(run.candidates.length - 1, "other answer")} listed` : "");
     const offsetNote =
       (offset ? `, offset ${offset}` : "") + (solvableWith.length ? `, solvable with ${solvableWith.join(" ")}` : "") + (untouched ? `, sent home ${solved || "nothing"}, changed ${untouched.changed || "nothing"}` : "");
     setStatus(
-      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${offsetNote}${tables.summary()}).` : `${goal}: the solution doesn't reach the goal!`,
+      ok ? `${goal} solved in ${plural(run.moves, "move")} (${formatMs(ms)}${compared}${wonNote}${rankNote}${offsetNote}${tables.summary()}).` : `${goal}: the solution doesn't reach the goal!`,
       ok ? "ok" : "error",
     );
   } catch (error) {

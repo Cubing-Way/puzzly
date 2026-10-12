@@ -32,7 +32,7 @@ import { wireMethodEditor, showExamples } from "./method-editor";
 // Method run and method search
 import { wireMethodRun } from "./method-run";
 // Result panel and runs tables
-import { shown } from "./results";
+import { shown, handsMoves } from "./results";
 // Scramble and solve actions
 import { solve, newScramble } from "./solve";
 // Status line and busy state
@@ -160,7 +160,7 @@ function wireForm(): void {
   // Copy the shown solution
   copyButton.addEventListener("click", async () => {
     if (!shown) return;
-    await navigator.clipboard.writeText(shown.solution);
+    await navigator.clipboard.writeText(handsMoves(shown));
     setStatus("Solution copied.", "ok");
   });
 

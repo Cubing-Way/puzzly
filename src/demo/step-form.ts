@@ -16,9 +16,11 @@ import {
   repeatBox,
   offsetsInput,
   solvableInput,
+  xTurnsBox,
+  zTurnsBox,
 } from "./dom";
 // Reads the step form
-import { currentMode, readPieces, readOffsets, readSolvable, readBld, chosenMoves, showBld, showMoves } from "./form";
+import { currentMode, readPieces, readOffsets, readSolvable, readBld, chosenMoves, chosenRank, chosenAvoid, showBld, showMoves, showRank, showAvoid } from "./form";
 // Status line and busy state
 import { setStatus, plural } from "./status";
 // 3D cube viewer
@@ -62,6 +64,12 @@ export function stepFromForm(number: number): StepConfig | null {
       // Lookahead (later steps that judge this step's answers) and extra moves: whole numbers, 0 when empty
       lookahead: wholeNumber(lookaheadInput.value),
       extraMoves: wholeNumber(extraMovesInput.value),
+      // What its best answer is: the fewest moves, or the fastest to turn
+      rank: chosenRank(),
+      // Axes its answer may make a wide turn about, by speed
+      wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])].join(" "),
+      // Faces its answer avoids when it can
+      avoid: chosenAvoid().join(" "),
       // Run again until nothing is left to do
       repeat: repeatBox.checked,
     };
@@ -88,6 +96,10 @@ export function stepToForm(step: StepConfig): void {
   repeatBox.checked = Boolean(step.repeat);
   lookaheadInput.value = String(step.lookahead ?? 0);
   extraMovesInput.value = String(step.extraMoves ?? 0);
+  showRank(step.rank ?? "moves");
+  showAvoid(step.avoid ?? "");
+  xTurnsBox.checked = (step.wideAxes ?? "").includes("x");
+  zTurnsBox.checked = (step.wideAxes ?? "").includes("z");
   onInputChange();
 }
 
@@ -104,7 +116,11 @@ export function stepSummary(step: StepConfig): string {
     `moves ${step.moves.join(" ")}`,
     step.maxDepth == null ? "" : `max ${step.maxDepth}`,
     step.firstFound ? "first answer" : "",
-    step.lookahead ? `lookahead ${step.lookahead}${step.extraMoves ? ` (+${step.extraMoves} moves)` : ""}` : "",
+    step.rank === "speed" ? "by speed" : "",
+    step.avoid ? `avoiding ${step.avoid}` : "",
+    step.wideAxes && step.rank === "speed" ? `${step.wideAxes} turns` : "",
+    step.lookahead ? `lookahead ${step.lookahead}` : "",
+    step.extraMoves && (step.lookahead || step.rank === "speed" || step.avoid) ? `+${step.extraMoves} moves` : "",
     step.repeat ? "repeat until done" : "",
   ]
     .filter(Boolean)

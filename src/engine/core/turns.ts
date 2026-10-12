@@ -52,6 +52,31 @@ export function moveInGrip(move: string, from: string, to: string): string | nul
   });
 }
 
+// Exact names of moves in another grip, by both grips and the move (null = no single move is that turn)
+const movesExact = lookupCache<string | null>();
+
+// A move sequence named in one grip, as another grip names the very same turns (each the same way round), e.g. "L' B" as held is "F' L" in grip y';
+// null when one of them has no single-move name there
+export function movesInGrip(moves: string, from: string, to: string): string | null {
+  if (from === to) return moves;
+  // The turn as the cube itself turns it in a grip (rotation, move, rotation back)
+  const turn = (rotation: string, name: string) => JSON.stringify(solvedAfter(joinMoves(rotation, name, invertMoves(rotation))).patternData);
+  const names = moves
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((move) =>
+      remember(movesExact, `${from}/${move}/${to}`, () => {
+        const wanted = turn(from, move);
+        // The move that turns the cube the same way in the other grip
+        for (const family of TURN_FAMILIES) {
+          for (const amount of ["", "2", "'"]) if (turn(to, family + amount) === wanted) return family + amount;
+        }
+        return null;
+      }),
+    );
+  return names.includes(null) ? null : names.join(" ");
+}
+
 // Moves with each turn once (see turnName); a half turn whose quarter turn is there too is left out, as one of its powers
 export function distinctTurns(moves: string[]): string[] {
   const names = [...new Set(moves.map(turnName))];

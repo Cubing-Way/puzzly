@@ -21,6 +21,8 @@ import {
   importMethodButton,
   methodFileInput,
 } from "./dom";
+// Reads the step form
+import { showRank, showAvoid } from "./form";
 // Example, saved and file methods
 import { savedMethods, exampleMethods, saveMethod, deleteSavedMethod, downloadMethod, readMethodFile } from "./method-store";
 // Result panel and runs tables
@@ -167,6 +169,8 @@ function loadMethod(next: Method): void {
   repeatBox.checked = false;
   lookaheadInput.value = "0";
   extraMovesInput.value = "0";
+  showRank("moves");
+  showAvoid("");
   methodChanged();
   dirty = false;
   syncDeleteButton();

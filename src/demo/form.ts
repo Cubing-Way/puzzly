@@ -1,7 +1,7 @@
 // Test bench page: reading the step form's fields (moves, pieces, offsets, solvable-with moves, blindfolded fields, grips and allowed moves), with their error lines
 
 // Cube engine
-import { parseMoves, readAlternatives, offsetsFromText, solvableFromText, bufferFromText, parityFromText, splitAlternatives, gripRotations } from "../engine";
+import { type Rank, parseMoves, readAlternatives, offsetsFromText, solvableFromText, bufferFromText, parityFromText, splitAlternatives, gripRotations } from "../engine";
 // Page elements
 import {
   form,
@@ -19,6 +19,7 @@ import {
   bldError,
   anyFrontBox,
   searchCount,
+  avoidInput,
 } from "./dom";
 // Status line and busy state
 import { plural } from "./status";
@@ -34,6 +35,26 @@ export interface Bld {
 // Goal mode picked in the form
 export function currentMode(): "step" | "full" {
   return (form.elements.namedItem("mode") as RadioNodeList).value as "step" | "full";
+}
+
+// What the form says a step's best answer is: the fewest moves, or the fastest to turn
+export function chosenRank(): Rank {
+  return (form.elements.namedItem("rank") as RadioNodeList).value === "speed" ? "speed" : "moves";
+}
+
+// The faces the form says an answer avoids when it can (letters that aren't faces are left out)
+export function chosenAvoid(): string[] {
+  return [...new Set(avoidInput.value.toUpperCase().match(/[URFDLB]/g) ?? [])];
+}
+
+// Put avoided faces into the form
+export function showAvoid(faces: string): void {
+  avoidInput.value = faces;
+}
+
+// Put a rank into the form
+export function showRank(rank: Rank): void {
+  (form.elements.namedItem("rank") as RadioNodeList).value = rank;
 }
 
 // Read a moves field; returns the moves cleaned up, or null and shows why under the field
