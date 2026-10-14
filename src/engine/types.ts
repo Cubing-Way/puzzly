@@ -53,19 +53,26 @@ export interface StepOptions {
   parity?: string;
   // Which answer is best: the fewest moves (default), or by speed the fastest to turn among the shortest answers and those up to extraMoves longer
   rank?: Rank;
-  // Answers up to this many moves longer than the shortest count too: for rank "speed", and for listing candidates (default 0: the shortest answers only)
+  // Answers up to this many moves longer than the shortest count too: for rank "speed", and for listing candidates (default 0: the shortest answers only).
+  // They're listed one move longer at a time while the step's search budget lasts (LIST_NODES in step.ts), so a step far from its goal may compare fewer
   extraMoves?: number;
   // Faces the answer avoids when it can, e.g. ["F", "B"] for a first-two-layers pair: among the answers compared (the shortest and those up to extraMoves
-  // longer), one that turns none of them and needs no rotation that costs comes before all others, whatever its length or speed. When avoiding them takes
-  // a rotation, the ranking decides between rotating and turning them (see StepResult.tier) (default: none)
+  // longer), by moves one that turns none of them comes before all others, whatever its length. By speed an answer that turns some only loses outright
+  // to one held the same way that doesn't: rotating to avoid them, staying, and turning them where nothing held that way does without are ranked
+  // together, since a rotation's cost is in the score (see StepResult.tier) (default: none)
   avoid?: string[];
   // The answer goes on to undo the offset it reached (a pseudo-cross ends with its D turn), and those moves count in its length and its speed: the best answer
   // is the shortest (or fastest) with them, and the result has no offset left (default: the offset is left in, for a later step)
   undoOffset?: boolean;
   // By speed: a face turn of an answer may also be made as the opposite wide turn (R as Lw: the other hand turns two layers), with the cube's turn made up
-  // by a rotation at the start or at the end, so the cube ends as the plain answer leaves it. For turns about these axes: "x" (R and L), "y" (U and D),
-  // "z" (F and B) (default: none)
+  // by a rotation at the start or at the end, so the cube ends as the plain answer leaves it; or any number of its turns as wide and slice turns that
+  // cancel out (r … r', M, f … f'), which needs no rotation. For turns about these axes: "x" (R, L and M), "y" (U, D and E), "z" (F, B and S) (default: none).
+  // With "x", after a solve's first step, an answer may also be made with the cube tilted for it and tilted back (x R2 D2 R U R' D2 R U' R x')
   wideAxes?: string[];
+  // An alg set ("OLL", "PLL": see algs/sets.ts): the step isn't searched but recognised, as solvers do the last layer. Each alg of the set is tried after
+  // each turn of the top layer, the ones that reach the goal are compared (by speed, or by moves) and the best is the answer, its case's default alg
+  // on a tie. Only a cube that fits no alg of the set is searched, with the options above (default: none, the step is searched)
+  algs?: string;
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
@@ -80,13 +87,15 @@ export interface TableProgress {
 // Best answer of a step search
 export interface StepResult {
   solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
-  // The same turns as the hands make them, when one is made as the other hand's wide turn (Lw' where `solution` says R' x): the writing to score and show.
+  // The same turns as the hands make them, when some are made as wide or slice turns (Lw' where `solution` says R' x, M where it says R L'): the writing to score and show.
   // `solution` stays the one to check and to go on from, since the engine tells how the cube is held from x, y, z turns alone
   wide?: string;
-  // With faces to avoid, where the answer stands (a lower tier always comes first): 0 = it turns none of them and starts with no rotation that costs
-  // (by moves, or on a solve's first step, none costs); 1 = it turns none after a rotation, or turns some where no answer held the same way does without;
-  // 2 = it turns some although an answer held the same way doesn't
+  // With faces to avoid, where the answer stands (a lower tier always comes first). By moves: 0 = it turns none of them; 1 = it turns some where no
+  // answer held the same way does without; 2 = it turns some although an answer held the same way doesn't. By speed: 0 = anything but that last kind
+  // (a rotation's cost is in the score, so rotating, staying and having to turn the faces are ranked together); 1 = it turns some, or turns L against an
+  // open R layer (see HandModel.open), although an answer held the same way doesn't
   tier?: number;
+  alg?: string; // a step answered from an alg set: the case it recognised (e.g. "OLL 33", "T perm")
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)
   pieces: string; // goal text it solved (the winning alternative plus kept pieces), named in the grip it ends in
@@ -111,11 +120,13 @@ export interface StepConfig {
   moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
-  lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way), fewest moves in total wins (0 = none, the step's own shortest)
+  lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way, comparing one extra move at most while it only judges), fewest moves in total wins (0 = none, the step's own shortest)
+  candidates?: number; // with lookahead: how many of the step's answers the later steps judge, best first (0 or left out = 64, the most); fewer is quicker, and a solver weighs a handful of crosses, not dozens
   extraMoves?: number; // with lookahead or rank "speed": candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
   avoid?: string; // faces the answer avoids when it can, e.g. "F B" ("" = none): answers that turn none of them come first among those compared
-  wideAxes?: string; // by speed, axes its answer may make a wide turn about, e.g. "x" or "x z" ("" = none): R as Lw with an x turn to make up for it, F as Bw with a z turn
+  wideAxes?: string; // by speed, axes its answer may make wide and slice turns about, e.g. "x" or "x z" ("" = none): R as Lw with an x turn to make up for it, or r … r' and M with none
   rank?: Rank; // how the step picks its answer: "moves" = the fewest moves (default), "speed" = the fastest to turn; with lookahead, what its candidates' totals count
+  algs?: string; // an alg set the step is answered from, "OLL" or "PLL" ("" = none): the case is recognised and its alg made, and only a cube that fits none of the set's algs is searched
   repeat?: boolean; // run the step again and again until it has nothing left to do (e.g. one BLD 3-cycle per round, or "the easiest pair" until F2L is done)
 }
 
@@ -143,7 +154,7 @@ export interface MethodStepResult extends StepResult {
 // A whole method run
 export interface MethodResult {
   steps: MethodStepResult[];
-  solution: string; // every step's solution in order
+  solution: string; // every step's solution in order, a step's first turn joined with the turn before it when both turn the same layer (R then R' is nothing, U then U is U2)
   wide?: string; // the same with each step's wide writing where it has one (as the hands make it: the one to score and show)
   pieces: string; // every step's pieces, named in the grip the run ends in
   offset: string; // offset the last step left in ("" = none)

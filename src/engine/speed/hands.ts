@@ -22,19 +22,21 @@ export interface Trick {
 export interface HandModel {
   tricks: Record<Wrist, Trick[]>; // a turn may have several tricks at one position: the cheapest is used, the others are shown as its other ways
   wrist: { quarter: number; half: number }; // a wrist turn: R, R' / R2 with the right hand, L, L' / L2 with the left
-  wide: { wrist: number; finger: number }; // added to a wide turn: one the wrist makes (Rw, Lw), and one a finger makes on two layers (Uw, Fw…)
-  layers: Record<string, number>; // added to every turn of a layer, by how well it turns from home: nothing for R, U and L, a little for F and D, more for B
+  wide: { wrist: number; finger: number }; // added to a wide turn: one the wrist makes (Rw, Lw: the hand opens to take a second layer along), and one a finger makes on two layers (Uw, Fw…; never a thumb)
+  layers: Record<string, number>; // added to every turn of a layer, by how well it turns: nothing for R and U, a little for L (the weaker hand's wrist), more for F and D, most for B
+  flow: Record<string, number>; // taken off a turn of a layer made right after a turn of one of these layers, no regrip between: the hands keep their rhythm, so runs on R and U turn fastest (the most turns per second), runs with L a little less
+  leave: Record<string, number>; // added to a turn of a layer that leaves that rhythm (D, B: the hand reaches under or behind the cube; F is turned by the fingers that turn U) unless the move before it was on one of these layers too, so once per run of such turns
   again: Record<string, number>; // added to a layer's turns after its first in a sequence (B once is a quick flick, B again and again isn't)
   regrip: number; // between turns, one hand lets go and takes the cube again at another wrist position
   regripHome: number; // the same when the hand comes back home (the easy way round)
-  firstRegrip: number; // one hand's regrip before the first turn (done while still looking at the cube); a second hand regripping there pays `regrip`
+  firstRegrip: number; // one hand's regrip before the first turn of a solve (done during inspection); a second hand regripping there pays `regrip`, and so does any regrip before a later step's first turn (the hands come straight from the step before)
   lastRegrip: number; // after the last turn, each hand that isn't at home (it has to come back before the next moves)
   fingerRegrip: number; // one finger goes somewhere else while the hand keeps its grip: to reach a turn (a `reach` trick), or back to where the next move needs it
-  awkward: number; // added to every move made while both hands are away from home (an awkward grip: both thumbs on top, or both on the bottom)
+  awkward: number; // added to every move made from, or ending in, a grip with both hands away from home (both thumbs on top, or both on the bottom): L' with the right thumb still on top
+  open: Record<string, number>; // added to a turn of R or L made while the opposite one is a quarter turn off (the L' of R U L'): the hand on that layer can't hold the rest still, whatever was turned in between and however it grips; less for R, the stronger wrist
   twisted: number; // added instead to every move made from, or ending in, a grip with the wrists turned opposite ways (after R L or R' L': one thumb on top, the other on the bottom)
   rotation: number; // x, y or z with both hands letting go: they end at home (free before the first turn of a solve: the cube is picked up that way)
-  tilt: number; // an x turn the wrists make together without letting go, per quarter turn: both wrists go a step up (x) or down (x'). One that brings both hands home is free:
-  // after R' and L both thumbs are on one face, and calling that face the front is all the x does
+  tilt: number; // an x turn the wrists make together without letting go, per quarter turn: both wrists go a step up (x) or down (x'), the whole cube turning in them
   other: number; // a move no trick makes (E2, S2, notation the model can't read)
 }
 
@@ -46,8 +48,10 @@ export function trickName(trick: Pick<Trick, "fingers" | "push">): string {
 // Costs by kind of trick, so one number tunes them all: a flick (a finger pulls the layer it lies on), a double flick (with the finger beside it, a half turn)
 // and a push (the finger pushes that layer the other way; it has to get behind it first, so a push is always a reach). How well each layer turns is apart, in `layers`
 const FLICK = 1;
-const DOUBLE = 1.5;
+const DOUBLE = 1.6;
 const PUSH = 1.2;
+// A thumb push costs more than a flick: a short drag by the finger the hand holds the cube with
+const THUMB = 1.5;
 
 // A cost to two decimals (sums of tenths drift otherwise)
 function tenths(cost: number): number {
@@ -87,7 +91,7 @@ export const HANDS: HandModel = {
       ...layer("ring", "pinky", "D'", 0, true),
       ...tricks(["ring"], { "M'": FLICK }, true),
       ...tricks(["ring", "middle"], { M2: DOUBLE }, true),
-      ...tricks(["thumb"], { "F'": FLICK, "M'": FLICK }, true),
+      ...tricks(["thumb"], { "F'": THUMB, "M'": THUMB }, true),
     ],
     // Thumb on top (after R): the fingers lie under the cube, index on B, middle beside the S slice, ring on F, and each pulls its layer up the right side;
     // the index finger also still reaches U (the U of R U R' U') from behind, and with a longer reach D
@@ -100,8 +104,10 @@ export const HANDS: HandModel = {
     ],
   },
   wrist: { quarter: 1, half: 1.4 },
-  wide: { wrist: 0.2, finger: 0.5 },
-  layers: { F: 0.2, D: 0.2, B: 0.4 },
+  wide: { wrist: 0.35, finger: 0.5 },
+  layers: { L: 0.25, F: 0.3, D: 0.4, B: 0.6 },
+  flow: { R: 0.3, U: 0.3, L: 0.15 },
+  leave: { D: 0.3, B: 0.3 },
   again: { B: 1 },
   regrip: 1.8,
   regripHome: 1,
@@ -109,8 +115,9 @@ export const HANDS: HandModel = {
   lastRegrip: 1,
   fingerRegrip: 0.6,
   awkward: 0.7,
+  open: { L: 0.8, R: 0.3 },
   twisted: 1.2,
-  rotation: 2.5,
+  rotation: 3,
   tilt: 0.5,
   other: 2.5,
 };

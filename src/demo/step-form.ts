@@ -12,8 +12,10 @@ import {
   maxDepthInput,
   firstFoundBox,
   lookaheadInput,
+  judgedInput,
   extraMovesInput,
   repeatBox,
+  algsSelect,
   offsetsInput,
   solvableInput,
   xTurnsBox,
@@ -63,6 +65,8 @@ export function stepFromForm(number: number): StepConfig | null {
       firstFound: firstFoundBox.checked,
       // Lookahead (later steps that judge this step's answers) and extra moves: whole numbers, 0 when empty
       lookahead: wholeNumber(lookaheadInput.value),
+      // How many of its answers the lookahead judges (64 = the most, saved as 0)
+      candidates: wholeNumber(judgedInput.value) >= 64 ? 0 : Math.max(1, wholeNumber(judgedInput.value)),
       extraMoves: wholeNumber(extraMovesInput.value),
       // What its best answer is: the fewest moves, or the fastest to turn
       rank: chosenRank(),
@@ -70,6 +74,8 @@ export function stepFromForm(number: number): StepConfig | null {
       wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])].join(" "),
       // Faces its answer avoids when it can
       avoid: chosenAvoid().join(" "),
+      // The alg set it's answered from ("" = none: it's searched)
+      algs: algsSelect.value,
       // Run again until nothing is left to do
       repeat: repeatBox.checked,
     };
@@ -95,11 +101,13 @@ export function stepToForm(step: StepConfig): void {
   keepBox.checked = Boolean(step.keep);
   repeatBox.checked = Boolean(step.repeat);
   lookaheadInput.value = String(step.lookahead ?? 0);
+  judgedInput.value = String(step.candidates || 64);
   extraMovesInput.value = String(step.extraMoves ?? 0);
   showRank(step.rank ?? "moves");
   showAvoid(step.avoid ?? "");
   xTurnsBox.checked = (step.wideAxes ?? "").includes("x");
   zTurnsBox.checked = (step.wideAxes ?? "").includes("z");
+  algsSelect.value = step.algs ?? "";
   onInputChange();
 }
 
@@ -107,6 +115,7 @@ export function stepToForm(step: StepConfig): void {
 export function stepSummary(step: StepConfig): string {
   return [
     step.buffer ? `BLD from ${step.buffer}, ${plural(step.targetsPerStep ?? 2, "target")} per step` : step.pieces || "no new pieces",
+    step.algs ? `${step.algs} algs` : "",
     step.keep ? "+ earlier pieces" : "",
     step.untouched && !step.buffer ? "rest untouched" : "",
     step.parity ? `parity ${step.parity}` : "",
@@ -119,7 +128,7 @@ export function stepSummary(step: StepConfig): string {
     step.rank === "speed" ? "by speed" : "",
     step.avoid ? `avoiding ${step.avoid}` : "",
     step.wideAxes && step.rank === "speed" ? `${step.wideAxes} turns` : "",
-    step.lookahead ? `lookahead ${step.lookahead}` : "",
+    step.lookahead ? `lookahead ${step.lookahead}${step.candidates ? ` over ${step.candidates} answers` : ""}` : "",
     step.extraMoves && (step.lookahead || step.rank === "speed" || step.avoid) ? `+${step.extraMoves} moves` : "",
     step.repeat ? "repeat until done" : "",
   ]

@@ -16,6 +16,8 @@ import { offsetsFromText } from "../goal/offsets";
 import { solvableFromText } from "../goal/solvable";
 // Goals that keep every other piece untouched
 import { checkUntouchedRoles } from "../goal/untouched";
+// The sets of cases a step can be answered from
+import { ALG_SETS, algSet } from "../algs/sets";
 // Error messages
 import { UNTOUCHED_MIX } from "../messages";
 // Engine data shapes
@@ -29,7 +31,7 @@ export function readMethod(data: unknown): Method {
 }
 
 // Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, fewest moves, no repeat)
-// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces and wide axes
+// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces, wide axes and the alg set
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
@@ -70,12 +72,18 @@ function readStep(data: unknown, index: number): StepConfig {
     const lookahead = Number(step.lookahead ?? 0);
     const extraMoves = Number(step.extraMoves ?? 0);
     if (![lookahead, extraMoves].every((value) => Number.isInteger(value) && value >= 0)) throw new Error("Lookahead and extra moves must be whole numbers (0 = none).");
+    // How many of its answers a lookahead judges (0 = as many as a step lists)
+    const candidates = Number(step.candidates ?? 0);
+    if (!(Number.isInteger(candidates) && candidates >= 0)) throw new Error("Candidates must be a whole number (0 = the most).");
     // Faces the answer avoids when it can: face letters, written back one space apart
     const avoid = [...new Set(String(step.avoid ?? "").toUpperCase().split(/[\s,]+/).filter(Boolean))];
     if (!avoid.every((face) => FACE_MOVES.includes(face))) throw new Error("Avoid must be faces out of U R F D L B.");
     // Axes its answer may make a wide turn about: x, y, z, written back one space apart
     const wideAxes = [...new Set(String(step.wideAxes ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean))];
     if (!wideAxes.every((axis) => ["x", "y", "z"].includes(axis))) throw new Error("Wide axes must be some of x y z.");
+    // Alg set the step is answered from ("" = none), by its name
+    const algs = algSet(String(step.algs ?? ""))?.name ?? "";
+    if (String(step.algs ?? "").trim() && !algs) throw new Error(`Algs must be one of ${Object.keys(ALG_SETS).join(", ")} (or empty for none).`);
     // Rank: what the step's best answer is, the fewest moves or the fastest to turn
     const rank = step.rank ?? "moves";
     if (rank !== "moves" && rank !== "speed") throw new Error('Rank must be "moves" or "speed".');
@@ -94,10 +102,12 @@ function readStep(data: unknown, index: number): StepConfig {
       maxDepth,
       firstFound: Boolean(step.firstFound),
       lookahead,
+      candidates,
       extraMoves,
       rank,
       avoid: avoid.join(" "),
       wideAxes: wideAxes.join(" "),
+      algs,
       repeat: Boolean(step.repeat),
     };
   } catch (error) {

@@ -5,7 +5,7 @@ import { type Rank, randomScramble, splitAlternatives, solveFull, solveStep, ste
 // Piece chips and presets
 import { goalLabel } from "./chips";
 // Page elements
-import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox, extraMovesInput, candidatesInput, xTurnsBox, zTurnsBox, undoOffsetBox } from "./dom";
+import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox, extraMovesInput, candidatesInput, xTurnsBox, zTurnsBox, undoOffsetBox, algsSelect } from "./dom";
 // Reads the step form
 import { readMoves, currentMode, readBld, chosenMoves, chosenGrips, chosenRank, chosenAvoid, readOffsets, readSolvable } from "./form";
 // Result panel and runs tables
@@ -98,7 +98,7 @@ export async function solve(): Promise<void> {
       const ok = reachesGoal(scramble, joinMoves(done, solution), null, offsets, solvableWith);
       run = { scramble, done, mode, pieces: "", alternatives, alternative: 0, offsets, solvableWith, goal, solution, offset: "", moves: countMoves(solution), ms, ok, bld };
     } else {
-      const options = { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, rank, extraMoves, avoid: chosenAvoid(), wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])], undoOffset: undoOffsetBox.checked, onProgress: tables.onProgress };
+      const options = { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, rank, extraMoves, avoid: chosenAvoid(), wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])], undoOffset: undoOffsetBox.checked, algs: algsSelect.value || undefined, onProgress: tables.onProgress };
       // The best answer alone, or with the other answers it was compared with (best first)
       const results = others > 0 ? await stepCandidates(scramble, pieces, { ...options, maxCandidates: others + 1 }) : [await solveStep(scramble, pieces, options)];
       const ms = performance.now() - started;
@@ -109,7 +109,7 @@ export async function solve(): Promise<void> {
         const solution = result.solution.toString();
         const changed = result.changed === undefined ? undefined : { from: joinMoves(done, result.rotation), changed: result.changed };
         const ok = reachesGoal(scramble, joinMoves(done, solution), result.pieces, offsets, solvableWith, changed);
-        const answer: Run = { scramble, done, mode, pieces: result.pieces, alternatives, alternative: result.alternative, offsets, solvableWith, goal, solution, offset: result.offset, moves: countMoves(solution), ms, ok, bld, rank, ...(result.wide ? { turned: result.wide } : {}) };
+        const answer: Run = { ...(result.alg ? { alg: result.alg } : {}), scramble, done, mode, pieces: result.pieces, alternatives, alternative: result.alternative, offsets, solvableWith, goal, solution, offset: result.offset, moves: countMoves(solution), ms, ok, bld, rank, ...(result.wide ? { turned: result.wide } : {}) };
         candidates.push(results.length > 1 ? { ...answer, candidates } : answer);
       }
       run = candidates[0];

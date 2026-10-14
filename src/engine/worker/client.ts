@@ -28,6 +28,7 @@ export interface WorkerRequest {
   maxAnswers?: number; // list only: most answers to give (shortest first)
   minDepth?: number; // list only: answers of at least this many moves (one page of a long list)
   after?: string; // list only: answers that come after this one (same length, in the worker's turn order), so a page starts where the last one ended
+  maxNodes?: number; // list only: give up (an error with NODE_LIMIT) once the search has visited this many nodes (a goal answered from one table never does)
   solvableWith?: string[]; // moves that may finish the goal later: the worker closes the targets under them (none = the targets as they are)
   orbitTables?: number; // untouched (BLD) steps: split tables also get one table per piece type holding all its pieces, up to this many states (0 / none = no such tables)
 }
@@ -127,6 +128,7 @@ export function askWorker(request: WorkerRequest, onProgress?: (progress: TableP
       maxAnswers: request.maxAnswers,
       minDepth: request.minDepth,
       after: request.after,
+      maxNodes: request.maxNodes,
     });
   });
 }

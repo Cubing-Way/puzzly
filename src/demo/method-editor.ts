@@ -14,6 +14,8 @@ import {
   keepBox,
   repeatBox,
   lookaheadInput,
+  judgedInput,
+  algsSelect,
   extraMovesInput,
   addStepButton,
   saveMethodButton,
@@ -168,8 +170,10 @@ function loadMethod(next: Method): void {
   keepBox.checked = false;
   repeatBox.checked = false;
   lookaheadInput.value = "0";
-  extraMovesInput.value = "0";
-  showRank("moves");
+  judgedInput.value = "64";
+  extraMovesInput.value = "2";
+  showRank("speed");
+  algsSelect.value = "";
   showAvoid("");
   methodChanged();
   dirty = false;

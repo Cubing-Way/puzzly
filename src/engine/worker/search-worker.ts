@@ -96,8 +96,15 @@ function nodesUsed(split: SplitSearch, request: SearchRequest): number {
   return pool && request.kind !== "list" ? pool.nodes : split.nodes();
 }
 
-// Answer one search or list: a split goal below its biggest plan may use as many search nodes as building the next plan's missing tables would cost, then switches
+// Search nodes the request being answered has used so far (a list reports them)
+let spent = 0;
+
+// Answer one search or list: a split goal below its biggest plan may use as many search nodes as building the next plan's missing tables would cost, then switches;
+// a request with its own node budget (maxNodes) gives up with NODE_LIMIT once that's used up, whatever the plan
 async function search(request: SearchRequest): Promise<string> {
+  spent = 0;
+  // Nodes the request itself may still use
+  let left = request.maxNodes ?? Infinity;
   const key = tableKey(request, request.targets);
   const entry = await entryFor(request, key);
   const options: SearchOptions = {
@@ -111,17 +118,27 @@ async function search(request: SearchRequest): Promise<string> {
     const allowed = Math.floor(missingStates(entry.next.plans[0], request) / STATES_PER_NODE) - entry.next.spent;
     if (allowed > 0) {
       try {
-        return await ask(entry, request, { ...options, maxNodes: allowed });
+        return await ask(entry, request, { ...options, maxNodes: Math.min(allowed, left) });
       } catch (error) {
-        if (!String(error).includes(NODE_LIMIT)) throw error;
+        // Out of the request's own budget: it gives up (out of the plan's only: the next plan takes over)
+        if (!String(error).includes(NODE_LIMIT) || left <= allowed) throw error;
       } finally {
-        entry.next.spent += nodesUsed(split, request);
+        const used = nodesUsed(split, request);
+        entry.next.spent += used;
+        left -= used;
+        spent += used;
       }
     }
     // Out of budget (or the next plan's tables are kept or stored already): search with the next plan from now on
     await upgrade(entry, request, key);
   }
-  return ask(entry, request, options);
+  // The biggest plan (or a solver without plans): only a split search counts nodes, so only it takes what's left of the request's budget
+  const split = entry.solver instanceof SplitSearch ? entry.solver : null;
+  try {
+    return await ask(entry, request, split && Number.isFinite(left) ? { ...options, maxNodes: Math.max(0, left) } : options);
+  } finally {
+    if (split) spent += nodesUsed(split, request);
+  }
 }
 
 // Answer one request and post back its bound, moves or list of answers, or the error
@@ -130,7 +147,11 @@ async function answer(request: SearchRequest): Promise<void> {
   current = request.id;
   try {
     if (request.kind === "measure") scope.postMessage({ id: request.id, ...(await measure(request)) });
-    else if (request.kind === "list") scope.postMessage({ id: request.id, answers: JSON.parse(await search(request)) });
+    else if (request.kind === "list") {
+      // The answers first, then the nodes they took
+      const answers = JSON.parse(await search(request));
+      scope.postMessage({ id: request.id, answers, nodes: spent });
+    }
     else scope.postMessage({ id: request.id, moves: await search(request) });
   } catch (error) {
     scope.postMessage({ id: request.id, error: String(error) });

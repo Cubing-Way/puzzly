@@ -6,7 +6,8 @@ import type { DistanceTable, SplitSearch } from "../../../search/pkg/puzzly_sear
 
 // Error texts, the same as the Rust side's (thrown as plain strings, like the wasm calls throw them)
 const NO_SOLUTION = "No solution found!";
-export const NODE_LIMIT = "Node limit reached";
+export { NODE_LIMIT } from "./protocol";
+import { NODE_LIMIT } from "./protocol";
 // Longest answer a split search looks for (the Rust MAX_LENGTH): bounds stop below this + 1
 const MAX_LENGTH = 40;
 // Nodes a search first spends here alone, in one plain call (~60 ms): almost every search ends within it, exactly as without helpers

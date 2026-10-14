@@ -110,7 +110,8 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   let seed: number | null = null;
   try {
     best = await runMethod(scramble, method, { done: options.done, onProgress: options.onProgress });
-    seed = bestMoves = best.moves;
+    // Its steps' moves added up (the search counts step by step; the run's own total may be lower where two steps' turns join)
+    seed = bestMoves = best.steps.reduce((sum, step) => sum + step.moves, 0);
     options.onBetter?.(best);
   } catch {
     // No plain run: the search looks for any run

@@ -84,7 +84,7 @@
                     <div id="edge-chips" class="chips" aria-label="Edges"></div>
                     <div id="corner-chips" class="chips" aria-label="Corners"></div>
                     <div id="center-chips" class="chips" aria-label="Centers"></div>
-                    <!-- Grips to try: faces that may go on the bottom, and any front (the best answer wins); by speed, x and z turns too, made up for by a wide turn -->
+                    <!-- Grips to try: faces that may go on the bottom, and any front (the best answer wins); by speed, x and z turns too, made up for by wide and slice turns -->
                     <span class="label">Bottom face <small>as held now; with the turns the answer may start with</small></span>
                     <div class="moves">
                         <label><input type="checkbox" name="bottom" value="D" checked />D</label>
@@ -94,8 +94,8 @@
                         <label><input type="checkbox" name="bottom" value="R" />R</label>
                         <label><input type="checkbox" name="bottom" value="L" />L</label>
                         <label><input id="any-front" type="checkbox" />any front (y turns)</label>
-                        <label title="By speed, a turn of R or L may also be made as the other hand's wide turn (R as Lw), with an x turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Saved with a method step"><input id="x-turns" type="checkbox" checked />x turns (wide R, L)</label>
-                        <label title="By speed, a turn of F or B may also be made as the opposite wide turn (F as Bw), with a z turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Saved with a method step"><input id="z-turns" type="checkbox" />z turns (wide F, B)</label>
+                        <label title="By speed, a turn of R or L may also be made as the other hand's wide turn (R as Lw), with an x turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Several such turns and M turns that cancel out need no x turn (r U R' U' r' F R F'). Saved with a method step"><input id="x-turns" type="checkbox" checked />x turns (wide R, L, M)</label>
+                        <label title="By speed, a turn of F or B may also be made as the opposite wide turn (F as Bw), with a z turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Several such turns and S turns that cancel out need no z turn (f R U R' U' f'). Saved with a method step"><input id="z-turns" type="checkbox" checked />z turns (wide F, B, S)</label>
                     </div>
 
                     <!-- Offsets: the goal also counts when the cube is off by one of these moves (the solution leaves it in) -->
@@ -192,11 +192,11 @@
                         <label class="check-label" title="Among the answers compared, the ones that turn none of these faces come before the ones that do, whatever their length or speed (give them room with extra moves). E.g. F B for a first-two-layers pair on R, U and L">Avoid faces <input id="avoid-input" type="text" spellcheck="false" autocomplete="off" placeholder="none (e.g. F B)" /></label>
                     </div>
                     <div class="segmented">
-                        <label><input type="radio" name="rank" value="moves" checked /> Fewest moves</label>
-                        <label><input type="radio" name="rank" value="speed" /> Speed</label>
+                        <label><input type="radio" name="rank" value="speed" checked /> Speed</label>
+                        <label><input type="radio" name="rank" value="moves" /> Fewest moves</label>
                     </div>
                     <div class="row">
-                        <label class="check-label number-label" title="Answers up to this many moves longer than the shortest are compared too (by speed, one of them may win; a method step's lookahead judges them as well)">up to <input id="step-extra" type="number" min="0" max="4" value="0" /> extra moves</label>
+                        <label class="check-label number-label" title="Answers up to this many moves longer than the shortest are compared too (by speed, one of them may win; a method step's lookahead judges them as well). They're listed one move longer at a time while the search stays within a few seconds, so a step far from its goal may compare fewer">up to <input id="step-extra" type="number" min="0" max="4" value="2" /> extra moves</label>
                         <label class="check-label number-label" title="A step solve also lists this many other answers, best first (0 = only the best one, the fastest search)">list <input id="candidates-input" type="number" min="0" max="50" value="5" /> other answers</label>
                     </div>
                 </fieldset>
@@ -280,9 +280,20 @@
                             <label class="check-label"><input id="step-keep" type="checkbox" /> keep earlier steps' pieces</label>
                             <label class="check-label" title="Run the step again until it has nothing left to do (e.g. one BLD 3-cycle per round)"><input id="step-repeat" type="checkbox" /> repeat until done</label>
                         </div>
+                        <!-- Alg set: the step isn't searched but recognised (the last layer): the case's alg is made, and only a cube that fits no alg of the set is searched -->
+                        <div class="row">
+                            <label class="check-label" title="A last-layer step is recognised, not searched: each alg of the set is tried after each turn of the top layer, and the fastest one that reaches the goal is the answer (its case's usual alg on a tie). The search settings above only matter for a cube that fits no alg of the set. Also used by Solve">Alg set
+                                <select id="step-algs">
+                                    <option value="">none: search the step</option>
+                                    <option value="OLL">OLL (57 cases)</option>
+                                    <option value="PLL">PLL (21 cases)</option>
+                                </select>
+                            </label>
+                        </div>
                         <!-- Lookahead: later steps that judge this step's answers (0 = take its own best); its candidates may be as much longer than the shortest as the form's extra moves say -->
                         <div class="row">
                             <label class="check-label number-label">Lookahead <input id="step-lookahead" type="number" min="0" max="5" value="0" /> steps</label>
+                            <label class="check-label number-label" title="With lookahead, how many of the step's answers are followed through the next steps, best first (64 at most). Fewer is quicker: the time grows with this number, and the best answers come first anyway">over its best <input id="step-judged" type="number" min="1" max="64" value="64" /> answers</label>
                         </div>
                         <div class="row">
                             <button id="add-step" type="button">Add form as step</button>

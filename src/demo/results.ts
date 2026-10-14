@@ -56,7 +56,8 @@ export interface Run {
   bld?: Bld; // step runs: the blindfolded fields it was solved with (untouched steps show the whole cube)
   untimed?: boolean; // a step of a method search (steps aren't timed one by one there)
   rank?: Rank; // step solves: what the step's answers were ranked by
-  turned?: string; // step solves: the solution as the hands make it, when one turn is made as a wide turn; shown and scored in place of `solution`, which stays the one to check and go on from
+  turned?: string; // step solves: the solution as the hands make it, when some turns are made as wide or slice turns; shown and scored in place of `solution`, which stays the one to check and go on from
+  alg?: string; // a step answered from an alg set: the case it recognised (shown beside the step's name)
   candidates?: Run[]; // step solves: the answers the step compared, best first (this run is one of them); each is a run of its own, so it can be shown
 }
 
@@ -91,9 +92,9 @@ function runSpeed(run: Run): number {
   return speed;
 }
 
-// Which alternative won, as " (alt 2 of 3)" ("" when the run had only one)
+// Which alternative won, as " (alt 2 of 3)" ("" when the run had only one), and for a step answered from an alg set the case it recognised (" (T perm)")
 function alternativeNote(run: Run): string {
-  return run.alternatives.length > 1 ? ` (alt ${run.alternative + 1} of ${run.alternatives.length})` : "";
+  return (run.alternatives.length > 1 ? ` (alt ${run.alternative + 1} of ${run.alternatives.length})` : "") + (run.alg ? ` (${run.alg})` : "");
 }
 
 // A table row with one cell per text
@@ -123,14 +124,18 @@ function fingeringRows(hands: Fingering): HTMLTableRowElement[] {
     // Who makes the move: a hand's wrist or finger, or nobody (a rotation, or a move no trick makes)
     const by = step.hand ? `${step.hand} ${step.finger}` : step.finger === "other" ? "no trick" : step.finger;
     const others = step.others.map((way) => `${way.hand} ${way.finger} ${way.cost}`).join(", ");
-    // Finger regrips, an awkward grip (both hands away from home), a twisted one (the wrists turned opposite ways) and turning a slow layer again cost more:
-    // the surcharges are in the move's score, and named beside who makes it
+    // Finger regrips, an awkward grip (both hands away from home), a twisted one (the wrists turned opposite ways), turning a slow layer again and leaving
+    // the rhythm for a slow layer cost more, and a turn that keeps the rhythm of the one before it costs less: all of it is in the move's score, and named
+    // beside who makes it
     const notes =
       (step.fingerRegrips ? ` · finger regrip +${step.fingerRegrips}` : "") +
       (step.awkward ? ` · awkward grip +${step.awkward}` : "") +
       (step.twisted ? ` · twisted wrists +${step.twisted}` : "") +
-      (step.again ? ` · ${step.move[0].toUpperCase()} again +${step.again}` : "");
-    const score = Math.round((step.cost + step.fingerRegrips + step.awkward + step.twisted + step.again) * 100) / 100;
+      (step.again ? ` · ${step.move[0].toUpperCase()} again +${step.again}` : "") +
+      (step.leave ? ` · leaves the rhythm +${step.leave}` : "") +
+      (step.open ? ` · opposite layer open +${step.open}` : "") +
+      (step.flow ? ` · in rhythm −${step.flow}` : "");
+    const score = Math.round((step.cost + step.fingerRegrips + step.awkward + step.twisted + step.again + step.leave + step.open - step.flow) * 100) / 100;
     return [...regrips, textRow([step.move, by + notes, String(score), others || "—", `R ${step.wrists.right} · L ${step.wrists.left}`])];
   });
   return [...moves, ...hands.ending.map((end) => gripRow(`${end.hand} back home`, end.cost))];

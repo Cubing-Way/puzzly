@@ -10,10 +10,14 @@ export type { SearchWorker } from "./worker/protocol";
 // Piece names and grips
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text
-export { FACE_MOVES, joinMoves, invertMoves, countMoves } from "./core/moves";
-// Speed: the hand map (finger tricks per wrist position) and a move sequence's cheapest fingering
+export { FACE_MOVES, joinMoves, joinSteps, invertMoves, countMoves } from "./core/moves";
+// Speed: the hand map (finger tricks per wrist position), a move sequence's cheapest fingering, and an answer's cheapest writing with wide and slice turns
 export { HANDS, WRISTS, trickName, type HandModel, type Trick, type Wrist, type Finger } from "./speed/hands";
-export { fingering, speedCost, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";
+export { fingering, speedCost, speedFloor, cheapestWriting, strained, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";
+// Alg sets: the cases a step can be answered from without a search (the last layer's), and an alg as the face turns it makes
+export { ALG_SETS, algSet, type AlgSet, type AlgCase } from "./algs/sets";
+export { algCandidates } from "./step/alg-step";
+export { toFaces } from "./core/faces";
 // Checked moves and scrambles
 export { parseMoves, randomScramble } from "./core/puzzle";
 // Goals: roles, goal text, merging and masking
