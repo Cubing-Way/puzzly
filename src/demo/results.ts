@@ -196,7 +196,9 @@ function lookaheadCell(run: Run): { text: string; title: string } {
   const total = ahead.total === null ? "—" : String(ahead.total);
   // What the winner takes, in the unit its step ranks by
   const takes = ahead.total === null ? "?" : ahead.rank === "speed" ? `a speed cost of ${ahead.total}` : plural(ahead.total, "move");
-  const title = `Compared ${plural(ahead.candidates, "candidate answer")}; the winner takes ${takes} over this step and the next ${plural(ahead.steps, "step")}`;
+  // By speed, how much of it is finding the steps' pieces (see the engine's speed/look.ts)
+  const looks = ahead.look ? ` (${ahead.look} of it finding pieces)` : "";
+  const title = `Compared ${plural(ahead.candidates, "candidate answer")}; the winner takes ${takes}${looks} over this step and up to the next ${plural(ahead.steps, "step")} (fewer for an answer that already did a later step's part, like an XCross, so every answer is judged up to the same pieces)`;
   return { text: `${ahead.candidates} → ${total}`, title };
 }
 

@@ -4,7 +4,7 @@
 // Setup: await loadEngine once before anything else
 export { loadEngine, type EngineOptions } from "./setup";
 // Data shapes: goals, step options and results, methods and their runs
-export type { Role, Goal, GoalPiece, Rank, StepOptions, TableProgress, StepResult, StepConfig, Method, MethodStepResult, MethodResult, MethodOptions } from "./types";
+export type { Role, Goal, GoalPiece, Rank, StepOptions, NextStep, TableProgress, StepResult, StepConfig, Method, MethodStepResult, MethodResult, MethodOptions } from "./types";
 // The part of a Worker the engine needs from the app
 export type { SearchWorker } from "./worker/protocol";
 // Piece names and grips
@@ -14,6 +14,8 @@ export { FACE_MOVES, joinMoves, joinSteps, invertMoves, countMoves } from "./cor
 // Speed: the hand map (finger tricks per wrist position), a move sequence's cheapest fingering, and an answer's cheapest writing with wide and slice turns
 export { HANDS, WRISTS, trickName, type HandModel, type Trick, type Wrist, type Finger } from "./speed/hands";
 export { fingering, speedCost, speedFloor, cheapestWriting, strained, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";
+// Speed, the eyes: what finding a method step's pieces costs, by how much of them is in sight
+export { LOOK, lookCost, hiddenShare, nextGroups, nextLook, pieceCount, type LookModel } from "./speed/look";
 // Alg sets: the cases a step can be answered from without a search (the last layer's), and an alg as the face turns it makes
 export { ALG_SETS, algSet, type AlgSet, type AlgCase } from "./algs/sets";
 export { algCandidates } from "./step/alg-step";

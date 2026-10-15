@@ -73,8 +73,19 @@ export interface StepOptions {
   // each turn of the top layer, the ones that reach the goal are compared (by speed, or by moves) and the best is the answer, its case's default alg
   // on a tie. Only a cube that fits no alg of the set is searched, with the options above (default: none, the step is searched)
   algs?: string;
+  // By speed, in a method: each answer also pays for finding pieces (see speed/look.ts), its own before its first turn (not on a solve's first step, which
+  // is planned in inspection), so a pair in sight wins over one in the back, and with `next` the next step's after its last turn (default: false)
+  look?: boolean;
+  // The method's next step, for `look`: of two answers that turn alike, the one leaving that step's pieces in sight wins (default: none)
+  next?: NextStep;
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
+}
+
+// The next step of a method, as a step ranked by speed needs it (see StepOptions.next): its goal text (alternatives split by " | ") and its grips
+export interface NextStep {
+  pieces: string;
+  rotations: string[];
 }
 
 // What the search worker is doing with a table: building one, or loading one stored in this browser (finished = false when it starts, true when it's done)
@@ -146,9 +157,10 @@ export interface MethodStepResult extends StepResult {
   moves: number; // move count of the solution
   ms: number; // search time
   ok: boolean; // scramble + done + solution really reaches the step's goal
-  // With lookahead: answers compared, later steps they were judged over, the winner's total over this step and those (null = no answer got through them),
-  // and what that total counts (moves when left out)
-  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank } | null;
+  // With lookahead: answers compared, later steps they were judged over (at most: an answer that does more, like an XCross, is judged over fewer, so all
+  // end at the same point), the winner's total over this step and those (null = no answer got through them), what that total counts (moves when left
+  // out), and by speed how much of it is finding pieces (see speed/look.ts)
+  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank; look?: number } | null;
 }
 
 // A whole method run

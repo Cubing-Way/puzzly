@@ -11,13 +11,17 @@ import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
 import { movesInGrip } from "../core/turns";
 // Roles, goal text and goal masks
-import { maskPattern, goalToText } from "../goal/goal";
+import { maskPattern, goalToText, mergeGoals } from "../goal/goal";
+// Goals named for another grip
+import { rotateGoal } from "../goal/grips";
 // Solvable-with moves
 import { solvableIndex, settledGoal } from "../goal/solvable";
 // Speed cost of a move sequence, and an answer's cheapest writing with wide and slice turns
 import { speedCost, speedFloor, writingFloor, cheapestWriting, strained } from "../speed/fingering";
+// What finding a step's pieces costs
+import { hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount } from "../speed/look";
 // Engine data shapes
-import type { StepOptions, StepResult } from "../types";
+import type { Goal, StepOptions, StepResult } from "../types";
 // Page side of the search worker
 import { askWorker } from "../worker/client";
 // What a list that used up its node budget fails with
@@ -246,6 +250,27 @@ const AXIS_OF: Record<string, string> = { R: "x", L: "x", M: "x", U: "y", D: "y"
 // Most orders of one answer that get a speed score
 const MAX_ORDERS = 8;
 
+// The first `most` of some ranked entries, each group's best first getting an equal share of the places and the best of the rest filling the others
+// (in their ranked order): answers of an XCross next to a cross's, which their own cost alone would never let in
+function shareOut<T>(ranked: T[], most: number, group: (entry: T) => number): T[] {
+  const share = Math.max(1, Math.floor(most / new Set(ranked.map(group)).size));
+  // Each group's best, up to its share
+  const taken = new Map<number, number>();
+  const chosen = new Set<T>();
+  for (const entry of ranked) {
+    const count = taken.get(group(entry)) ?? 0;
+    if (count >= share) continue;
+    taken.set(group(entry), count + 1);
+    chosen.add(entry);
+  }
+  // The places left, to the best of the rest
+  for (const entry of ranked) {
+    if (chosen.size >= most) break;
+    chosen.add(entry);
+  }
+  return ranked.filter((entry) => chosen.has(entry)).slice(0, most);
+}
+
 // Every order of a few moves
 function permutations(moves: string[]): string[][] {
   if (moves.length < 2) return [moves];
@@ -285,7 +310,9 @@ export function moveOrders(moves: string): string[] {
 // With undoOffset every answer goes on to undo the offset it reached, and is measured with those moves: by moves the shortest with them comes first.
 // With faces to avoid, the answers come by tier first (see StepResult.tier): on those faces' account an answer only loses outright to one held the same way.
 // By speed each answer is scored in the fastest order of its moves (see moveOrders), and with "x" among the wide axes, after a solve's first step, also with
-// the cube tilted for it (see tiltForms). Longer answers are listed one move longer at a time while the node budget lasts (see LIST_NODES)
+// the cube tilted for it (see tiltForms). Longer answers are listed one move longer at a time while the node budget lasts (see LIST_NODES).
+// When several answers are given and the alternatives add different numbers of new pieces (cross | XCross), each size gets its own extra moves and a
+// share of the places (see bySize). By speed with options.look, an answer's score also has what finding pieces costs (see speed/look.ts)
 export async function stepCandidates(scramble: string, pieces: string, options: CandidateOptions = {}): Promise<StepResult[]> {
   // A step with an alg set lists the algs that fit, best first (see algCandidates); only a cube that fits none is searched
   const known = options.algs ? algCandidates(scramble, pieces, { ...options, maxCandidates: options.maxCandidates ?? MAX_CANDIDATES }) : [];
@@ -303,6 +330,19 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   // Longest answer that still counts: the shortest plus the extra moves (at least as many as its own ending takes, so an answer that needs no ending
   // and is no longer in all isn't missed), within the user's limit
   const longest = Math.min(shortest + Math.max(0, options.extraMoves ?? 0, countMoves(ending(answer))), options.maxDepth ?? Infinity);
+  // Alternatives that add more new pieces (an XCross next to a cross) give longer answers, slower on their own, so when several answers are given each size
+  // (new pieces) is listed and ranked apart: up to its own shortest plus the extra moves (at most twice the extra moves past the step's shortest), each
+  // with its own bar and a share of the places (see shareOut). A lookahead then judges both kinds, over the same pieces (see runMethod)
+  const bySize = most > 1 && new Set(queue.map((combo) => combo.fresh)).size > 1;
+  const span = longest - shortest;
+  const deepest = bySize ? Math.min(shortest + 2 * span, options.maxDepth ?? Infinity) : longest;
+  // Each size's shortest answer listed so far (the step's shortest for its own size)
+  const sizeShortest = new Map([[answer.combo.fresh, shortest]]);
+  // Longest answer a combo may list: its size's shortest plus the extra moves, or while its size has none yet, as long as any
+  const limitOf = (combo: Combo): number => {
+    const own = sizeShortest.get(combo.fresh);
+    return own === undefined ? deepest : Math.min(own + span, deepest);
+  };
   // How an answer leaves the cube (grip and every piece, as it really is: untouched steps' held cubes are relabeled), so answers leaving it the same way count once
   const leaves = ({ combo, moves }: Answer) => `${combo.rotation}/${JSON.stringify((combo.cube ?? combo.held).applyAlg(moves).patternData)}`;
   // An answer's speed cost, its grip rotation included, which is free when nothing was turned before the step (only worked out when ranking by speed)
@@ -323,13 +363,14 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     // at a time over every combo, shortest first, while the step's node budget lasts
     const must = Math.min(shortest + countMoves(ending(answer)), longest);
     let budget = LIST_NODES;
-    for (let depth = must; depth <= longest && budget > 0; depth++) {
+    for (let depth = must; depth <= deepest && budget > 0; depth++) {
       const extra = depth > must;
       // By moves the answers a step has to list are never cut short
       const counted = extra || bySpeed;
       for (const [order, combo] of queue.entries()) {
-        // Skip a combo whose distance (or lower bound) is too long, one that gave all it may, and for extra moves one that only ever gives its one answer
-        if (combo.bound > depth || given[order] >= cap || (extra && combo.twips)) continue;
+        // Skip a combo whose distance (or lower bound) is too long, one past its size's extra moves, one that gave all it may, and for extra moves one
+        // that only ever gives its one answer
+        if (combo.bound > depth || depth > limitOf(combo) || given[order] >= cap || (extra && combo.twips)) continue;
         if (!given[order]) lists++;
         try {
           // Every answer of this combo up to this depth, or on an extra depth only the ones that long (the worker only lists answers shorter than its
@@ -352,6 +393,8 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
           if (counted) budget -= reply.nodes ?? 0;
           for (const moves of reply.answers ?? []) {
             given[order]++;
+            // The first answers of a size set where its extra moves end
+            sizeShortest.set(combo.fresh, Math.min(sizeShortest.get(combo.fresh) ?? Infinity, countMoves(moves)));
             const candidate = { combo, moves };
             // By speed every answer goes on to be scored (below), where the fastest of those leaving the cube the same way stays
             if (bySpeed) {
@@ -403,20 +446,43 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     const keyOf = (entry: Listed) => (entry.form ?? "") + (entry.key ||= leaves(entry.answer));
     // The fastest answers so far that are sure of a place whatever comes later (clean ones, one per key), fastest first. Once there are `most`, the
     // slowest of them is the bar: an answer whose floor (see speedFloor) is above it can't make the list, so it isn't scored at all. With extra
-    // moves most answers are long ones that a good short one rules out this way
-    const sure: { key: string; speed: number }[] = [];
-    let bar = Infinity;
+    // moves most answers are long ones that a good short one rules out this way. Sizes ranked apart (see bySize) each have their own
+    const sures = new Map<number, { key: string; speed: number }[]>();
+    const bars = new Map<number, number>();
+    const sizeOf = (answer: Answer): number => (bySize ? answer.combo.fresh : 0);
+    const barOf = (answer: Answer): number => bars.get(sizeOf(answer)) ?? Infinity;
     const keep = (entry: Listed, clean: boolean): void => {
       scored.push(entry);
-      if (!clean || entry.speed >= bar) return;
+      if (!clean || entry.speed >= barOf(entry.answer)) return;
       const key = keyOf(entry);
+      const sure = sures.get(sizeOf(entry.answer)) ?? [];
+      sures.set(sizeOf(entry.answer), sure);
       const same = sure.findIndex((item) => item.key === key);
       if (same >= 0 && sure[same].speed <= entry.speed) return;
       if (same >= 0) sure.splice(same, 1);
       sure.push({ key, speed: entry.speed });
       sure.sort((a, b) => a.speed - b.speed);
       sure.length = Math.min(sure.length, most);
-      if (sure.length === most) bar = sure[most - 1].speed;
+      if (sure.length === most) bars.set(sizeOf(entry.answer), sure[most - 1].speed);
+    };
+    // What finding pieces adds to an answer's score (see speed/look.ts): its own pieces before its first turn (the same for every answer of its combo, and
+    // nothing on a solve's first step, planned in inspection) and the next step's after its last turn, on the cube as it leaves it. Nothing without
+    // `look`, and nothing for steps that keep every other piece untouched (BLD: nobody looks at the cube)
+    const looking = Boolean(options.look) && !options.untouched && !options.buffer;
+    const comboLooks = new Map<Combo, { own: number; groups: Goal[] }>();
+    const lookOf = (held: Answer): number => {
+      if (!looking) return 0;
+      const { combo } = held;
+      let known = comboLooks.get(combo);
+      if (!known) {
+        // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
+        const before = rotateGoal(options.earlier ?? options.keep ?? {}, combo.rotation);
+        const adds = newPieces(combo.goal, before);
+        const own = fresh || !pieceCount(adds) ? 0 : lookCost(hiddenShare(heldPattern(scramble, options.done ?? ""), rotateGoal(adds, invertMoves(combo.rotation))));
+        known = { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
+        comboLooks.set(combo, known);
+      }
+      return known.own + (known.groups.length ? nextLook(combo.held.applyAlg(joinMoves(held.moves, ending(held))), known.groups) : 0);
     };
     // Whether moves as the hands make them are clean (none of the faces to avoid, no turn against an open layer); a clean one's hold is noted
     const noteClean = (text: string): boolean => {
@@ -424,10 +490,11 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       if (clean && avoid.length) cleanHolds.add(/^((?:[xyz]\S* ?)*)/.exec(text)![1].trim());
       return clean;
     };
-    // Moves as the hands make them, scored unless their floor is above the bar (a tie with the bar is still scored: the order of the answers decides it)
-    const score = (text: string): { speed: number; clean: boolean } | null => {
+    // Moves as the hands make them, with what finding pieces adds (`look`), scored unless their floor is above the bar of the answer's size (a tie with
+    // the bar is still scored: the order of the answers decides it)
+    const score = (text: string, answer: Answer, look: number): { speed: number; clean: boolean } | null => {
       const clean = noteClean(text);
-      return speedFloor(text, undefined, fresh) > bar + 1e-6 ? null : { speed: speedCost(text, undefined, fresh), clean };
+      return speedFloor(text, undefined, fresh) + look > barOf(answer) + 1e-6 ? null : { speed: speedCost(text, undefined, fresh) + look, clean };
     };
     // One listed answer in every way the hands can make it: as held and in every twin grip of its combo (the grips that ask for the same thing: the same
     // moves, renamed), each in the fastest order of its moves (turns about one axis in a row; the listed order on a tie). With wide axes also with one
@@ -444,9 +511,11 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
         const base: Listed = index ? { answer: held, length: raw.length, order: raw.order, key: "", speed: Infinity } : raw;
         const { rotation } = held.combo;
         const tail = ending(held);
+        // Finding pieces costs the same in every writing (they all leave the cube alike)
+        const look = lookOf(held);
         let own: (Listed & { clean: boolean }) | null = null;
         for (const order of moveOrders(held.moves)) {
-          const result = score(joinMoves(rotation, order, tail));
+          const result = score(joinMoves(rotation, order, tail), held, look);
           if (result && (!own || result.speed < own.speed)) own = { ...base, answer: { combo: held.combo, moves: order }, ...result };
         }
         if (axes.length) {
@@ -455,14 +524,15 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
           const all = joinMoves(from.answer.moves, tail).split(" ").filter(Boolean);
           const plain = all.join(" ");
           wideForms(all, rotation, axes).forEach((wide, place) => {
-            const result = score(joinMoves(rotation, wide.wide));
+            const result = score(joinMoves(rotation, wide.wide), held, look);
             if (result) keep({ ...from, form: `wide${place}/`, speed: result.speed, wide }, result.clean);
           });
-          // Only worth writing out when no writing at all would be under the bar
+          // Only worth writing out when no writing at all would be under the bar (the writing's own cost is the bar less what finding pieces adds)
+          const bar = barOf(held) - look;
           const written = writingFloor(plain, undefined, fresh, rotation) > bar + 1e-6 ? null : cheapestWriting(plain, axes, undefined, fresh, rotation, bar);
-          if (written && (!own || written.cost < own.speed)) own = { ...from, speed: written.cost, wide: { wide: written.text, plain }, clean: noteClean(joinMoves(rotation, written.text)) };
+          if (written && (!own || written.cost + look < own.speed)) own = { ...from, speed: written.cost + look, wide: { wide: written.text, plain }, clean: noteClean(joinMoves(rotation, written.text)) };
           for (const tilt of axes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
-            const result = score(joinMoves(rotation, tilt.wide));
+            const result = score(joinMoves(rotation, tilt.wide), held, look);
             if (result && (!own || result.speed < own.speed)) own = { ...from, wide: tilt, ...result };
           }
         }
@@ -474,7 +544,8 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       scoreAnswer(raw);
       await givePageATurn();
     }
-    // Fastest first (ties as above), keeping the first of the answers that leave the cube the same way, until there are enough
+    // Fastest first (ties as above), keeping the first of the answers that leave the cube the same way, until there are enough (sizes ranked apart:
+    // all of them, for shareOut below)
     const kept = new Set<string>();
     ranked = [];
     setTiers(scored, cleanHolds);
@@ -483,13 +554,15 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       if (kept.has(key)) continue;
       kept.add(key);
       ranked.push(entry);
-      if (ranked.length === most) break;
+      if (!bySize && ranked.length === most) break;
     }
   } else {
     // By moves: the step's own shortest answer first, then the others; with endings counted that answer takes its place among them (first on a tie)
     setTiers([first, ...found]);
     ranked = undo || avoid.length ? [first, ...found].sort((a, b) => byTier(a, b) || byMoves(a, b)) : [first, ...found.sort(byMoves)];
   }
+  // Sizes ranked apart: each size's best get a share of the places
+  if (bySize) ranked = shareOut(ranked, most, (entry) => entry.answer.combo.fresh);
   return ranked.slice(0, most).map((entry) => {
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
     const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };

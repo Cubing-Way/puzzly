@@ -3,7 +3,9 @@
 // Piece names and grips
 import { gripRotations } from "../core/cube";
 // Move text helpers
-import { countMoves, joinMoves, joinSteps } from "../core/moves";
+import { countMoves, joinMoves, joinSteps, invertMoves } from "../core/moves";
+// Loaded cube definition and held cubes
+import { heldPattern } from "../core/puzzle";
 // Roles, goal text and goal masks
 import { mergeGoals, goalFromText, goalToText } from "../goal/goal";
 // Goals named for another grip
@@ -14,6 +16,8 @@ import { offsetsFromText } from "../goal/offsets";
 import { solvableFromText } from "../goal/solvable";
 // Speed cost of a move sequence
 import { speedCost } from "../speed/fingering";
+// What finding a step's pieces costs
+import { hiddenShare, lookCost, newPieces, pieceCount } from "../speed/look";
 // Error messages
 import { NOTHING_NEW } from "../messages";
 // Goal check
@@ -45,8 +49,12 @@ function handsMoves(result: StepResult): string {
   return result.wide ?? result.solution.toString();
 }
 
-// Search options for one step of a method, from where earlier steps left the cube (done), with their pieces named in the grip the step starts in (earlier)
-export function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProgress?: (progress: TableProgress) => void): StepOptions {
+// Search options for one step of a method, from where earlier steps left the cube (done), with their pieces named in the grip the step starts in (earlier).
+// By speed the step pays for finding pieces (see speed/look.ts), and with the step after it (`next`) its answers may leave that step's pieces in sight
+export function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProgress?: (progress: TableProgress) => void, next?: StepConfig): StepOptions {
+  // Nobody looks at the cube during BLD steps
+  const looks = step.rank === "speed" && !step.untouched && !step.buffer;
+  const nextLooks = next !== undefined && !next.untouched && !next.buffer;
   return {
     generatorMoves: step.moves,
     maxDepth: step.maxDepth ?? undefined,
@@ -62,6 +70,7 @@ export function methodStepOptions(step: StepConfig, done: string, earlier: Goal,
     targetsPerStep: step.targetsPerStep,
     parity: step.parity,
     algs: step.algs || undefined,
+    ...(looks ? { look: true, ...(nextLooks ? { next: { pieces: next.pieces, rotations: gripRotations(next.grips.bottom, next.grips.anyFront) } } : {}) } : {}),
     onProgress,
   };
 }
@@ -73,14 +82,25 @@ export function piecesAfter(earlier: Goal, result: Pick<StepResult, "rotation" |
 }
 
 // Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done).
-// A step with lookahead lists its candidate answers and takes the one with the fewest moves over it and its next steps (each of those solved its own way);
-// a step ranked by speed takes its fastest answer, and with lookahead the lowest speed cost over it and its next steps
+// A step with lookahead lists its candidate answers and takes the one with the fewest moves over it and its next steps (each of those solved its own way,
+// every candidate judged up to the same number of pieces); a step ranked by speed takes its fastest answer, and with lookahead the lowest speed cost over it
+// and its next steps, both with what finding each step's pieces costs (see speed/look.ts)
 export async function runMethod(scramble: string, method: Method, options: MethodOptions = {}): Promise<MethodResult> {
   const steps: MethodStepResult[] = [];
   // Moves after the scramble so far, always passed as done (never folded into the scramble), so only their x, y, z change the grip
   let done = options.done ?? "";
   // Every earlier step's pieces, named in the grip the next step starts in
   let earlier: Goal = {};
+  // The step after step `index`: the same step when it repeats (its next round), else the one after it (none after the last)
+  const nextOf = (index: number): StepConfig | undefined => (method.steps[index].repeat ? method.steps[index] : method.steps[index + 1]);
+  // What finding a step's pieces costs before its first turn (see speed/look.ts): the pieces its answer adds, named in the grip it starts in, found on the
+  // cube as `from` leaves it. Nothing on a solve's first step (planned in inspection), for an answer that turns nothing, or for a BLD step (nobody looks)
+  const lookFor = (index: number, from: string, before: Goal, result: StepResult): number => {
+    const step = method.steps[index];
+    if (step.untouched || step.buffer || !from.trim() || !countMoves(result.solution.toString())) return 0;
+    const adds = newPieces(piecesAfter(before, result), rotateGoal(before, result.rotation));
+    return pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0;
+  };
   // Each step's own answer (its shortest, or by speed its fastest) from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again)
   const ownAnswers = new Map<string, Promise<StepResult>>();
   const solveOwn = (index: number, from: string, before: Goal, judging = false): Promise<StepResult> => {
@@ -90,19 +110,24 @@ export async function runMethod(scramble: string, method: Method, options: Metho
     let answer = ownAnswers.get(key);
     if (!answer) {
       const step = method.steps[index];
-      answer = solveStep(scramble, step.pieces, { ...methodStepOptions(step, from, before, options.onProgress), rank: step.rank, extraMoves, avoid: avoided(step), wideAxes: wideAxes(step) });
+      answer = solveStep(scramble, step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index)), rank: step.rank, extraMoves, avoid: avoided(step), wideAxes: wideAxes(step) });
       ownAnswers.set(key, answer);
     }
     return answer;
   };
   // What the next `count` steps after step `index` take, each its own answer, from where `from` leaves the cube, counted by `cost` (moves, or speed cost;
-  // Infinity when one of them finds nothing). A repeated step comes back until a round has nothing left (0 moves, or nothing new), then the step after it; those empty rounds don't count
-  const movesAhead = async (index: number, count: number, from: string, before: Goal, cost: (solution: string, from: string) => number): Promise<number> => {
+  // Infinity when one of them finds nothing), with `looks` (by speed) what finding each one's pieces costs, which is also given apart; and the pieces the
+  // run holds at the end. It stops early once the run holds `until` pieces, so an answer that did a later step's part (an XCross) is judged up to the same
+  // point as the others. A repeated step comes back until a round has nothing left (0 moves, or nothing new), then the step after it; those empty rounds don't count
+  const movesAhead = async (index: number, count: number, from: string, before: Goal, cost: (solution: string, from: string) => number, looks: boolean, until = Infinity): Promise<{ total: number; look: number; pieces: number }> => {
     let total = 0;
+    let look = 0;
     // Step that ran last, and whether it runs again next
     let at = index;
     let again = Boolean(method.steps[index].repeat);
     for (let judged = 0; judged < count; ) {
+      // Far enough: as many pieces as the runs it's compared with
+      if (pieceCount(before) >= until) break;
       const next = again ? at : at + 1;
       if (next >= method.steps.length) break;
       let result: StepResult;
@@ -114,7 +139,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
           again = false;
           continue;
         }
-        return Infinity;
+        return { total: Infinity, look, pieces: pieceCount(before) };
       }
       const solution = result.solution.toString();
       const moves = countMoves(solution);
@@ -123,14 +148,17 @@ export async function runMethod(scramble: string, method: Method, options: Metho
         again = false;
         continue;
       }
-      total += cost(handsMoves(result), from);
+      // Finding its pieces, then turning it
+      const found = looks ? lookFor(next, from, before, result) : 0;
+      look += found;
+      total += found + cost(handsMoves(result), from);
       from = joinMoves(from, solution);
       before = piecesAfter(before, result);
       judged++;
       at = next;
       again = Boolean(method.steps[next].repeat) && moves > 0;
     }
-    return total;
+    return { total, look, pieces: pieceCount(before) };
   };
   for (const [index, step] of method.steps.entries()) {
     // Rounds of this step: one, or with repeat as many as it finds something to do (each listed as "name 1", "name 2"…)
@@ -147,26 +175,39 @@ export async function runMethod(scramble: string, method: Method, options: Metho
           const bySpeed = step.rank === "speed";
           // A speed cost counts a rotation before the first turn as free when nothing was turned before the answer (the cube is picked up that way)
           const cost: (solution: string, from: string) => number = bySpeed ? (solution, from) => speedCost(solution, undefined, !from.trim()) : (solution) => countMoves(solution);
-          const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), wideAxes: wideAxes(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
+          const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress, nextOf(index)), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), wideAxes: wideAxes(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
           // With faces to avoid, only the answers of the best tier there is are judged (they come first)
           const best = candidates[0]?.tier;
           if (best !== undefined) candidates.length = candidates.filter((candidate) => candidate.tier === best).length;
-          // Each candidate's own cost plus what the next steps take after it, in the order they come (best first). A candidate whose own cost is
-          // already no lower than the best total so far can't win, whatever comes after it, so the steps after it aren't solved at all
-          const totals: number[] = [];
+          // Pieces each candidate leaves done. One that does more (an XCross next to a cross) is judged over fewer steps: up to as many pieces as the ones
+          // that do the least hold after all their steps, so every total ends at the same point and the steps it saves (and their looks) count for it
+          const counts = candidates.map((candidate) => pieceCount(piecesAfter(earlier, candidate)));
+          const fewest = Math.min(...counts);
+          // Judged in this order: the ones doing the least first (the first of them to get through its steps sets how far the others go), then the rest
+          const order = candidates.map((_, at) => at).sort((a, b) => Number(counts[a] !== fewest) - Number(counts[b] !== fewest) || a - b);
+          // Each candidate's own cost (by speed with finding its own pieces) plus what the next steps take after it. A candidate whose own cost is already
+          // no lower than the best total so far can't win, whatever comes after it, so the steps after it aren't solved at all
+          const totals = candidates.map(() => Infinity);
+          const looked = candidates.map(() => 0);
           let lowest = Infinity;
-          for (const candidate of candidates) {
-            const own = cost(handsMoves(candidate), done);
-            const total = own >= lowest ? Infinity : own + (await movesAhead(index, ahead, joinMoves(done, candidate.solution.toString()), piecesAfter(earlier, candidate), cost));
-            totals.push(total);
-            lowest = Math.min(lowest, total);
+          let until = Infinity;
+          for (const at of order) {
+            const candidate = candidates[at];
+            const ownLook = bySpeed ? lookFor(index, done, earlier, candidate) : 0;
+            const own = cost(handsMoves(candidate), done) + ownLook;
+            if (own >= lowest) continue;
+            const after = await movesAhead(index, ahead, joinMoves(done, candidate.solution.toString()), piecesAfter(earlier, candidate), cost, bySpeed, until);
+            if (until === Infinity && counts[at] === fewest && Number.isFinite(after.total)) until = after.pieces;
+            totals[at] = own + after.total;
+            looked[at] = ownLook + after.look;
+            lowest = Math.min(lowest, totals[at]);
           }
           // The lowest total wins; on a tie the earlier candidate (the step's own best answer comes first)
           const winner = totals.indexOf(Math.min(...totals));
           result = candidates[winner];
-          // The winner's total, to two decimals (speed costs are sums of tenths)
+          // The winner's total, to two decimals (speed costs are sums of tenths), and by speed how much of it is finding pieces
           const total = Number.isFinite(totals[winner]) ? Math.round(totals[winner] * 100) / 100 : null;
-          lookahead = { candidates: candidates.length, steps: ahead, total, ...(bySpeed ? { rank: "speed" as const } : {}) };
+          lookahead = { candidates: candidates.length, steps: ahead, total, ...(bySpeed ? { rank: "speed" as const, look: Math.round(looked[winner] * 100) / 100 } : {}) };
         } else {
           // Search this step from where the last one ended, keeping the earlier pieces if it asks to
           result = await solveOwn(index, done, earlier);
