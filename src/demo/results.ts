@@ -57,6 +57,7 @@ export interface Run {
   untimed?: boolean; // a step of a method search (steps aren't timed one by one there)
   rank?: Rank; // step solves: what the step's answers were ranked by
   turned?: string; // step solves: the solution as the hands make it, when some turns are made as wide or slice turns; shown and scored in place of `solution`, which stays the one to check and go on from
+  starts?: number[]; // whole method runs: where each step starts among the moves as the hands make them, so the counts that belong to one step start over there when scored
   alg?: string; // a step answered from an alg set: the case it recognised (shown beside the step's name)
   candidates?: Run[]; // step solves: the answers the step compared, best first (this run is one of them); each is a run of its own, so it can be shown
 }
@@ -82,11 +83,12 @@ export function handsMoves(run: Run): string {
 // Each run's speed cost, worked out once (the tables are redrawn often)
 const speeds = new WeakMap<Run, number>();
 
-// A run's speed cost: its solution's cheapest fingering (a rotation before the first turn is free when nothing was done before the run)
+// A run's speed cost: its solution's cheapest fingering (a rotation before the first turn is free when nothing was done before the run; a whole method
+// run's steps each start their own counts over)
 function runSpeed(run: Run): number {
   let speed = speeds.get(run);
   if (speed === undefined) {
-    speed = speedCost(handsMoves(run), undefined, !run.done.trim());
+    speed = speedCost(handsMoves(run), undefined, !run.done.trim(), run.starts);
     speeds.set(run, speed);
   }
   return speed;
@@ -169,7 +171,7 @@ export function showResult(run: Run | null): void {
   solutionText.textContent = run ? handsMoves(run) || "(already solved)" : "—";
   movesStat.textContent = run ? String(run.moves) : "—";
   // Speed: the solution's cheapest fingering, as its cost with its regrips, and one table row per move
-  const hands = run?.solution ? fingering(handsMoves(run), undefined, !run.done.trim()) : null;
+  const hands = run?.solution ? fingering(handsMoves(run), undefined, !run.done.trim(), run.starts) : null;
   speedStat.textContent = hands ? `${hands.cost} (${plural(hands.regrips, "regrip")})` : "—";
   fingeringBox.hidden = !hands;
   fingeringBody.replaceChildren(...(hands ? fingeringRows(hands) : []));

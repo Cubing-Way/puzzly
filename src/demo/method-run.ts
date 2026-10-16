@@ -77,6 +77,8 @@ function methodTotalRun(scramble: string, done: string, running: Method, result:
     ms,
     ok: result.ok,
     ...(result.wide ? { turned: result.wide } : {}),
+    // Where each step starts, so the total is scored with each step's own counts
+    ...(result.starts ? { starts: result.starts } : {}),
   };
 }
 

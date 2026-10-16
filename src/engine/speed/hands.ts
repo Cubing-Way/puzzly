@@ -35,7 +35,7 @@ export interface HandModel {
   awkward: number; // added to every move made from, or ending in, a grip with both hands away from home (both thumbs on top, or both on the bottom): L' with the right thumb still on top
   open: Record<string, number>; // added to a turn of R or L made while the opposite one is a quarter turn off (the L' of R U L'): the hand on that layer can't hold the rest still, whatever was turned in between and however it grips; less for R, the stronger wrist. A move that already pays for an awkward or a twisted grip pays only the bigger of the two (the same strain)
   twisted: number; // added instead to every move made from, or ending in, a grip with the wrists turned opposite ways (after R L or R' L': one thumb on top, the other on the bottom)
-  rotation: number; // x, y or z with both hands letting go: they end at home (free before the first turn of a solve: the cube is picked up that way)
+  rotation: { quarter: number; half: number }; // x, y or z with both hands letting go: they end at home (free before the first turn of a solve: the cube is picked up that way); a half turn (y2, x2, z2) turns the cube twice as far, so it's slower
   tilt: number; // an x turn the wrists make together without letting go, per quarter turn: both wrists go a step up (x) or down (x'), the whole cube turning in them
   other: number; // a move no trick makes (E2, S2, notation the model can't read)
 }
@@ -118,7 +118,7 @@ export const HANDS: HandModel = {
   awkward: 0.7,
   open: { L: 0.8, R: 0.3 },
   twisted: 1.2,
-  rotation: 3,
+  rotation: { quarter: 3, half: 4.5 },
   tilt: 0.5,
   other: 2.5,
 };

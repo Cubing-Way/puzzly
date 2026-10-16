@@ -510,7 +510,7 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     const joinPrevious = previous ? cancelsInto(previous) : null;
     const cut = (text: string): { rest: string; saving: number } | null => {
       const joined = joinPrevious && joinPrevious(text);
-      return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept) };
+      return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts) };
     };
     // Moves as the hands make them, with what finding pieces adds (`look`), scored unless their floor is above the bar of the answer's size (a tie with
     // the bar is still scored: the order of the answers decides it); where they cancel into the moves before the step, what's left of them less the saving

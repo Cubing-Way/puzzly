@@ -113,6 +113,23 @@ export function joinSteps(...parts: string[]): string {
   return out.join(" ");
 }
 
+// Steps' moves joined as joinSteps joins them, with where each step starts among the joined moves (a step whose first turn was made as one with the
+// moves before it starts at that turn), so a speed cost can start each step's own counts over there (see speed/fingering.ts)
+export interface JoinedSteps {
+  moves: string;
+  starts: number[];
+}
+
+// No steps joined yet
+export const NO_STEPS: JoinedSteps = { moves: "", starts: [] };
+
+// One more step's moves joined onto the steps joined so far (an earlier step whose moves its first turns cancelled away now starts where it does)
+export function joinStep(joined: JoinedSteps, moves: string): JoinedSteps {
+  const out = joined.moves.split(/\s+/).filter(Boolean);
+  const start = joinOnto(out, moves.split(/\s+/).filter(Boolean));
+  return { moves: out.join(" "), starts: [...joined.starts.map((at) => Math.min(at, start)), start] };
+}
+
 // A step's moves after the moves before it, joined as joinSteps joins them: the part of the moves before that stays as it was (`kept`), and everything
 // after it (`rest`: what's left of the step, with the turn it was made as one with); null when nothing is joined
 export function cancelInto(before: string, moves: string): { kept: string; rest: string } | null {

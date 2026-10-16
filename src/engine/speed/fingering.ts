@@ -261,8 +261,10 @@ function openCost(hands: HandModel, turn: Turn | null, apart: number): number {
 }
 
 // Which of R and L are a quarter turn off after a turn (see openCost): a plain quarter turn of R or L opens or closes its own layer (wide and
-// slice turns, which known algs make freely against an open layer, leave it as it is)
+// slice turns, which known algs make freely against an open layer, leave it as it is). A rotation leaves neither off: the hands take the cube
+// again, and R and L may be other layers now
 function apartAfter(turn: Turn | null, apart: number): number {
+  if (turn && ROTATIONS.includes(turn.layer)) return 0;
   if (!turn || turn.wide || turn.quarters % 2 === 0) return apart;
   return turn.layer === "R" ? apart ^ 1 : turn.layer === "L" ? apart ^ 2 : apart;
 }
@@ -299,8 +301,8 @@ function advance(hands: HandModel, ready: Ready, turn: Turn | null, before: numb
   const open: number[] = [];
   for (let state = 0; state < before.length; state++) if (before[state] < Infinity) open.push(state);
   if (turn && ROTATIONS.includes(turn.layer)) {
-    // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started)
-    const cost = free ? 0 : hands.rotation;
+    // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started); a half turn costs more
+    const cost = free ? 0 : turn.quarters === 2 ? hands.rotation.half : hands.rotation.quarter;
     for (const from of open) offer(HOME_STATE * classes, before[from] + cost, from, Math.floor(from / classes), null, "rotation", cost, 0, 0, 0, 0, 0, 0);
     // A tilt: an x turn the wrists make together without letting go, where both can go that way (x takes both a step up, x' a step down, x2 two steps)
     if (turn.layer === "x") {
@@ -357,16 +359,21 @@ function advance(hands: HandModel, ready: Ready, turn: Turn | null, before: numb
   }
 }
 
-// The search behind fingering and speedCost. A state is the wrists and the class of the last move (wrists * classes + class); with `trace` off only the cost is worked out
-function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolean): Fingering {
+// The search behind fingering and speedCost. A state is the wrists and the class of the last move (wrists * classes + class); with `trace` off only the cost is worked out.
+// `starts` = where each step starts, for a joined solve (see joinStep): the counts that belong to one step start over there
+function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolean, starts: number[] = []): Fingering {
   const ready = readyFor(hands);
   const { classes } = ready;
   const size = STATES * classes;
   const tokens = moves.split(/\s+/).filter(Boolean);
   const turns = tokens.map(readTurn);
-  // What each move pays for turning a layer the sequence turned before (only for the layers the model lists; the same whoever makes the move)
+  const stepStarts = new Set(starts);
+  // What each move pays for turning a layer the sequence turned before (only for the layers the model lists; the same whoever makes the move), counted
+  // from the step's start or the last rotation (after one, the letters may name other layers)
   const turned = new Set<string>();
-  const agains = turns.map((turn) => {
+  const agains = turns.map((turn, index) => {
+    if (stepStarts.has(index)) turned.clear();
+    if (turn && ROTATIONS.includes(turn.layer)) turned.clear();
     if (!turn || ROTATIONS.includes(turn.layer)) return 0;
     const again = turned.has(turn.layer) ? (hands.again[turn.layer] ?? 0) : 0;
     turned.add(turn.layer);
@@ -376,9 +383,11 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
   const flows = turns.map((turn, index) => flowAfter(hands, index ? turns[index - 1] : null, turn));
   // What each move pays for leaving it (a slow layer after a move that wasn't on one)
   const leaves = turns.map((turn, index) => leaveAfter(hands, index ? turns[index - 1] : null, turn));
-  // What each turn of R or L pays for the opposite layer being a quarter turn off (less what an awkward or a twisted grip already charges, see advance)
+  // What each turn of R or L pays for the opposite layer being a quarter turn off (less what an awkward or a twisted grip already charges, see advance),
+  // with nothing off at a step's start (the hands came home after the step before, see lastRegrip)
   let apart = 0;
-  const opens = turns.map((turn) => {
+  const opens = turns.map((turn, index) => {
+    if (stepStarts.has(index)) apart = 0;
     const open = openCost(hands, turn, apart);
     apart = apartAfter(turn, apart);
     return open;
@@ -501,6 +510,8 @@ export function cheapestWriting(moves: string, axes: string[] | { wide: string[]
       if (total < next[to]) next[to] = total;
     });
     if (!rotation) started = true;
+    // A rotation starts the layers turned again over (as evaluate counts them)
+    if (rotation) turned = 0;
     if (bit >= 0) turned |= 1 << bit;
     costs = next;
     last = turn;
@@ -588,8 +599,12 @@ export function speedFloor(moves: string, hands: HandModel = HANDS, fresh = fals
   for (const token of moves.split(/\s+/).filter(Boolean)) {
     const turn = readTurn(token);
     if (turn && ROTATIONS.includes(turn.layer)) {
-      // A rotation: free before a solve's first turn, otherwise a tilt at best (x) or a rotation
-      if (!(fresh && !started)) total += turn.layer === "x" ? Math.min(hands.rotation, hands.tilt * (turn.quarters === 2 ? 2 : 1)) : hands.rotation;
+      // A rotation: free before a solve's first turn, otherwise a tilt at best (x) or a rotation (a half turn costs more)
+      const rotation = turn.quarters === 2 ? hands.rotation.half : hands.rotation.quarter;
+      if (!(fresh && !started)) total += turn.layer === "x" ? Math.min(rotation, hands.tilt * (turn.quarters === 2 ? 2 : 1)) : rotation;
+      // It starts the layers turned again and the open layers over, as evaluate does (or the floor could be above the cost)
+      turned.clear();
+      apart = apartAfter(turn, apart);
       last = turn;
       continue;
     }
@@ -645,39 +660,42 @@ function round(cost: number): number {
 
 // The cheapest fingering of a move sequence, from both hands at home (regrips before the first turn cost less: they're done while still looking at the cube)
 // and back to home (each hand that ends somewhere else pays for coming back, so of two equal ways the one ending nearer home wins).
-// `fresh` = nothing was turned before these moves (they start a solve), so rotations before their first turn are free: the cube is picked up that way
-export function fingering(moves: string, hands: HandModel = HANDS, fresh = false): Fingering {
-  return evaluate(moves, hands, fresh, true);
+// `fresh` = nothing was turned before these moves (they start a solve), so rotations before their first turn are free: the cube is picked up that way.
+// `starts` = where each step starts when the moves are a joined solve (see joinStep): a layer turned again, or opposite R or L, counts from there
+export function fingering(moves: string, hands: HandModel = HANDS, fresh = false, starts: number[] = []): Fingering {
+  return evaluate(moves, hands, fresh, true, starts);
 }
 
-// A move sequence's speed cost: its cheapest fingering's (lower = faster to turn); `fresh` as for fingering
-export function speedCost(moves: string, hands: HandModel = HANDS, fresh = false): number {
-  return evaluate(moves, hands, fresh, false).cost;
+// A move sequence's speed cost: its cheapest fingering's (lower = faster to turn); `fresh` and `starts` as for fingering
+export function speedCost(moves: string, hands: HandModel = HANDS, fresh = false, starts: number[] = []): number {
+  return evaluate(moves, hands, fresh, false, starts).cost;
 }
 
-// Speed costs of moves a step comes after, per model, by their text: a step scores many answers after the same moves (started over when it gets big)
+// Speed costs of moves a step comes after, per model, by their step starts and text: a step scores many answers after the same moves (started over when it gets big)
 const costsBefore = new WeakMap<HandModel, Map<string, number>>();
 
-// The speed cost of moves a step comes after: a solve's moves so far, so nothing was turned before them
-function costBefore(moves: string, hands: HandModel): number {
+// The speed cost of moves a step comes after: a solve's moves so far, so nothing was turned before them (`starts`: where each of its steps starts)
+function costBefore(moves: string, hands: HandModel, starts: number[]): number {
   let costs = costsBefore.get(hands);
   if (!costs || costs.size > 1000) costsBefore.set(hands, (costs = new Map()));
-  let cost = costs.get(moves);
-  if (cost === undefined) costs.set(moves, (cost = speedCost(moves, hands, true)));
+  const key = `${starts.join(",")}/${moves}`;
+  let cost = costs.get(key);
+  if (cost === undefined) costs.set(key, (cost = speedCost(moves, hands, true, starts)));
   return cost;
 }
 
-// What a step saves when its first turns cancel into the moves before it (`before`, a solve's moves so far as the hands make them; `kept`, the part of
-// them that stays, see cancelInto): what those moves no longer turn. The step costs what's left of it (cancelInto's `rest`) less this
-export function cancelSaving(before: string, kept: string, hands: HandModel = HANDS): number {
-  return round(costBefore(before, hands) - costBefore(kept, hands));
+// What a step saves when its first turns cancel into the moves before it (`before`, a solve's moves so far as the hands make them, with where each of
+// its steps starts; `kept`, the part of them that stays, see cancelInto): what those moves no longer turn. The step costs what's left of it (cancelInto's `rest`) less this
+export function cancelSaving(before: string, kept: string, hands: HandModel = HANDS, starts: number[] = []): number {
+  return round(costBefore(before, hands, starts) - costBefore(kept, hands, starts));
 }
 
-// A step's speed cost after the moves before it (`before`, a solve's moves so far as the hands make them): where its first turns cancel into their last
-// ones (R then R', U then y U', see joinSteps), what's left of it less what those moves no longer turn; otherwise its own speedCost. `fresh` as for speedCost
-export function speedCostAfter(moves: string, before: string, hands: HandModel = HANDS, fresh = false): number {
+// A step's speed cost after the moves before it (`before`, a solve's moves so far as the hands make them, `starts` where each of their steps starts):
+// where its first turns cancel into their last ones (R then R', U then y U', see joinSteps), what's left of it less what those moves no longer turn;
+// otherwise its own speedCost. `fresh` as for speedCost
+export function speedCostAfter(moves: string, before: string, hands: HandModel = HANDS, fresh = false, starts: number[] = []): number {
   const cut = before ? cancelInto(before, moves) : null;
-  return cut ? round(speedCost(cut.rest, hands, fresh) - cancelSaving(before, cut.kept, hands)) : speedCost(moves, hands, fresh);
+  return cut ? round(speedCost(cut.rest, hands, fresh) - cancelSaving(before, cut.kept, hands, starts)) : speedCost(moves, hands, fresh);
 }
 
 // Where a hand's thumb is at each wrist position, for text

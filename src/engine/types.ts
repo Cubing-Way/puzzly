@@ -87,6 +87,8 @@ export interface StepOptions {
   // The solve's moves before this step as the hands make them (in a method: every earlier step's, joined as its solution joins them). By speed an answer
   // whose first turns cancel into their last ones (R then R', U then y U') is scored by what's left of it, less what those moves no longer turn (default: none)
   previous?: string;
+  // Where each earlier step starts among `previous` (see joinStep), so the counts that belong to one step start over there when they're scored (default: none)
+  previousStarts?: number[];
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
@@ -180,6 +182,7 @@ export interface MethodResult {
   steps: MethodStepResult[];
   solution: string; // every step's solution in order, a step's first turn joined with the turn before it when both turn the same layer (R then R' is nothing, U then U is U2)
   wide?: string; // the same with each step's wide writing where it has one (as the hands make it: the one to score and show)
+  starts: number[]; // where each step starts among the moves as the hands make them (wide, else solution): pass it to speedCost and fingering to score the whole solve
   pieces: string; // every step's pieces, named in the grip the run ends in
   offset: string; // offset the last step left in ("" = none)
   moves: number;
