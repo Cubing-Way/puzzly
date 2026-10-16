@@ -84,7 +84,7 @@
                     <div id="edge-chips" class="chips" aria-label="Edges"></div>
                     <div id="corner-chips" class="chips" aria-label="Corners"></div>
                     <div id="center-chips" class="chips" aria-label="Centers"></div>
-                    <!-- Grips to try: faces that may go on the bottom, and any front (the best answer wins); by speed, x and z turns too, made up for by wide and slice turns -->
+                    <!-- Grips to try: faces that may go on the bottom, and any front (the best answer wins) -->
                     <span class="label">Bottom face <small>as held now; with the turns the answer may start with</small></span>
                     <div class="moves">
                         <label><input type="checkbox" name="bottom" value="D" checked />D</label>
@@ -94,8 +94,27 @@
                         <label><input type="checkbox" name="bottom" value="R" />R</label>
                         <label><input type="checkbox" name="bottom" value="L" />L</label>
                         <label><input id="any-front" type="checkbox" />any front (y turns)</label>
-                        <label title="By speed, a turn of R or L may also be made as the other hand's wide turn (R as Lw), with an x turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Several such turns and M turns that cancel out need no x turn (r U R' U' r' F R F'). Saved with a method step"><input id="x-turns" type="checkbox" checked />x turns (wide R, L, M)</label>
-                        <label title="By speed, a turn of F or B may also be made as the opposite wide turn (F as Bw), with a z turn first, or last, to make up for it: the cube ends exactly as the plain answer leaves it. Several such turns and S turns that cancel out need no z turn (f R U R' U' f'). Saved with a method step"><input id="z-turns" type="checkbox" checked />z turns (wide F, B, S)</label>
+                    </div>
+
+                    <!-- By speed: how the hands may make an answer's turns, each about its own axes: wide turns, slice turns, and rotations in its middle -->
+                    <span class="label">Hand turns <small>by speed: wide, slice and rotations an answer may be made with; saved with a method step</small></span>
+                    <div class="moves hand-turns">
+                        <span class="axis-name">Wide</span>
+                        <label title="Wide turns about x that cancel out (r U R' U' r' F R F'); with x rotations also one R or L made as the other hand's wide turn (R as Lw) and an x turn first, or last, to make up for it"><input type="checkbox" name="wide-axis" value="x" checked />Rw Lw</label>
+                        <label title="Wide turns about y that cancel out (u … u'); with y rotations also one U or D made as the opposite wide turn (U as Dw) and a y turn to make up for it"><input type="checkbox" name="wide-axis" value="y" />Uw Dw</label>
+                        <label title="Wide turns about z that cancel out (f R U R' U' f'); with z rotations also one F or B made as the opposite wide turn (F as Bw) and a z turn to make up for it"><input type="checkbox" name="wide-axis" value="z" checked />Fw Bw</label>
+                    </div>
+                    <div class="moves hand-turns">
+                        <span class="axis-name">Slice</span>
+                        <label title="R and L' made as one M turn, with wide and slice turns that cancel out (M2 U M U2 M' U M2)"><input type="checkbox" name="slice-axis" value="x" checked />M</label>
+                        <label title="U and D' made as one E turn, with wide and slice turns that cancel out"><input type="checkbox" name="slice-axis" value="y" />E</label>
+                        <label title="F' and B made as one S turn, with wide and slice turns that cancel out"><input type="checkbox" name="slice-axis" value="z" checked />S</label>
+                    </div>
+                    <div class="moves hand-turns">
+                        <span class="axis-name">Rotations</span>
+                        <label title="An x turn in the middle of an answer: the cube tilted for it and tilted back (x R2 D2 R U R' D2 R U' R x', after a solve's first step), and the x turn that makes up for one wide R or L"><input type="checkbox" name="rotation-axis" value="x" checked />x</label>
+                        <label title="A y turn in the middle of an answer: the one that makes up for one wide U or D (needs Uw Dw)"><input type="checkbox" name="rotation-axis" value="y" />y</label>
+                        <label title="A z turn in the middle of an answer: the one that makes up for one wide F or B (needs Fw Bw)"><input type="checkbox" name="rotation-axis" value="z" checked />z</label>
                     </div>
 
                     <!-- Offsets: the goal also counts when the cube is off by one of these moves (the solution leaves it in) -->
@@ -294,6 +313,15 @@
                         <div class="row">
                             <label class="check-label number-label">Lookahead <input id="step-lookahead" type="number" min="0" max="5" value="0" /> steps</label>
                             <label class="check-label number-label" title="With lookahead, how many of the step's answers are followed through the next steps, best first (64 at most). Fewer is quicker: the time grows with this number, and the best answers come first anyway">over its best <input id="step-judged" type="number" min="1" max="64" value="64" /> answers</label>
+                        </div>
+                        <!-- Lookahead style by speed: human eyes (finding pieces, planning an XCross in inspection and turning the cube mid-answer cost) or turning only -->
+                        <div class="row">
+                            <label class="check-label" title="By speed. Human lookahead: the step also pays for finding its pieces (less when they were in sight) and for leaving the next step's in sight, an answer that turns the cube in its middle (x2 … Rw2, a wide turn made up by a rotation) pays for the pieces lost from sight, and a solve's first step pays for planning more than its smallest alternative in inspection (an XCross's pair, more when it is out of sight), so only an easy XCross wins. Efficiency: only how fast the moves turn counts, so any XCross may win">Lookahead style
+                                <select id="step-style">
+                                    <option value="human">human: count finding pieces, easy XCross</option>
+                                    <option value="efficiency">efficiency: turning only, any XCross</option>
+                                </select>
+                            </label>
                         </div>
                         <div class="row">
                             <button id="add-step" type="button">Add form as step</button>

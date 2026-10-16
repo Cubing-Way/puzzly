@@ -52,6 +52,25 @@ export function showAvoid(faces: string): void {
   avoidInput.value = faces;
 }
 
+// The kinds of hand turns an answer may be made with by speed, each a row of x, y, z boxes (name = the boxes' name)
+export type HandTurnKind = "wide-axis" | "slice-axis" | "rotation-axis";
+
+// The axes ticked in one hand-turn row, e.g. ["x", "z"]
+export function chosenAxes(kind: HandTurnKind): string[] {
+  return [...form.querySelectorAll<HTMLInputElement>(`input[name="${kind}"]:checked`)].map((box) => box.value);
+}
+
+// Tick one hand-turn row's boxes for an axes text ("x z")
+export function showAxes(kind: HandTurnKind, axes: string): void {
+  const ticked = axes.split(" ").filter(Boolean);
+  for (const box of form.querySelectorAll<HTMLInputElement>(`input[name="${kind}"]`)) box.checked = ticked.includes(box.value);
+}
+
+// Every hand-turn row as search options: wide turns, slice turns and rotations, each about its own axes
+export function chosenHandTurns(): { wideAxes: string[]; sliceAxes: string[]; rotationAxes: string[] } {
+  return { wideAxes: chosenAxes("wide-axis"), sliceAxes: chosenAxes("slice-axis"), rotationAxes: chosenAxes("rotation-axis") };
+}
+
 // Put a rank into the form
 export function showRank(rank: Rank): void {
   (form.elements.namedItem("rank") as RadioNodeList).value = rank;

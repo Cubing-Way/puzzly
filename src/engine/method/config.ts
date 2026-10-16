@@ -30,8 +30,15 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
+// Read an axes field (e.g. "x z") into its distinct axes; throws when one isn't x, y or z
+function axesFromText(value: unknown, field: string): string[] {
+  const axes = [...new Set(String(value ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean))];
+  if (!axes.every((axis) => ["x", "y", "z"].includes(axis))) throw new Error(`${field} must be some of x y z.`);
+  return axes;
+}
+
 // Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, fewest moves, no repeat)
-// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces, wide axes and the alg set
+// and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces, wide, slice and rotation axes and the alg set
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
   const typed = String(step.name ?? "").trim();
@@ -78,15 +85,20 @@ function readStep(data: unknown, index: number): StepConfig {
     // Faces the answer avoids when it can: face letters, written back one space apart
     const avoid = [...new Set(String(step.avoid ?? "").toUpperCase().split(/[\s,]+/).filter(Boolean))];
     if (!avoid.every((face) => FACE_MOVES.includes(face))) throw new Error("Avoid must be faces out of U R F D L B.");
-    // Axes its answer may make a wide turn about: x, y, z, written back one space apart
-    const wideAxes = [...new Set(String(step.wideAxes ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean))];
-    if (!wideAxes.every((axis) => ["x", "y", "z"].includes(axis))) throw new Error("Wide axes must be some of x y z.");
+    // Axes its answer may make wide turns, slice turns and rotations about: x, y, z, written back one space apart. A file from before they were apart
+    // only has wide axes, which meant all three, so slices and rotations left out follow them
+    const wideAxes = axesFromText(step.wideAxes, "Wide axes");
+    const sliceAxes = step.sliceAxes === undefined ? wideAxes : axesFromText(step.sliceAxes, "Slice axes");
+    const rotationAxes = step.rotationAxes === undefined ? wideAxes : axesFromText(step.rotationAxes, "Rotation axes");
     // Alg set the step is answered from ("" = none), by its name
     const algs = algSet(String(step.algs ?? ""))?.name ?? "";
     if (String(step.algs ?? "").trim() && !algs) throw new Error(`Algs must be one of ${Object.keys(ALG_SETS).join(", ")} (or empty for none).`);
     // Rank: what the step's best answer is, the fewest moves or the fastest to turn
     const rank = step.rank ?? "moves";
     if (rank !== "moves" && rank !== "speed") throw new Error('Rank must be "moves" or "speed".');
+    // Lookahead style by speed: human eyes (finding pieces, turning the cube mid-answer) or turning only
+    const style = step.style ?? "human";
+    if (style !== "human" && style !== "efficiency") throw new Error('Style must be "human" or "efficiency".');
     return {
       name,
       pieces,
@@ -105,8 +117,11 @@ function readStep(data: unknown, index: number): StepConfig {
       candidates,
       extraMoves,
       rank,
+      style,
       avoid: avoid.join(" "),
       wideAxes: wideAxes.join(" "),
+      sliceAxes: sliceAxes.join(" "),
+      rotationAxes: rotationAxes.join(" "),
       algs,
       repeat: Boolean(step.repeat),
     };

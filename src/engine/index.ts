@@ -10,12 +10,12 @@ export type { SearchWorker } from "./worker/protocol";
 // Piece names and grips
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text
-export { FACE_MOVES, joinMoves, joinSteps, invertMoves, countMoves } from "./core/moves";
+export { FACE_MOVES, joinMoves, joinSteps, cancelInto, movesAfter, invertMoves, countMoves } from "./core/moves";
 // Speed: the hand map (finger tricks per wrist position), a move sequence's cheapest fingering, and an answer's cheapest writing with wide and slice turns
 export { HANDS, WRISTS, trickName, type HandModel, type Trick, type Wrist, type Finger } from "./speed/hands";
-export { fingering, speedCost, speedFloor, cheapestWriting, strained, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";
+export { fingering, speedCost, speedCostAfter, cancelSaving, speedFloor, cheapestWriting, strained, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";
 // Speed, the eyes: what finding a method step's pieces costs, by how much of them is in sight
-export { LOOK, lookCost, hiddenShare, nextGroups, nextLook, pieceCount, type LookModel } from "./speed/look";
+export { LOOK, lookCost, hiddenShare, nextGroups, nextLook, pieceCount, flipLook, type LookModel } from "./speed/look";
 // Alg sets: the cases a step can be answered from without a search (the last layer's), and an alg as the face turns it makes
 export { ALG_SETS, algSet, type AlgSet, type AlgCase } from "./algs/sets";
 export { algCandidates } from "./step/alg-step";

@@ -23,7 +23,7 @@ import { askWorker } from "../worker/client";
 // Lower bounds from later steps' goals
 import { type LaterGoal, laterGoals, laterBound } from "./later-goals";
 // Runs a method
-import { runMethod, methodStepOptions, methodRow, methodTotals, piecesAfter, MAX_REPEATS } from "./run";
+import { runMethod, methodStepOptions, methodRow, methodTotals, piecesAfter, heldBack, MAX_REPEATS } from "./run";
 
 // Default time budget of a method search: it stops then with the best run found so far
 export const METHOD_SEARCH_MS = 30_000;
@@ -161,9 +161,11 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   const levelAt = async (index: number, round: number, done: string, earlier: Goal): Promise<SearchLevel | null> => {
     for (;;) {
       if (index >= steps.length) return { index, round, end: true, queue: [], lastError: null, options: {} };
-      const stepOptions = { ...methodStepOptions(steps[index], done, earlier, options.onProgress), firstFound: false };
+      // Held back when later steps need the rest of its alternatives: only the done ones, as held (see heldBack)
+      const held = heldBack(steps, index, earlier);
+      const stepOptions = { ...methodStepOptions(steps[index], done, earlier, options.onProgress), ...(held ? { rotations: held.rotations } : {}), firstFound: false };
       try {
-        const { queue, lastError } = await stepCombos(scramble, steps[index].pieces, stepOptions);
+        const { queue, lastError } = await stepCombos(scramble, held?.pieces ?? steps[index].pieces, stepOptions);
         return queue.length ? { index, round, end: false, queue, lastError, options: stepOptions } : null;
       } catch (error) {
         // A repeated step with nothing new left is finished: the next step starts here

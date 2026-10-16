@@ -64,11 +64,17 @@ export interface StepOptions {
   // The answer goes on to undo the offset it reached (a pseudo-cross ends with its D turn), and those moves count in its length and its speed: the best answer
   // is the shortest (or fastest) with them, and the result has no offset left (default: the offset is left in, for a later step)
   undoOffset?: boolean;
-  // By speed: a face turn of an answer may also be made as the opposite wide turn (R as Lw: the other hand turns two layers), with the cube's turn made up
-  // by a rotation at the start or at the end, so the cube ends as the plain answer leaves it; or any number of its turns as wide and slice turns that
-  // cancel out (r … r', M, f … f'), which needs no rotation. For turns about these axes: "x" (R, L and M), "y" (U, D and E), "z" (F, B and S) (default: none).
-  // With "x", after a solve's first step, an answer may also be made with the cube tilted for it and tilted back (x R2 D2 R U R' D2 R U' R x')
+  // By speed: any number of an answer's face turns may be made as wide turns about these axes that cancel out (r … r', f … f'), which needs no rotation:
+  // "x" (Rw, Lw), "y" (Uw, Dw), "z" (Fw, Bw). With rotations about the same axis (rotationAxes), one face turn may also be made as the opposite wide turn
+  // (R as Lw: the other hand turns two layers) with the cube's turn made up by a rotation at the start or at the end, so the cube ends as the plain answer
+  // leaves it (default: none)
   wideAxes?: string[];
+  // By speed: two face turns of an answer may be made as one slice turn about these axes, along with other wide and slice turns that cancel out (M2 U M U2
+  // M' U M2): "x" (M), "y" (E), "z" (S) (default: the same as wideAxes, as before they were apart)
+  sliceAxes?: string[];
+  // By speed: rotations the hands may make in the middle of an answer, about these axes: the one that makes up for a wide turn (see wideAxes), and with
+  // "x", after a solve's first step, the cube tilted for the answer and tilted back (x R2 D2 R U R' D2 R U' R x') (default: the same as wideAxes)
+  rotationAxes?: string[];
   // An alg set ("OLL", "PLL": see algs/sets.ts): the step isn't searched but recognised, as solvers do the last layer. Each alg of the set is tried after
   // each turn of the top layer, the ones that reach the goal are compared (by speed, or by moves) and the best is the answer, its case's default alg
   // on a tie. Only a cube that fits no alg of the set is searched, with the options above (default: none, the step is searched)
@@ -78,6 +84,9 @@ export interface StepOptions {
   look?: boolean;
   // The method's next step, for `look`: of two answers that turn alike, the one leaving that step's pieces in sight wins (default: none)
   next?: NextStep;
+  // The solve's moves before this step as the hands make them (in a method: every earlier step's, joined as its solution joins them). By speed an answer
+  // whose first turns cancel into their last ones (R then R', U then y U') is scored by what's left of it, less what those moves no longer turn (default: none)
+  previous?: string;
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
@@ -135,7 +144,10 @@ export interface StepConfig {
   candidates?: number; // with lookahead: how many of the step's answers the later steps judge, best first (0 or left out = 64, the most); fewer is quicker, and a solver weighs a handful of crosses, not dozens
   extraMoves?: number; // with lookahead or rank "speed": candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
   avoid?: string; // faces the answer avoids when it can, e.g. "F B" ("" = none): answers that turn none of them come first among those compared
-  wideAxes?: string; // by speed, axes its answer may make wide and slice turns about, e.g. "x" or "x z" ("" = none): R as Lw with an x turn to make up for it, or r … r' and M with none
+  wideAxes?: string; // by speed, axes its answer may make wide turns about, e.g. "x" or "x z" ("" = none): r … r' and f … f' that cancel out, or R as Lw with an x rotation (see rotationAxes)
+  sliceAxes?: string; // by speed, axes its answer may make slice turns about: "x" = M, "y" = E, "z" = S ("" = none; left out = the same as wideAxes, as older method files mean)
+  rotationAxes?: string; // by speed, axes its answer may rotate the cube about in its middle: x for a tilt (x … x'), and the rotation that makes up for a single wide turn ("" = none; left out = the same as wideAxes)
+  style?: "human" | "efficiency"; // by speed in a method: "human" (default) = the step also pays for finding pieces, for turning the cube in the middle of an answer (x2 … Rw2: the pieces tracked are lost) and, as a solve's first step, for planning more than its smallest alternative in inspection (an easy XCross only), "efficiency" = only how fast its moves turn (any XCross)
   rank?: Rank; // how the step picks its answer: "moves" = the fewest moves (default), "speed" = the fastest to turn; with lookahead, what its candidates' totals count
   algs?: string; // an alg set the step is answered from, "OLL" or "PLL" ("" = none): the case is recognised and its alg made, and only a cube that fits none of the set's algs is searched
   repeat?: boolean; // run the step again and again until it has nothing left to do (e.g. one BLD 3-cycle per round, or "the easiest pair" until F2L is done)

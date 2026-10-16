@@ -16,13 +16,12 @@ import {
   extraMovesInput,
   repeatBox,
   algsSelect,
+  styleSelect,
   offsetsInput,
   solvableInput,
-  xTurnsBox,
-  zTurnsBox,
 } from "./dom";
 // Reads the step form
-import { currentMode, readPieces, readOffsets, readSolvable, readBld, chosenMoves, chosenRank, chosenAvoid, showBld, showMoves, showRank, showAvoid } from "./form";
+import { currentMode, readPieces, readOffsets, readSolvable, readBld, chosenMoves, chosenRank, chosenAvoid, chosenAxes, showBld, showMoves, showRank, showAvoid, showAxes } from "./form";
 // Status line and busy state
 import { setStatus, plural } from "./status";
 // 3D cube viewer
@@ -70,12 +69,16 @@ export function stepFromForm(number: number): StepConfig | null {
       extraMoves: wholeNumber(extraMovesInput.value),
       // What its best answer is: the fewest moves, or the fastest to turn
       rank: chosenRank(),
-      // Axes its answer may make a wide turn about, by speed
-      wideAxes: [...(xTurnsBox.checked ? ["x"] : []), ...(zTurnsBox.checked ? ["z"] : [])].join(" "),
+      // Axes its answer may make wide turns, slice turns and rotations about, by speed
+      wideAxes: chosenAxes("wide-axis").join(" "),
+      sliceAxes: chosenAxes("slice-axis").join(" "),
+      rotationAxes: chosenAxes("rotation-axis").join(" "),
       // Faces its answer avoids when it can
       avoid: chosenAvoid().join(" "),
       // The alg set it's answered from ("" = none: it's searched)
       algs: algsSelect.value,
+      // By speed: human lookahead (finding pieces and flips cost) or turning only
+      style: styleSelect.value === "efficiency" ? "efficiency" : "human",
       // Run again until nothing is left to do
       repeat: repeatBox.checked,
     };
@@ -105,10 +108,27 @@ export function stepToForm(step: StepConfig): void {
   extraMovesInput.value = String(step.extraMoves ?? 0);
   showRank(step.rank ?? "moves");
   showAvoid(step.avoid ?? "");
-  xTurnsBox.checked = (step.wideAxes ?? "").includes("x");
-  zTurnsBox.checked = (step.wideAxes ?? "").includes("z");
+  // Hand turns: slices and rotations left out follow the wide axes, as older method files mean
+  showAxes("wide-axis", step.wideAxes ?? "");
+  showAxes("slice-axis", step.sliceAxes ?? step.wideAxes ?? "");
+  showAxes("rotation-axis", step.rotationAxes ?? step.wideAxes ?? "");
   algsSelect.value = step.algs ?? "";
+  styleSelect.value = step.style ?? "human";
   onInputChange();
+}
+
+// A step's hand turns in a few words, e.g. "wide x z, slice x, rotations x" ("" = none)
+function handTurnsSummary(step: StepConfig): string {
+  // Slices and rotations left out follow the wide axes, as older method files mean
+  const parts: [string, string | undefined][] = [
+    ["wide", step.wideAxes],
+    ["slice", step.sliceAxes ?? step.wideAxes],
+    ["rotations", step.rotationAxes ?? step.wideAxes],
+  ];
+  return parts
+    .filter(([, axes]) => axes)
+    .map(([kind, axes]) => `${kind} ${axes}`)
+    .join(", ");
 }
 
 // One-line summary of a step's settings for the step list
@@ -125,9 +145,9 @@ export function stepSummary(step: StepConfig): string {
     `moves ${step.moves.join(" ")}`,
     step.maxDepth == null ? "" : `max ${step.maxDepth}`,
     step.firstFound ? "first answer" : "",
-    step.rank === "speed" ? "by speed" : "",
+    step.rank === "speed" ? (step.style === "efficiency" ? "by speed, turning only" : "by speed") : "",
     step.avoid ? `avoiding ${step.avoid}` : "",
-    step.wideAxes && step.rank === "speed" ? `${step.wideAxes} turns` : "",
+    step.rank === "speed" ? handTurnsSummary(step) : "",
     step.lookahead ? `lookahead ${step.lookahead}${step.candidates ? ` over ${step.candidates} answers` : ""}` : "",
     step.extraMoves && (step.lookahead || step.rank === "speed" || step.avoid) ? `+${step.extraMoves} moves` : "",
     step.repeat ? "repeat until done" : "",

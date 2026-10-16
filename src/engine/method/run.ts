@@ -3,21 +3,21 @@
 // Piece names and grips
 import { gripRotations } from "../core/cube";
 // Move text helpers
-import { countMoves, joinMoves, joinSteps, invertMoves } from "../core/moves";
+import { countMoves, joinMoves, joinSteps, invertMoves, movesAfter } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Roles, goal text and goal masks
-import { mergeGoals, goalFromText, goalToText } from "../goal/goal";
+import { mergeGoals, goalFromText, goalToText, splitAlternatives, dropFree, covers } from "../goal/goal";
 // Goals named for another grip
 import { rotateGoal } from "../goal/grips";
 // Offsets a goal counts up to
 import { offsetsFromText } from "../goal/offsets";
 // Solvable-with moves
 import { solvableFromText } from "../goal/solvable";
-// Speed cost of a move sequence
-import { speedCost } from "../speed/fingering";
+// Speed cost of a move sequence after the moves before it
+import { speedCostAfter } from "../speed/fingering";
 // What finding a step's pieces costs
-import { hiddenShare, lookCost, newPieces, pieceCount } from "../speed/look";
+import { hiddenShare, lookCost, newPieces, pieceCount, flipLook, inspectionLook } from "../speed/look";
 // Error messages
 import { NOTHING_NEW } from "../messages";
 // Goal check
@@ -39,9 +39,16 @@ function avoided(step: StepConfig): string[] {
   return (step.avoid ?? "").split(" ").filter(Boolean);
 }
 
-// The axes a step's answer may make a wide turn about, as a list
-function wideAxes(step: StepConfig): string[] {
-  return (step.wideAxes ?? "").split(" ").filter(Boolean);
+// An axes text ("x z") as a list
+function axesList(text: string): string[] {
+  return text.split(" ").filter(Boolean);
+}
+
+// The axes a step's answer may make wide turns, slice turns and rotations about, as search options (slices and rotations left out = the wide axes, as
+// older method files mean)
+function handTurns(step: StepConfig): Pick<StepOptions, "wideAxes" | "sliceAxes" | "rotationAxes"> {
+  const wideAxes = axesList(step.wideAxes ?? "");
+  return { wideAxes, sliceAxes: axesList(step.sliceAxes ?? step.wideAxes ?? ""), rotationAxes: axesList(step.rotationAxes ?? step.wideAxes ?? "") };
 }
 
 // A result's moves as the hands make them: its wide writing when it has one
@@ -49,11 +56,55 @@ function handsMoves(result: StepResult): string {
   return result.wide ?? result.solution.toString();
 }
 
+// A goal's pieces as "orbit piece role" keys, centers left out (they only set the frame)
+function pieceKeys(goal: Goal): string[] {
+  return Object.entries(dropFree(goal))
+    .filter(([orbit]) => orbit !== "CENTERS")
+    .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => `${orbit} ${piece} ${role}`));
+}
+
+// True when earlier pieces (named in the grip a step starts in) cover every piece of a goal, centers left out
+function coveredBy(goal: Goal, before: Goal): boolean {
+  return Object.entries(dropFree(goal)).every(([orbit, roles]) => orbit === "CENTERS" || Object.entries(roles).every(([piece, role]) => covers(before[orbit]?.[Number(piece)], role)));
+}
+
+// How many later steps each place one of step `index`'s alternatives along with pieces of their own: their alternatives, less the pieces all of them
+// share, are this step's alternatives (ZB's last pair + EO: a pair slot plus the EO edges). Each of them needs one of those alternatives left for it;
+// a later step that only repeats them (CFOP's fourth pair) needs none, as it may find its pieces done already
+function laterTakers(steps: StepConfig[], index: number): number {
+  // This step's alternatives, each as its sorted piece keys, all of them sorted
+  const own = splitAlternatives(steps[index].pieces).map((text) => pieceKeys(goalFromText(text)).sort().join("/"));
+  if (own.length < 2) return 0;
+  const mine = own.sort().join("|");
+  return steps.slice(index + 1).filter((later) => {
+    // Its alternatives' pieces, and the ones all of them share
+    const alternatives = splitAlternatives(later.pieces).map((text) => pieceKeys(goalFromText(text)));
+    const shared = alternatives[0].filter((key) => alternatives.every((alternative) => alternative.includes(key)));
+    // What's left of each alternative without the shared pieces, against this step's alternatives
+    const rest = alternatives.map((alternative) => alternative.filter((key) => !shared.includes(key)).sort().join("/"));
+    return shared.length > 0 && rest.sort().join("|") === mine;
+  }).length;
+}
+
+// When no more of step `index`'s alternatives are left than later steps need (see laterTakers; e.g. an XCross filled a slot, and ZB's last pair + EO
+// needs the last free one), the step is held back: it only asks for the ones earlier steps did, as held (another grip could name a free slot after a done
+// one), so it's done with no moves, like CFOP's last pair after an XCross. Its options then, or null when it runs as usual (`before` = earlier pieces
+// named in the grip it starts in)
+export function heldBack(steps: StepConfig[], index: number, before: Goal): { pieces: string; rotations: string[] } | null {
+  const takers = laterTakers(steps, index);
+  if (!takers) return null;
+  // Its alternatives earlier steps already did
+  const alternatives = splitAlternatives(steps[index].pieces);
+  const done = alternatives.filter((text) => coveredBy(goalFromText(text), before));
+  return done.length && alternatives.length - done.length <= takers ? { pieces: done.join(" | "), rotations: [""] } : null;
+}
+
 // Search options for one step of a method, from where earlier steps left the cube (done), with their pieces named in the grip the step starts in (earlier).
-// By speed the step pays for finding pieces (see speed/look.ts), and with the step after it (`next`) its answers may leave that step's pieces in sight
-export function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProgress?: (progress: TableProgress) => void, next?: StepConfig): StepOptions {
+// By speed the step pays for finding pieces (see speed/look.ts), and with the step after it (`next`) its answers may leave that step's pieces in sight;
+// `previous` = the earlier steps' moves as the hands make them, joined (an answer cancelling into them is scored by what's left of it)
+export function methodStepOptions(step: StepConfig, done: string, earlier: Goal, onProgress?: (progress: TableProgress) => void, next?: StepConfig, previous = ""): StepOptions {
   // Nobody looks at the cube during BLD steps
-  const looks = step.rank === "speed" && !step.untouched && !step.buffer;
+  const looks = step.rank === "speed" && !step.untouched && !step.buffer && step.style !== "efficiency";
   const nextLooks = next !== undefined && !next.untouched && !next.buffer;
   return {
     generatorMoves: step.moves,
@@ -70,6 +121,7 @@ export function methodStepOptions(step: StepConfig, done: string, earlier: Goal,
     targetsPerStep: step.targetsPerStep,
     parity: step.parity,
     algs: step.algs || undefined,
+    ...(previous ? { previous } : {}),
     ...(looks ? { look: true, ...(nextLooks ? { next: { pieces: next.pieces, rotations: gripRotations(next.grips.bottom, next.grips.anyFront) } } : {}) } : {}),
     onProgress,
   };
@@ -91,35 +143,49 @@ export async function runMethod(scramble: string, method: Method, options: Metho
   let done = options.done ?? "";
   // Every earlier step's pieces, named in the grip the next step starts in
   let earlier: Goal = {};
+  // Every earlier step's moves as the hands make them, joined as the solution joins them (a step's answer may cancel into them)
+  let previous = "";
   // The step after step `index`: the same step when it repeats (its next round), else the one after it (none after the last)
   const nextOf = (index: number): StepConfig | undefined => (method.steps[index].repeat ? method.steps[index] : method.steps[index + 1]);
   // What finding a step's pieces costs before its first turn (see speed/look.ts): the pieces its answer adds, named in the grip it starts in, found on the
-  // cube as `from` leaves it. Nothing on a solve's first step (planned in inspection), for an answer that turns nothing, or for a BLD step (nobody looks)
+  // cube as `from` leaves it. On a solve's first step (planned in inspection) only what it plans beyond its smallest alternative; nothing for an answer that turns nothing, for a BLD step (nobody looks) or for
+  // a step ranked for efficiency (turning only). A searched answer written with wide or slice turns pays for moving the centers in its middle too (see
+  // flipLook), on a first step as well, when a step that looks comes after it
   const lookFor = (index: number, from: string, before: Goal, result: StepResult): number => {
     const step = method.steps[index];
-    if (step.untouched || step.buffer || !from.trim() || !countMoves(result.solution.toString())) return 0;
+    if (step.untouched || step.buffer || step.style === "efficiency") return 0;
+    // An alg from a set is made as solvers learn it, so only a searched answer's writing pays for a flip
+    const next = nextOf(index);
+    const flip = !result.alg && next && !next.untouched && !next.buffer ? flipLook(handsMoves(result), result.solution.toString()) : 0;
+    if (!countMoves(result.solution.toString())) return flip;
+    // A solve's first step is planned in inspection: it only pays for what it plans beyond its smallest alternative (an XCross's pair)
+    if (!from.trim()) return flip + inspectionLook(heldPattern(scramble, from), step.pieces, result.alternative, result.rotation);
     const adds = newPieces(piecesAfter(before, result), rotateGoal(before, result.rotation));
-    return pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0;
+    return flip + (pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0);
   };
-  // Each step's own answer (its shortest, or by speed its fastest) from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again)
+  // Each step's own answer (its shortest, or by speed its fastest) from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again);
+  // `previous` = the earlier steps' moves as the hands make them, joined
   const ownAnswers = new Map<string, Promise<StepResult>>();
-  const solveOwn = (index: number, from: string, before: Goal, judging = false): Promise<StepResult> => {
+  const solveOwn = (index: number, from: string, before: Goal, previous: string, judging = false): Promise<StepResult> => {
     // Extra moves it compares: fewer while it judges another step's answers (that answer is kept apart from its full one when they differ)
     const extraMoves = judging ? Math.min(method.steps[index].extraMoves ?? 0, JUDGING_EXTRA_MOVES) : (method.steps[index].extraMoves ?? 0);
-    const key = `${index}\n${extraMoves}\n${from}\n${goalToText(before)}`;
+    const key = `${index}\n${extraMoves}\n${from}\n${goalToText(before)}\n${previous}`;
     let answer = ownAnswers.get(key);
     if (!answer) {
       const step = method.steps[index];
-      answer = solveStep(scramble, step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index)), rank: step.rank, extraMoves, avoid: avoided(step), wideAxes: wideAxes(step) });
+      // Held back when later steps need the rest of its alternatives: only the done ones, as held
+      const held = heldBack(method.steps, index, before);
+      answer = solveStep(scramble, held?.pieces ?? step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index), previous), ...(held ? { rotations: held.rotations } : {}), rank: step.rank, extraMoves, avoid: avoided(step), ...handTurns(step) });
       ownAnswers.set(key, answer);
     }
     return answer;
   };
-  // What the next `count` steps after step `index` take, each its own answer, from where `from` leaves the cube, counted by `cost` (moves, or speed cost;
-  // Infinity when one of them finds nothing), with `looks` (by speed) what finding each one's pieces costs, which is also given apart; and the pieces the
-  // run holds at the end. It stops early once the run holds `until` pieces, so an answer that did a later step's part (an XCross) is judged up to the same
-  // point as the others. A repeated step comes back until a round has nothing left (0 moves, or nothing new), then the step after it; those empty rounds don't count
-  const movesAhead = async (index: number, count: number, from: string, before: Goal, cost: (solution: string, from: string) => number, looks: boolean, until = Infinity): Promise<{ total: number; look: number; pieces: number }> => {
+  // What the next `count` steps after step `index` take, each its own answer, from where `from` leaves the cube, counted by `cost` (moves, or speed cost,
+  // each after the steps' moves before it, `previous` at first; Infinity when one of them finds nothing), with `looks` (by speed) what finding each one's
+  // pieces costs, which is also given apart; and the pieces the run holds at the end. It stops early once the run holds `until` pieces, so an answer that
+  // did a later step's part (an XCross) is judged up to the same point as the others. A repeated step comes back until a round has nothing left (0 moves,
+  // or nothing new), then the step after it; those empty rounds don't count, nor does a step with nothing left to do
+  const movesAhead = async (index: number, count: number, from: string, before: Goal, previous: string, cost: (solution: string, from: string, previous: string) => number, looks: boolean, until = Infinity): Promise<{ total: number; look: number; pieces: number }> => {
     let total = 0;
     let look = 0;
     // Step that ran last, and whether it runs again next
@@ -132,7 +198,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       if (next >= method.steps.length) break;
       let result: StepResult;
       try {
-        result = await solveOwn(next, from, before, true);
+        result = await solveOwn(next, from, before, previous, true);
       } catch (error) {
         // A repeated step with nothing new left is finished: go on with the next step
         if (again && (error as Error).message === NOTHING_NEW) {
@@ -151,10 +217,14 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       // Finding its pieces, then turning it
       const found = looks ? lookFor(next, from, before, result) : 0;
       look += found;
-      total += found + cost(handsMoves(result), from);
+      total += found + cost(handsMoves(result), from, previous);
       from = joinMoves(from, solution);
-      before = piecesAfter(before, result);
-      judged++;
+      previous = joinSteps(previous, handsMoves(result));
+      // A step left with nothing to do (no moves and no new pieces: CFOP's last pairs after a bigger XCross) isn't one of the steps judged, so the
+      // lookahead goes on to the step that has something to do (the last pair is judged by its OLL)
+      const after = piecesAfter(before, result);
+      if (moves || pieceCount(after) > pieceCount(before)) judged++;
+      before = after;
       at = next;
       again = Boolean(method.steps[next].repeat) && moves > 0;
     }
@@ -165,17 +235,20 @@ export async function runMethod(scramble: string, method: Method, options: Metho
     for (let round = 1; ; round++) {
       options.onStart?.(index, round);
       const started = performance.now();
-      // Later steps (or rounds) that judge this step's answers (none past the last step)
-      const ahead = step.repeat ? (step.lookahead ?? 0) : Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
+      // Later steps (or rounds) that judge this step's answers (none past the last step, nor for a step held back: see heldBack)
+      const ahead = heldBack(method.steps, index, earlier) ? 0 : step.repeat ? (step.lookahead ?? 0) : Math.min(step.lookahead ?? 0, method.steps.length - 1 - index);
       let result: StepResult;
       let lookahead: MethodStepResult["lookahead"] = null;
       try {
         if (ahead > 0) {
           // Every candidate answer, judged by its own moves (or speed cost) plus the next steps' own answers (all asked at once: the worker answers them in turn)
           const bySpeed = step.rank === "speed";
-          // A speed cost counts a rotation before the first turn as free when nothing was turned before the answer (the cube is picked up that way)
-          const cost: (solution: string, from: string) => number = bySpeed ? (solution, from) => speedCost(solution, undefined, !from.trim()) : (solution) => countMoves(solution);
-          const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress, nextOf(index)), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), wideAxes: wideAxes(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
+          // A speed cost counts a rotation before the first turn as free when nothing was turned before the answer (the cube is picked up that way); both
+          // costs are counted after the steps' moves before it, so turns that cancel into those count as the joined solution has them
+          const cost: (solution: string, from: string, previous: string) => number = bySpeed
+            ? (solution, from, previous) => speedCostAfter(solution, previous, undefined, !from.trim())
+            : (solution, _from, previous) => movesAfter(solution, previous);
+          const candidates = await stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, done, earlier, options.onProgress, nextOf(index), previous), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), ...handTurns(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
           // With faces to avoid, only the answers of the best tier there is are judged (they come first)
           const best = candidates[0]?.tier;
           if (best !== undefined) candidates.length = candidates.filter((candidate) => candidate.tier === best).length;
@@ -194,9 +267,9 @@ export async function runMethod(scramble: string, method: Method, options: Metho
           for (const at of order) {
             const candidate = candidates[at];
             const ownLook = bySpeed ? lookFor(index, done, earlier, candidate) : 0;
-            const own = cost(handsMoves(candidate), done) + ownLook;
+            const own = cost(handsMoves(candidate), done, previous) + ownLook;
             if (own >= lowest) continue;
-            const after = await movesAhead(index, ahead, joinMoves(done, candidate.solution.toString()), piecesAfter(earlier, candidate), cost, bySpeed, until);
+            const after = await movesAhead(index, ahead, joinMoves(done, candidate.solution.toString()), piecesAfter(earlier, candidate), joinSteps(previous, handsMoves(candidate)), cost, bySpeed, until);
             if (until === Infinity && counts[at] === fewest && Number.isFinite(after.total)) until = after.pieces;
             totals[at] = own + after.total;
             looked[at] = ownLook + after.look;
@@ -210,7 +283,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
           lookahead = { candidates: candidates.length, steps: ahead, total, ...(bySpeed ? { rank: "speed" as const, look: Math.round(looked[winner] * 100) / 100 } : {}) };
         } else {
           // Search this step from where the last one ended, keeping the earlier pieces if it asks to
-          result = await solveOwn(index, done, earlier);
+          result = await solveOwn(index, done, earlier, previous);
         }
       } catch (error) {
         // A repeated step with nothing new left is finished
@@ -229,6 +302,7 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       steps.push(finished);
       options.onStep?.(finished, index);
       done = joinMoves(done, solution);
+      previous = joinSteps(previous, handsMoves(result));
       // One round only, or nothing left to do
       if (!step.repeat || !finished.moves) break;
       if (round >= MAX_REPEATS) throw new Error(`${step.name}: still finding something to do after ${MAX_REPEATS} rounds.`);

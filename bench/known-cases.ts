@@ -85,7 +85,7 @@ export const CASES: Case[] = [
   // Permuting the last layer
   pll("PLL T", "R U R' U' R' F R2 U' R' U' R U R' F'"),
   pll("PLL Jb", "R U R' F' R U R' U' R' F R2 U' R'"),
-  pll("PLL Ja", "x R2 F R F' R U2 r' U r U2 x'", "L' U' L F L' U' L U L F' L2 U L", "R' U L' U2 R U' R' U2 R L"),
+  pll("PLL Ja", "x R2 F R F' R U2 r' U r U2 x'", "R' U L' U2 R U' R' U2 R L"),
   pll("PLL Y", "F R U' R' U' R U R' F' R U R' U' R' F R F'"),
   pll("PLL Ua", "M2 U M U2 M' U M2", "R U' R U R U R U' R' U' R2", "R2 U' R' U' R U R U R U' R"),
   pll("PLL Ub", "M2 U' M U2 M' U' M2", "R2 U R U R' U' R' U' R' U R'", "R' U R' U' R' U' R' U R U R2"),

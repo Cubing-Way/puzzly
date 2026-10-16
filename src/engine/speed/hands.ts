@@ -22,7 +22,7 @@ export interface Trick {
 export interface HandModel {
   tricks: Record<Wrist, Trick[]>; // a turn may have several tricks at one position: the cheapest is used, the others are shown as its other ways
   wrist: { quarter: number; half: number }; // a wrist turn: R, R' / R2 with the right hand, L, L' / L2 with the left
-  wide: { wrist: number; finger: number }; // added to a wide turn: one the wrist makes (Rw, Lw: the hand opens to take a second layer along), and one a finger makes on two layers (Uw, Fw…; never a thumb)
+  wide: { wrist: number; finger: number }; // added to a wide turn on top of the finger regrip every wide turn takes (the hand opens, or the finger moves over, to take a second layer along): one the wrist makes (Rw, Lw), and one a finger makes on two layers (Uw, Fw…; never a thumb)
   layers: Record<string, number>; // added to every turn of a layer, by how well it turns: nothing for R and U, a little for L (the weaker hand's wrist), more for F and D, most for B
   flow: Record<string, number>; // taken off a turn of a layer made right after a turn of one of these layers, no regrip between: the hands keep their rhythm, so runs on R and U turn fastest (the most turns per second), runs with L a little less
   leave: Record<string, number>; // added to a turn of a layer that leaves that rhythm (D, B: the hand reaches under or behind the cube; F is turned by the fingers that turn U) unless the move before it was on one of these layers too, so once per run of such turns
@@ -31,9 +31,9 @@ export interface HandModel {
   regripHome: number; // the same when the hand comes back home (the easy way round)
   firstRegrip: number; // one hand's regrip before the first turn of a solve (done during inspection); a second hand regripping there pays `regrip`, and so does any regrip before a later step's first turn (the hands come straight from the step before)
   lastRegrip: number; // after the last turn, each hand that isn't at home (it has to come back before the next moves)
-  fingerRegrip: number; // one finger goes somewhere else while the hand keeps its grip: to reach a turn (a `reach` trick), or back to where the next move needs it
+  fingerRegrip: number; // one finger goes somewhere else while the hand keeps its grip: to reach a turn (a `reach` trick, or any wide turn), or back to where the next move needs it
   awkward: number; // added to every move made from, or ending in, a grip with both hands away from home (both thumbs on top, or both on the bottom): L' with the right thumb still on top
-  open: Record<string, number>; // added to a turn of R or L made while the opposite one is a quarter turn off (the L' of R U L'): the hand on that layer can't hold the rest still, whatever was turned in between and however it grips; less for R, the stronger wrist
+  open: Record<string, number>; // added to a turn of R or L made while the opposite one is a quarter turn off (the L' of R U L'): the hand on that layer can't hold the rest still, whatever was turned in between and however it grips; less for R, the stronger wrist. A move that already pays for an awkward or a twisted grip pays only the bigger of the two (the same strain)
   twisted: number; // added instead to every move made from, or ending in, a grip with the wrists turned opposite ways (after R L or R' L': one thumb on top, the other on the bottom)
   rotation: number; // x, y or z with both hands letting go: they end at home (free before the first turn of a solve: the cube is picked up that way)
   tilt: number; // an x turn the wrists make together without letting go, per quarter turn: both wrists go a step up (x) or down (x'), the whole cube turning in them
@@ -77,7 +77,8 @@ function layer(finger: Finger, beside: Finger, flick: string, extra = 0, pushes 
 // The default hands (first guesses, to be tuned against real solving). The three fingers keep their tricks as the wrist turns, on whichever layers they then lie on:
 // the index finger's U tricks become F tricks with the thumb on the bottom and B tricks with it on top, the ring finger's D tricks become B and F tricks.
 // Pushes don't follow: a finger can only push a layer it reaches from behind (U and D at home, and U for the index finger with the thumb on top).
-// Tricks a finger has to leave its place for are reaches (a finger regrip each): F at home with the index finger or the thumb, every slice turn, every push
+// Tricks a finger has to leave its place for are reaches (a finger regrip each): F at home with the index finger or the thumb, every slice turn, every push.
+// Every wide turn takes a finger regrip too (see fingering.ts), so only wrist turns and plain flicks (and double flicks) turn without one
 export const HANDS: HandModel = {
   tricks: {
     // Thumb on the bottom (after R'): the fingers lie over the top, index on F, middle beside the S slice, ring on B, and each pulls its layer down the right side
@@ -104,7 +105,7 @@ export const HANDS: HandModel = {
     ],
   },
   wrist: { quarter: 1, half: 1.4 },
-  wide: { wrist: 0.35, finger: 0.5 },
+  wide: { wrist: 0, finger: 0 },
   layers: { L: 0.25, F: 0.3, D: 0.4, B: 0.6 },
   flow: { R: 0.3, U: 0.3, L: 0.15 },
   leave: { D: 0.3, B: 0.3 },

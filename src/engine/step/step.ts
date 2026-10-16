@@ -5,7 +5,7 @@ import { Alg } from "cubing/alg";
 // Full 3x3x3 solver
 import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 // Move text helpers
-import { FACE_MOVES, countMoves, joinMoves, invertMoves } from "../core/moves";
+import { FACE_MOVES, countMoves, joinMoves, invertMoves, cancelsInto } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -17,9 +17,9 @@ import { rotateGoal } from "../goal/grips";
 // Solvable-with moves
 import { solvableIndex, settledGoal } from "../goal/solvable";
 // Speed cost of a move sequence, and an answer's cheapest writing with wide and slice turns
-import { speedCost, speedFloor, writingFloor, cheapestWriting, strained } from "../speed/fingering";
+import { speedCost, speedFloor, writingFloor, cheapestWriting, strained, cancelSaving } from "../speed/fingering";
 // What finding a step's pieces costs
-import { hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount } from "../speed/look";
+import { LOOK, hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount, inspectionLook } from "../speed/look";
 // Engine data shapes
 import type { Goal, StepOptions, StepResult } from "../types";
 // Page side of the search worker
@@ -304,13 +304,14 @@ export function moveOrders(moves: string): string[] {
 // passes through the goal on its way (that would be a shorter answer plus moves that keep the goal, which the next steps can always make themselves).
 // With rank "speed" they come fastest first instead: up to MAX_RANKED answers per combo get a speed cost (grip rotation included, free on a solve's first step) before the list is cut,
 // and of answers leaving the cube the same way the fastest stays. Each answer is also tried in the other grips that ask for the same thing (a cross with any
-// front: the same turns with each front), as an answer of its own, since the hands turn it differently there; with wideAxes, also with one turn made as the opposite
-// wide turn and a rotation at the start or the end to make up for it, which leaves the cube as the plain answer does, and with any number of wide and
-// slice turns whose cube turns cancel out (written as the hands make it: `r U R' U' r' F R F'` for `L F R' F' L' F R F'`).
+// front: the same turns with each front), as an answer of its own, since the hands turn it differently there; with wideAxes and rotationAxes on one axis,
+// also with one turn made as the opposite wide turn and a rotation at the start or the end to make up for it, which leaves the cube as the plain answer
+// does, and with wideAxes or sliceAxes, with any number of wide and slice turns whose cube turns cancel out (written as the hands make it:
+// `r U R' U' r' F R F'` for `L F R' F' L' F R F'`).
 // With undoOffset every answer goes on to undo the offset it reached, and is measured with those moves: by moves the shortest with them comes first.
 // With faces to avoid, the answers come by tier first (see StepResult.tier): on those faces' account an answer only loses outright to one held the same way.
-// By speed each answer is scored in the fastest order of its moves (see moveOrders), and with "x" among the wide axes, after a solve's first step, also with
-// the cube tilted for it (see tiltForms). Longer answers are listed one move longer at a time while the node budget lasts (see LIST_NODES).
+// By speed each answer is scored in the fastest order of its moves (see moveOrders), and with "x" among the rotation axes, after a solve's first step, also
+// with the cube tilted for it (see tiltForms). Longer answers are listed one move longer at a time while the node budget lasts (see LIST_NODES).
 // When several answers are given and the alternatives add different numbers of new pieces (cross | XCross), each size gets its own extra moves and a
 // share of the places (see bySize). By speed with options.look, an answer's score also has what finding pieces costs (see speed/look.ts)
 export async function stepCandidates(scramble: string, pieces: string, options: CandidateOptions = {}): Promise<StepResult[]> {
@@ -438,7 +439,14 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   const byTier = (a: Listed, b: Listed) => (a.tier ?? 0) - (b.tier ?? 0);
   let ranked: Listed[];
   if (bySpeed) {
-    const axes = options.wideAxes ?? [];
+    // Axes the answer may make wide turns, slice turns and rotations about (slices and rotations follow the wide axes when left out, as before they were apart)
+    const wideAxes = options.wideAxes ?? [];
+    const sliceAxes = options.sliceAxes ?? wideAxes;
+    const rotationAxes = options.rotationAxes ?? wideAxes;
+    // A single wide turn needs a rotation about its own axis to make up for it
+    const madeUp = wideAxes.filter((axis) => rotationAxes.includes(axis));
+    // Whether some writing with wide or slice turns that cancel out may be tried
+    const writes = wideAxes.length > 0 || sliceAxes.length > 0;
     // The answers scored so far, and the holds in which some answer is clean (scored or not: it decides the tiers)
     const scored: Listed[] = [];
     const cleanHolds = new Set<string>();
@@ -465,10 +473,14 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       sure.length = Math.min(sure.length, most);
       if (sure.length === most) bars.set(sizeOf(entry.answer), sure[most - 1].speed);
     };
-    // What finding pieces adds to an answer's score (see speed/look.ts): its own pieces before its first turn (the same for every answer of its combo, and
-    // nothing on a solve's first step, planned in inspection) and the next step's after its last turn, on the cube as it leaves it. Nothing without
-    // `look`, and nothing for steps that keep every other piece untouched (BLD: nobody looks at the cube)
+    // What finding pieces adds to an answer's score (see speed/look.ts): its own pieces before its first turn (the same for every answer of its combo; on
+    // a solve's first step, planned in inspection, only what it plans beyond its smallest alternative) and the next step's after its last turn, on the cube
+    // as it leaves it. Nothing without `look`, and nothing for steps that keep every other piece untouched (BLD: nobody looks at the cube)
     const looking = Boolean(options.look) && !options.untouched && !options.buffer;
+    // What a writing with wide or slice turns adds (one turn made wide with a rotation to make up for it, or wide and slice turns that undo each other):
+    // the centers move in the middle of the answer, and the next step's pieces the solver was tracking are somewhere else (see LOOK.flip; nothing
+    // without a next step to look for)
+    const flip = looking && options.next ? LOOK.flip : 0;
     const comboLooks = new Map<Combo, { own: number; groups: Goal[] }>();
     const lookOf = (held: Answer): number => {
       if (!looking) return 0;
@@ -478,7 +490,9 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
         // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
         const before = rotateGoal(options.earlier ?? options.keep ?? {}, combo.rotation);
         const adds = newPieces(combo.goal, before);
-        const own = fresh || !pieceCount(adds) ? 0 : lookCost(hiddenShare(heldPattern(scramble, options.done ?? ""), rotateGoal(adds, invertMoves(combo.rotation))));
+        // A solve's first step pays for planning an XCross's pair in inspection (nothing for a cross); a later step for finding its pieces
+        const start = heldPattern(scramble, options.done ?? "");
+        const own = fresh ? inspectionLook(start, pieces, combo.alternative, combo.rotation) : !pieceCount(adds) ? 0 : lookCost(hiddenShare(start, rotateGoal(adds, invertMoves(combo.rotation))));
         known = { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
         comboLooks.set(combo, known);
       }
@@ -490,11 +504,22 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       if (clean && avoid.length) cleanHolds.add(/^((?:[xyz]\S* ?)*)/.exec(text)![1].trim());
       return clean;
     };
+    // The moves made before the step as the hands make them, which an answer's first turns may cancel into (none on a solve's first step)
+    const previous = options.previous ?? "";
+    // Where moves cancel into the ones before the step: what's left of them, and what those moves no longer turn (null: nothing cancels)
+    const joinPrevious = previous ? cancelsInto(previous) : null;
+    const cut = (text: string): { rest: string; saving: number } | null => {
+      const joined = joinPrevious && joinPrevious(text);
+      return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept) };
+    };
     // Moves as the hands make them, with what finding pieces adds (`look`), scored unless their floor is above the bar of the answer's size (a tie with
-    // the bar is still scored: the order of the answers decides it)
+    // the bar is still scored: the order of the answers decides it); where they cancel into the moves before the step, what's left of them less the saving
     const score = (text: string, answer: Answer, look: number): { speed: number; clean: boolean } | null => {
       const clean = noteClean(text);
-      return speedFloor(text, undefined, fresh) + look > barOf(answer) + 1e-6 ? null : { speed: speedCost(text, undefined, fresh) + look, clean };
+      const joined = cut(text);
+      const own = joined ? joined.rest : text;
+      const saving = joined ? joined.saving : 0;
+      return speedFloor(own, undefined, fresh) - saving + look > barOf(answer) + 1e-6 ? null : { speed: speedCost(own, undefined, fresh) - saving + look, clean };
     };
     // One listed answer in every way the hands can make it: as held and in every twin grip of its combo (the grips that ask for the same thing: the same
     // moves, renamed), each in the fastest order of its moves (turns about one axis in a row; the listed order on a tie). With wide axes also with one
@@ -518,20 +543,29 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
           const result = score(joinMoves(rotation, order, tail), held, look);
           if (result && (!own || result.speed < own.speed)) own = { ...base, answer: { combo: held.combo, moves: order }, ...result };
         }
-        if (axes.length) {
+        if (writes || rotationAxes.length) {
           // The other writings start from the fastest order (the listed one when no order was worth scoring)
           const from: Listed = own ?? base;
           const all = joinMoves(from.answer.moves, tail).split(" ").filter(Boolean);
           const plain = all.join(" ");
-          wideForms(all, rotation, axes).forEach((wide, place) => {
-            const result = score(joinMoves(rotation, wide.wide), held, look);
+          // One turn made as the opposite wide turn, with a rotation about its axis to make up for it
+          wideForms(all, rotation, madeUp).forEach((wide, place) => {
+            const result = score(joinMoves(rotation, wide.wide), held, look + flip);
             if (result) keep({ ...from, form: `wide${place}/`, speed: result.speed, wide }, result.clean);
           });
-          // Only worth writing out when no writing at all would be under the bar (the writing's own cost is the bar less what finding pieces adds)
-          const bar = barOf(held) - look;
-          const written = writingFloor(plain, undefined, fresh, rotation) > bar + 1e-6 ? null : cheapestWriting(plain, axes, undefined, fresh, rotation, bar);
-          if (written && (!own || written.cost + look < own.speed)) own = { ...from, speed: written.cost + look, wide: { wide: written.text, plain }, clean: noteClean(joinMoves(rotation, written.text)) };
-          for (const tilt of axes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
+          // Only worth writing out when no writing at all would be under the bar (the writing's own cost is the bar less what finding pieces and the flip
+          // add, plus what the plain writing saves by cancelling into the moves before the step: another writing may save as much). The plain writing
+          // itself was scored above, so leaving it out here loses nothing
+          const bar = barOf(held) - look - flip + Math.max(0, cut(joinMoves(rotation, plain))?.saving ?? 0);
+          const found = !writes || writingFloor(plain, undefined, fresh, rotation) > bar + 1e-6 ? null : cheapestWriting(plain, { wide: wideAxes, slice: sliceAxes }, undefined, fresh, rotation, bar);
+          // Its cost after the moves before the step, as the other writings are scored
+          const joined = found && cut(joinMoves(rotation, found.text));
+          const written = found && { ...found, cost: joined ? speedCost(joined.rest, undefined, fresh) - joined.saving : found.cost };
+          // A writing with wide or slice turns pays for the flip; the plain one (given when nothing beats it) doesn't
+          const writtenLook = written && written.text !== plain ? look + flip : look;
+          if (written && (!own || written.cost + writtenLook < own.speed)) own = { ...from, speed: written.cost + writtenLook, wide: { wide: written.text, plain }, clean: noteClean(joinMoves(rotation, written.text)) };
+          // The cube tilted for the answer and tilted back (x rotations only)
+          for (const tilt of rotationAxes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
             const result = score(joinMoves(rotation, tilt.wide), held, look);
             if (result && (!own || result.speed < own.speed)) own = { ...from, wide: tilt, ...result };
           }

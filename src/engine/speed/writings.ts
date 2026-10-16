@@ -75,12 +75,14 @@ export interface WritingPlan {
   optionsAt(at: number, frame: string): WritingOption[];
 }
 
-// The ways the hands can write an answer (plain face turns, as its grip names them) with some turns made as wide or slice turns about these axes
-// ("x", "y", "z"), the cube ending held as it started, so each writing is the answer itself to the cube: R … R' may be Lw … Lw', and R L' is M with the
-// cube turned as by x'. Null when the plain writing is the only one (or a move isn't a plain face turn)
-export function writingPlan(moves: string[], axes: string[]): WritingPlan | null {
+// The ways the hands can write an answer (plain face turns, as its grip names them) with some turns made as wide turns about the wide axes ("x", "y",
+// "z") or slice turns about the slice axes (slices = the wide axes when left out), the cube ending held as it started, so each writing is the answer
+// itself to the cube: R … R' may be Lw … Lw', and R L' is M with the cube turned as by x'. Null when the plain writing is the only one (or a move isn't
+// a plain face turn)
+export function writingPlan(moves: string[], axes: string[], slices: string[] = axes): WritingPlan | null {
   const turns = moves.map((move) => FACE_TURN.exec(move));
-  const forms = axes.flatMap((axis) => WRITTEN[axis] ?? []);
+  // Wide turns (one face each) about the wide axes, slice turns (two faces) about the slice axes
+  const forms = ["x", "y", "z"].flatMap((axis) => (WRITTEN[axis] ?? []).filter((form) => (form.faces.length === 1 ? axes : slices).includes(axis)));
   if (!forms.length || turns.includes(null)) return null;
   // Each turn as [the cube's own face, quarter turns clockwise]
   const steps = turns.map((turn) => [turn![1], turn![2] === "2" ? 2 : turn![2] ? 3 : 1] as [string, number]);

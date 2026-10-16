@@ -16,8 +16,8 @@ import { heldPattern } from "../core/puzzle";
 import { maskPattern, goalToText } from "../goal/goal";
 // A goal's targets
 import { goalTargets } from "../goal/targets";
-// Speed cost of a move sequence
-import { speedCost } from "../speed/fingering";
+// Speed cost of a move sequence after the moves before it
+import { speedCostAfter } from "../speed/fingering";
 // Engine data shapes
 import type { StepOptions, StepResult } from "../types";
 // A step's goal in each grip
@@ -71,6 +71,8 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
   const bySpeed = options.rank === "speed";
   // Nothing was turned before the step: a regrip before its first turn costs less
   const fresh = !options.done?.trim();
+  // The moves before the step as the hands make them: an alg whose lining-up turn cancels into them is scored by what's left of it
+  const previous = options.previous ?? "";
   // Goals in the grip the cube is held in (an alg set never turns the cube first); a step with nothing new to do has none
   let goals: ReturnType<typeof gripGoals>;
   try {
@@ -95,7 +97,7 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
       // Only a lining-up turn away: that turn is the answer, and no alg is tried after it
       const turned = before ? reached(cube) : undefined;
       if (turned !== undefined) {
-        found.push({ result: { solution: new Alg(before), rotation: "", offset: turned, pieces: text, settled: text, alternative, searches: 0 }, cost: bySpeed ? speedCost(before, undefined, fresh) : 1, place: 0, adjusts: 1 });
+        found.push({ result: { solution: new Alg(before), rotation: "", offset: turned, pieces: text, settled: text, alternative, searches: 0 }, cost: bySpeed ? speedCostAfter(before, previous, undefined, fresh) : 1, place: 0, adjusts: 1 });
         continue;
       }
       for (const alg of readyAlgs(set)) {
@@ -107,7 +109,7 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
           const [hands, solution] = [joinMoves(before, alg.hands, last), joinMoves(before, alg.faces, last)];
           found.push({
             result: { solution: new Alg(solution), ...(hands === solution ? {} : { wide: hands }), rotation: "", offset, pieces: text, settled: text, alternative, searches: 0, alg: alg.name },
-            cost: bySpeed ? speedCost(hands, undefined, fresh) : countMoves(solution),
+            cost: bySpeed ? speedCostAfter(hands, previous, undefined, fresh) : countMoves(solution),
             place: alg.place,
             adjusts: (before ? 1 : 0) + (last ? 1 : 0),
           });
