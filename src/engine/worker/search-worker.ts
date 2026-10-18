@@ -4,13 +4,13 @@
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
 import init, { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
 // Table sizes and memory budgets
-import { HELPER_MB, MAX_HELPERS, STATES_PER_NODE, TABLE_DATABASE } from "./limits";
+import { HELPER_MB, MAX_HELPERS, TABLE_DATABASE } from "./limits";
 // Helper workers that search parts of long split searches
-import { HelperPool, NODE_LIMIT, type HelperWorker, type ParallelGoal } from "./parallel";
+import { HelperPool, type HelperWorker, type ParallelGoal } from "./parallel";
 // Requests as the engine sends them
 import type { SearchRequest } from "./protocol";
 // Solvers and tables kept between searches
-import { entryFor, missingStates, planLimit, tableKey, tableOf, upgrade, watchSolvers, type Entry } from "./solvers";
+import { entryFor, planLimit, tableKey, tableOf, watchSolvers, type Entry } from "./solvers";
 // Tables stored in this browser
 import { listStored, openTableStore } from "./table-store";
 
@@ -99,12 +99,12 @@ function nodesUsed(split: SplitSearch, request: SearchRequest): number {
 // Search nodes the request being answered has used so far (a list reports them)
 let spent = 0;
 
-// Answer one search or list: a split goal below its biggest plan may use as many search nodes as building the next plan's missing tables would cost, then switches;
-// a request with its own node budget (maxNodes) gives up with NODE_LIMIT once that's used up, whatever the plan
+// Answer one search or list with the goal's solver (a split goal is always on its biggest plan, see newSplit); a request with its own node budget
+// (maxNodes) gives up with NODE_LIMIT once that's used up
 async function search(request: SearchRequest): Promise<string> {
   spent = 0;
-  // Nodes the request itself may still use
-  let left = request.maxNodes ?? Infinity;
+  // Nodes the request itself may use
+  const left = request.maxNodes ?? Infinity;
   const key = tableKey(request, request.targets);
   const entry = await entryFor(request, key);
   const options: SearchOptions = {
@@ -113,26 +113,7 @@ async function search(request: SearchRequest): Promise<string> {
     ...(request.minDepth === undefined ? {} : { minDepth: request.minDepth }),
     ...(request.after === undefined ? {} : { after: request.after }),
   };
-  while (entry.next) {
-    const split = entry.solver as SplitSearch;
-    const allowed = Math.floor(missingStates(entry.next.plans[0], request) / STATES_PER_NODE) - entry.next.spent;
-    if (allowed > 0) {
-      try {
-        return await ask(entry, request, { ...options, maxNodes: Math.min(allowed, left) });
-      } catch (error) {
-        // Out of the request's own budget: it gives up (out of the plan's only: the next plan takes over)
-        if (!String(error).includes(NODE_LIMIT) || left <= allowed) throw error;
-      } finally {
-        const used = nodesUsed(split, request);
-        entry.next.spent += used;
-        left -= used;
-        spent += used;
-      }
-    }
-    // Out of budget (or the next plan's tables are kept or stored already): search with the next plan from now on
-    await upgrade(entry, request, key);
-  }
-  // The biggest plan (or a solver without plans): only a split search counts nodes, so only it takes what's left of the request's budget
+  // Only a split search counts nodes, so only it takes the request's budget
   const split = entry.solver instanceof SplitSearch ? entry.solver : null;
   try {
     return await ask(entry, request, split && Number.isFinite(left) ? { ...options, maxNodes: Math.max(0, left) } : options);

@@ -7,13 +7,11 @@ export const MAX_TABLE_STATES = 10_000_000;
 // Sub-table limit of a split goal's big plan: 40M on devices with 8 GB or more (F2L-type plans then see 6 edges together: 3–4× fewer search nodes, but one method's
 // big plans may hold ~350 MB), else 10M (20M was measured too: little gain, since the next useful tables are 21M and up)
 const BIG_TABLE_STATES = DEVICE_GB !== null && DEVICE_GB >= 8 ? 40_000_000 : MAX_TABLE_STATES;
-// Sub-table limit of a split goal's first plan: small tables build in a fraction of a second, which is all shallow steps (F2L pairs…) need
+// Sub-table limit of a split goal's smallest plan: small tables build in a fraction of a second (the last fallback when bigger ones can't be built)
 const SMALL_TABLE_STATES = 1_000_000;
-// Sub-table limits of a split goal's plans, smallest first: it moves up one plan at a time (going straight from 1M to 40M kept goals on small tables
-// for 20× as many nodes, and a warm XXXCross took 10× longer)
+// Sub-table limits of a split goal's plans, smallest first: a goal takes the biggest whose tables can be built (the smaller ones are fallbacks). It used
+// to start small and move up after enough search nodes, which made a run's lists depend on what ran before it
 export const PLAN_STATES = [...new Set([SMALL_TABLE_STATES, MAX_TABLE_STATES, BIG_TABLE_STATES])];
-// A search node with small sub-tables costs about as much time as filling this many table states (~3 µs vs ~0.15 µs, measured)
-export const STATES_PER_NODE = 20;
 // Memory the kept solvers may hold; past it the least recently used ones are freed (with 40M big plans, enough for one method's whole set)
 export const MAX_CACHE_MB = BIG_TABLE_STATES > MAX_TABLE_STATES ? 512 : 256;
 // Twips's prune table size can't be read, so each Searcher counts as this much (most stay near 1 MB)

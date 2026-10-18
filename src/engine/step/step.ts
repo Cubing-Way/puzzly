@@ -143,6 +143,7 @@ export const LIST_NODES = 1_000_000;
 // Options for listing a step's answers: solveStep's (extraMoves = how much longer than the shortest an answer may be), plus how many to give
 export interface CandidateOptions extends StepOptions {
   maxCandidates?: number; // most answers given (default MAX_CANDIDATES), best first
+  perAlternative?: number; // places of its own for each alternative's best answers instead (all of them: this many × the alternatives; a method's beam search)
 }
 
 // One listed answer: its length, its combo's place in the queue, how it leaves the cube, its speed cost (0 unless ranking by speed),
@@ -321,7 +322,11 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   const { queue, lastError } = await stepCombos(scramble, pieces, options);
   const { answer, searches } = await searchCombos(queue, options, lastError);
   const shortest = countMoves(answer.moves);
-  const most = Math.max(1, options.maxCandidates ?? MAX_CANDIDATES);
+  // Places of its own for each alternative (perAlternative), or the most answers given. Twin grips count with their own alternatives: a placement that's
+  // a rotation of another (XCross at FL, at FR…) is searched once, and its answers are scored in each twin's grip as that twin's alternative
+  const apart = Math.max(0, Math.floor(options.perAlternative ?? 0));
+  const alternatives = new Set(queue.flatMap((combo) => [combo.alternative, ...(combo.twins ?? []).map((twin) => twin.alternative)])).size;
+  const most = apart ? apart * alternatives : Math.max(1, options.maxCandidates ?? MAX_CANDIDATES);
   const bySpeed = options.rank === "speed";
   // Faces the answer avoids when it can (none = nothing to avoid)
   const avoid = options.avoid ?? [];
@@ -454,10 +459,12 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     const keyOf = (entry: Listed) => (entry.form ?? "") + (entry.key ||= leaves(entry.answer));
     // The fastest answers so far that are sure of a place whatever comes later (clean ones, one per key), fastest first. Once there are `most`, the
     // slowest of them is the bar: an answer whose floor (see speedFloor) is above it can't make the list, so it isn't scored at all. With extra
-    // moves most answers are long ones that a good short one rules out this way. Sizes ranked apart (see bySize) each have their own
+    // moves most answers are long ones that a good short one rules out this way. Sizes ranked apart (see bySize) each have their own, and so does each
+    // alternative with places of its own (then its bar is its own places' slowest)
     const sures = new Map<number, { key: string; speed: number }[]>();
     const bars = new Map<number, number>();
-    const sizeOf = (answer: Answer): number => (bySize ? answer.combo.fresh : 0);
+    const sizeOf = (answer: Answer): number => (apart ? answer.combo.alternative : bySize ? answer.combo.fresh : 0);
+    const room = apart || most;
     const barOf = (answer: Answer): number => bars.get(sizeOf(answer)) ?? Infinity;
     const keep = (entry: Listed, clean: boolean): void => {
       scored.push(entry);
@@ -470,8 +477,8 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       if (same >= 0) sure.splice(same, 1);
       sure.push({ key, speed: entry.speed });
       sure.sort((a, b) => a.speed - b.speed);
-      sure.length = Math.min(sure.length, most);
-      if (sure.length === most) bars.set(sizeOf(entry.answer), sure[most - 1].speed);
+      sure.length = Math.min(sure.length, room);
+      if (sure.length === room) bars.set(sizeOf(entry.answer), sure[room - 1].speed);
     };
     // What finding pieces adds to an answer's score (see speed/look.ts): its own pieces before its first turn (the same for every answer of its combo; on
     // a solve's first step, planned in inspection, only what it plans beyond its smallest alternative) and the next step's after its last turn, on the cube
@@ -588,15 +595,16 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       if (kept.has(key)) continue;
       kept.add(key);
       ranked.push(entry);
-      if (!bySize && ranked.length === most) break;
+      if (!bySize && !apart && ranked.length === most) break;
     }
   } else {
     // By moves: the step's own shortest answer first, then the others; with endings counted that answer takes its place among them (first on a tie)
     setTiers([first, ...found]);
     ranked = undo || avoid.length ? [first, ...found].sort((a, b) => byTier(a, b) || byMoves(a, b)) : [first, ...found.sort(byMoves)];
   }
-  // Sizes ranked apart: each size's best get a share of the places
-  if (bySize) ranked = shareOut(ranked, most, (entry) => entry.answer.combo.fresh);
+  // Places for each alternative: each one's best get its own share; else sizes ranked apart: each size's best get a share of the places
+  if (apart) ranked = shareOut(ranked, most, (entry) => entry.answer.combo.alternative);
+  else if (bySize) ranked = shareOut(ranked, most, (entry) => entry.answer.combo.fresh);
   return ranked.slice(0, most).map((entry) => {
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
     const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };

@@ -35,7 +35,7 @@ export const MAX_REPEATS = 60;
 export const JUDGING_EXTRA_MOVES = 1;
 
 // The faces a step avoids when it can, as a list
-function avoided(step: StepConfig): string[] {
+export function avoided(step: StepConfig): string[] {
   return (step.avoid ?? "").split(" ").filter(Boolean);
 }
 
@@ -46,13 +46,13 @@ function axesList(text: string): string[] {
 
 // The axes a step's answer may make wide turns, slice turns and rotations about, as search options (slices and rotations left out = the wide axes, as
 // older method files mean)
-function handTurns(step: StepConfig): Pick<StepOptions, "wideAxes" | "sliceAxes" | "rotationAxes"> {
+export function handTurns(step: StepConfig): Pick<StepOptions, "wideAxes" | "sliceAxes" | "rotationAxes"> {
   const wideAxes = axesList(step.wideAxes ?? "");
   return { wideAxes, sliceAxes: axesList(step.sliceAxes ?? step.wideAxes ?? ""), rotationAxes: axesList(step.rotationAxes ?? step.wideAxes ?? "") };
 }
 
 // A result's moves as the hands make them: its wide writing when it has one
-function handsMoves(result: StepResult): string {
+export function handsMoves(result: StepResult): string {
   return result.wide ?? result.solution.toString();
 }
 
@@ -133,6 +133,28 @@ export function piecesAfter(earlier: Goal, result: Pick<StepResult, "rotation" |
   return mergeGoals(rotateGoal(earlier, result.rotation), goalFromText(result.settled));
 }
 
+// The step after step `index`: the same step when it repeats (its next round), else the one after it (none after the last)
+export function nextStep(method: Method, index: number): StepConfig | undefined {
+  return method.steps[index].repeat ? method.steps[index] : method.steps[index + 1];
+}
+
+// What finding a step's pieces costs before its first turn (see speed/look.ts): the pieces its answer adds, named in the grip it starts in, found on the
+// cube as `from` leaves it. On a solve's first step (planned in inspection) only what it plans beyond its smallest alternative; nothing for an answer that turns nothing, for a BLD step (nobody looks) or for
+// a step ranked for efficiency (turning only). A searched answer written with wide or slice turns pays for moving the centers in its middle too (see
+// flipLook), on a first step as well, when a step that looks comes after it
+export function stepLook(scramble: string, method: Method, index: number, from: string, before: Goal, result: StepResult): number {
+  const step = method.steps[index];
+  if (step.untouched || step.buffer || step.style === "efficiency") return 0;
+  // An alg from a set is made as solvers learn it, so only a searched answer's writing pays for a flip
+  const next = nextStep(method, index);
+  const flip = !result.alg && next && !next.untouched && !next.buffer ? flipLook(handsMoves(result), result.solution.toString()) : 0;
+  if (!countMoves(result.solution.toString())) return flip;
+  // A solve's first step is planned in inspection: it only pays for what it plans beyond its smallest alternative (an XCross's pair)
+  if (!from.trim()) return flip + inspectionLook(heldPattern(scramble, from), step.pieces, result.alternative, result.rotation);
+  const adds = newPieces(piecesAfter(before, result), rotateGoal(before, result.rotation));
+  return flip + (pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0);
+}
+
 // Run a method's steps in order, each from where the earlier ones left the cube (start = scramble, then options.done).
 // A step with lookahead lists its candidate answers and takes the one with the fewest moves over it and its next steps (each of those solved its own way,
 // every candidate judged up to the same number of pieces); a step ranked by speed takes its fastest answer, and with lookahead the lowest speed cost over it
@@ -145,24 +167,10 @@ export async function runMethod(scramble: string, method: Method, options: Metho
   let earlier: Goal = {};
   // Every earlier step's moves as the hands make them, joined as the solution joins them (a step's answer may cancel into them), with where each starts
   let previous: JoinedSteps = NO_STEPS;
-  // The step after step `index`: the same step when it repeats (its next round), else the one after it (none after the last)
-  const nextOf = (index: number): StepConfig | undefined => (method.steps[index].repeat ? method.steps[index] : method.steps[index + 1]);
-  // What finding a step's pieces costs before its first turn (see speed/look.ts): the pieces its answer adds, named in the grip it starts in, found on the
-  // cube as `from` leaves it. On a solve's first step (planned in inspection) only what it plans beyond its smallest alternative; nothing for an answer that turns nothing, for a BLD step (nobody looks) or for
-  // a step ranked for efficiency (turning only). A searched answer written with wide or slice turns pays for moving the centers in its middle too (see
-  // flipLook), on a first step as well, when a step that looks comes after it
-  const lookFor = (index: number, from: string, before: Goal, result: StepResult): number => {
-    const step = method.steps[index];
-    if (step.untouched || step.buffer || step.style === "efficiency") return 0;
-    // An alg from a set is made as solvers learn it, so only a searched answer's writing pays for a flip
-    const next = nextOf(index);
-    const flip = !result.alg && next && !next.untouched && !next.buffer ? flipLook(handsMoves(result), result.solution.toString()) : 0;
-    if (!countMoves(result.solution.toString())) return flip;
-    // A solve's first step is planned in inspection: it only pays for what it plans beyond its smallest alternative (an XCross's pair)
-    if (!from.trim()) return flip + inspectionLook(heldPattern(scramble, from), step.pieces, result.alternative, result.rotation);
-    const adds = newPieces(piecesAfter(before, result), rotateGoal(before, result.rotation));
-    return flip + (pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0);
-  };
+  // The step after step `index` (see nextStep)
+  const nextOf = (index: number): StepConfig | undefined => nextStep(method, index);
+  // What finding a step's pieces costs before its first turn (see stepLook)
+  const lookFor = (index: number, from: string, before: Goal, result: StepResult): number => stepLook(scramble, method, index, from, before, result);
   // Each step's own answer (its shortest, or by speed its fastest) from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again);
   // `previous` = the earlier steps' moves as the hands make them, joined, with where each starts
   const ownAnswers = new Map<string, Promise<StepResult>>();

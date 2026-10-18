@@ -309,9 +309,9 @@
                                 </select>
                             </label>
                         </div>
-                        <!-- Lookahead: later steps that judge this step's answers (0 = take its own best); its candidates may be as much longer than the shortest as the form's extra moves say -->
+                        <!-- Lookahead: later steps that judge this step's answers (0 = take its own best, no upper limit: past the last step = to the end of the solve); its candidates may be as much longer than the shortest as the form's extra moves say -->
                         <div class="row">
-                            <label class="check-label number-label">Lookahead <input id="step-lookahead" type="number" min="0" max="5" value="0" /> steps</label>
+                            <label class="check-label number-label" title="How many later steps judge this step's answers, each taking its own best answer (0 = the step takes its own best). A number at least as big as the steps after it looks to the end of the solve (the results' Lookahead column shows how many were judged). The time grows with the steps judged">Lookahead <input id="step-lookahead" type="number" min="0" value="0" /> steps</label>
                             <label class="check-label number-label" title="With lookahead, how many of the step's answers are followed through the next steps, best first (64 at most). Fewer is quicker: the time grows with this number, and the best answers come first anyway">over its best <input id="step-judged" type="number" min="1" max="64" value="64" /> answers</label>
                         </div>
                         <!-- Lookahead style by speed: human eyes (finding pieces, planning an XCross in inspection and turning the cube mid-answer cost) or turning only -->
@@ -332,6 +332,11 @@
                         <div class="row search-row">
                             <button id="search-method" type="button" title="Look for the run of this method with the fewest moves in total: each step may take a longer answer when that saves moves later. Starts from Run method's answer and shows each shorter run as it's found.">Search fewest moves</button>
                             <label class="check-label number-label">for up to <input id="search-seconds" type="number" min="1" max="3600" value="30" /> s</label>
+                        </div>
+                        <!-- Beam search: the whole solve with the lowest speed cost (turning and finding pieces), many partial solves side by side, starting from Run method's answer -->
+                        <div class="row search-row">
+                            <button id="beam-method" type="button" title="Look for the solve of this method with the lowest speed cost (turning plus finding pieces, each step's style), step by step: every partial solve goes on with each alternative's best answers, and after each step the cheapest partial solves of each set of pieces done are kept. Starts from Run method's answer, so it never does worse. Every step ranks by speed here; lookahead isn't used (the beam is the lookahead)">Search fastest</button>
+                            <label class="check-label number-label" title="Partial solves kept after each step for each set of pieces done (more when few sets are left, like the last layer), and answers each alternative of a step gives. The time grows about as fast as this number">keeping <input id="beam-width" type="number" min="1" max="32" value="4" /> per pieces done</label>
                         </div>
                     </fieldset>
                     <!-- Stops a method search (outside the editor, which is locked while it runs); the best run so far stays -->

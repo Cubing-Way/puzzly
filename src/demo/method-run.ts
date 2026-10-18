@@ -1,9 +1,9 @@
-// Test bench page: running the method, and searching its runs for the fewest moves
+// Test bench page: running the method, and searching its runs for the fewest moves or the lowest speed cost
 
 // Cube engine
-import { type Method, type MethodStepResult, splitAlternatives, type MethodResult, runMethod, searchMethod } from "../engine";
+import { type Method, type MethodStepResult, splitAlternatives, type MethodResult, runMethod, searchMethod, beamSearchMethod, BEAM_WIDTH } from "../engine";
 // Page elements
-import { scrambleInput, scrambleError, doneInput, doneError, searchSecondsInput, stopSearchButton, runMethodButton, searchMethodButton } from "./dom";
+import { scrambleInput, scrambleError, doneInput, doneError, searchSecondsInput, stopSearchButton, runMethodButton, searchMethodButton, beamMethodButton, beamWidthInput } from "./dom";
 // Reads the step form
 import { readMoves } from "./form";
 // Method editor
@@ -211,12 +211,80 @@ async function searchWholeMethod(): Promise<void> {
   }
 }
 
-// Wire the Run method, Search fewest moves and Stop search buttons
+// Search the method's solves for the lowest speed cost (a beam search from Run method's answer), showing the winner's steps when it's done
+async function beamWholeMethod(): Promise<void> {
+  if (busy) return;
+  const start = methodStart();
+  if (!start) return;
+  const { scramble, done, running } = start;
+  const width = Math.max(1, wholeNumber(beamWidthInput.value) || BEAM_WIDTH);
+  setBusy(true);
+  showResult(null);
+  setMethodRows([]);
+  renderMethodRows();
+  stopRequested = false;
+  stopSearchButton.disabled = false;
+  stopSearchButton.hidden = false;
+  // Live status: the plain run first, then which step (and round) the beam extends and how many partial solves, the time so far and table builds or loads
+  const started = performance.now();
+  const tables = tableTracker();
+  let level: { index: number; round: number; partials: number } | null = null;
+  const tick = () => {
+    const step = level && running.steps[level.index];
+    const name = step && level ? (step.repeat ? `${step.name} ${level.round}` : step.name) : "";
+    const where = step && level ? `step ${level.index + 1} of ${running.steps.length} (${name}), ${plural(level.partials, "partial solve")}` : "Run method first";
+    const cut = stopRequested ? ", finishing quickly" : "";
+    setStatus(`Searching ${running.name} for the fastest solve (${where}${cut})… ${formatMs(performance.now() - started)}${tables.note()}`);
+  };
+  tick();
+  const timer = setInterval(tick, 100);
+  try {
+    const found = await beamSearchMethod(scramble, running, {
+      done,
+      width,
+      stop: () => stopRequested,
+      onProgress: tables.onProgress,
+      // Note which step (and round) the beam extends now, for the live status
+      onLevel: (index, round, partials) => (level = { index, round, partials }),
+    });
+    clearInterval(timer);
+    if (!found.best || found.cost === null) {
+      setStatus(`${running.name}: no solve gets through every step.`, "error");
+      return;
+    }
+    // The winner's steps, then the whole solve as one run: shown on the cube and kept in the runs table
+    setMethodRows(found.best.steps.map((step) => ({ label: `${step.step + 1}. ${step.name}`, run: methodStepRun(scramble, running, step, true) })));
+    const total = methodTotalRun(scramble, done, running, found.best, found.ms);
+    methodRows.push({ label: "Total", run: total });
+    renderMethodRows();
+    runs.unshift(total);
+    showResult(total);
+    // Its cost against the plain run's (both with finding pieces), and how the search ended
+    const cost = (value: number) => (Math.round(value * 10) / 10).toString();
+    const from = found.seed === null ? "the plain run failed" : found.cost < found.seed - 1e-6 ? `plain run ${cost(found.seed)}` : "same as the plain run";
+    const cut = found.stopped ? "; stopped: from then on each step took its own best answer" : "";
+    setStatus(
+      found.best.ok
+        ? `${running.name}: speed cost ${cost(found.cost)} (finding pieces ${cost(found.look ?? 0)} of it), ${plural(found.best.moves, "move")} (${from}; ${plural(found.partials, "partial solve")} in ${formatMs(found.ms)}${cut}${tables.summary()}).`
+        : `${running.name}: a step's solution doesn't reach its goal!`,
+      found.best.ok ? "ok" : "error",
+    );
+  } catch (error) {
+    setStatus(`Fastest search error: ${(error as Error).message}`, "error");
+  } finally {
+    clearInterval(timer);
+    stopSearchButton.hidden = true;
+    setBusy(false);
+  }
+}
+
+// Wire the Run method, Search fewest moves, Search fastest and Stop search buttons
 export function wireMethodRun(): void {
-  // Run the method, or search its runs for the fewest moves
+  // Run the method, or search its runs for the fewest moves or the lowest speed cost
   runMethodButton.addEventListener("click", runWholeMethod);
   searchMethodButton.addEventListener("click", searchWholeMethod);
-  // Stop asks the method search to end (it stops between worker requests, keeping its best run)
+  beamMethodButton.addEventListener("click", beamWholeMethod);
+  // Stop asks a method search to end (it stops between worker requests, keeping its best run; the fastest search finishes quickly instead)
   stopSearchButton.addEventListener("click", () => {
     stopRequested = true;
     stopSearchButton.disabled = true;

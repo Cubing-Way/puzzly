@@ -1,5 +1,5 @@
-// The search worker's solvers: per goal an exact distance table when it's small enough, split tables + IDA* when it's bigger (small sub-tables first,
-// bigger plans later), else twips. Every solver and table is kept for later searches; the least recently used are freed past a memory limit
+// The search worker's solvers: per goal an exact distance table when it's small enough, split tables + IDA* when it's bigger (always its biggest plan,
+// so a goal searches the same way whatever came before), else twips. Every solver and table is kept for later searches; the least recently used are freed past a memory limit
 
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
 import { DistanceTable, Searcher, SplitSearch } from "../../../search/pkg/puzzly_search.js";
@@ -16,13 +16,11 @@ interface Solver {
   free(): void;
 }
 
-// A kept solver, the memory it holds, the cache keys of the sub-tables it uses (split searches),
-// and for a split goal not yet on its biggest plan: the bigger plans still to come, smallest first, and the search nodes used since the last switch
+// A kept solver, the memory it holds, and the cache keys of the sub-tables it uses (split searches)
 export interface Entry {
   solver: Solver;
   mb: number;
   uses?: string[];
-  next?: { plans: SplitSearch[]; spent: number };
 }
 
 // Who hears about the solvers: table builds and loads as they start and finish (states: 0 = it couldn't be built or loaded),
@@ -72,7 +70,6 @@ function drop(key: string): void {
   if (!entry) return;
   solvers.delete(key);
   release(entry.solver);
-  for (const plan of entry.next?.plans ?? []) plan.free();
   cacheMb -= entry.mb;
   for (const [other, user] of solvers) if (user.uses?.includes(key)) drop(other);
 }
@@ -154,16 +151,6 @@ async function attachTables(split: SplitSearch, request: SearchRequest): Promise
   return uses;
 }
 
-// Estimated states of a split's sub-tables that would have to be built (kept and stored ones count as built)
-export function missingStates(split: SplitSearch, request: SearchRequest): number {
-  let states = 0;
-  for (let index = 0; index < split.tables(); index++) {
-    const key = tableKey(request, split.targets(index));
-    if (!solvers.has(key) && !isStored(key)) states += split.states(index);
-  }
-  return states;
-}
-
 // A split search planned with this sub-table limit (null when the goal can't be split)
 function plannedSplit(request: SearchRequest, maxStates: number): SplitSearch | null {
   try {
@@ -175,43 +162,27 @@ function plannedSplit(request: SearchRequest, maxStates: number): SplitSearch | 
   }
 }
 
-// Cache keys (targets) of a split's sub-tables
-function splitTargets(split: SplitSearch): string[] {
-  return Array.from({ length: split.tables() }, (_, index) => split.targets(index));
-}
-
-// A split goal's solver: its plans from small to big sub-tables, the later ones kept for later (one with only the tables of the plan before it is dropped);
-// it starts on the biggest plan whose tables are all kept or stored already, else on the smallest
+// A split goal's solver: planned with the biggest sub-tables the device allows (kept, stored in this browser, or built now), else the next smaller plan
+// when its tables can't be built. Always the biggest, so a search or a list reaches as far whatever was searched before it: a goal that started on small
+// tables and moved up after enough search nodes listed other answers within the same node budget on a later run (null when the goal can't be split)
 async function newSplit(request: SearchRequest): Promise<Entry | null> {
-  const plans: SplitSearch[] = [];
-  for (const limit of PLAN_STATES) {
+  let lastError: unknown = null;
+  let planned = false;
+  // Biggest limit first
+  for (const limit of [...PLAN_STATES].reverse()) {
     const plan = plannedSplit(request, limit);
     if (!plan) continue;
-    // Same sub-tables as the plan before: only one of them is needed
-    const before = plans.length ? new Set(splitTargets(plans[plans.length - 1])) : null;
-    if (before && splitTargets(plan).every((targets) => before.has(targets))) plan.free();
-    else plans.push(plan);
-  }
-  // Skip the plans below the biggest one with nothing left to build
-  let start = 0;
-  for (let index = plans.length - 1; index > 0; index--) {
-    if (missingStates(plans[index], request) === 0) {
-      start = index;
-      break;
+    planned = true;
+    try {
+      return { solver: plan, mb: 0, uses: await attachTables(plan, request) };
+    } catch (error) {
+      // A sub-table that can't be built: the next smaller plan
+      plan.free();
+      lastError = error;
     }
   }
-  for (const plan of plans.splice(0, start)) plan.free();
-  // Start with the first plan left
-  const first = plans.shift();
-  if (!first) return null;
-  try {
-    const uses = await attachTables(first, request);
-    return { solver: first, mb: 0, uses, next: plans.length ? { plans, spent: 0 } : undefined };
-  } catch (error) {
-    first.free();
-    for (const plan of plans) plan.free();
-    throw error;
-  }
+  if (planned) throw lastError;
+  return null;
 }
 
 // A new solver for this goal: an exact table if it fits (stored or built), else split tables + IDA*, else twips
@@ -244,21 +215,4 @@ export async function entryFor(request: SearchRequest, key: string): Promise<Ent
   for (const used of entry.uses ?? []) touch(used);
   trim(new Set([key, ...(entry.uses ?? [])]));
   return entry;
-}
-
-// Switch a split goal to its next plan (loading or building its missing sub-tables); if one can't be built, it stays on the plan it has, for good
-export async function upgrade(entry: Entry, request: SearchRequest, key: string): Promise<void> {
-  const [next, ...later] = entry.next!.plans;
-  entry.next = later.length ? { plans: later, spent: 0 } : undefined;
-  try {
-    entry.uses = await attachTables(next, request);
-  } catch {
-    next.free();
-    for (const plan of later) plan.free();
-    entry.next = undefined;
-    return;
-  }
-  release(entry.solver);
-  entry.solver = next;
-  trim(new Set([key, ...entry.uses]));
 }

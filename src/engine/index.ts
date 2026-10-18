@@ -36,7 +36,8 @@ export { stickeringMask } from "./goal/stickering";
 // Step solvers and the goal check
 export { solveStep, stepCandidates, solveFull, MAX_CANDIDATES, MAX_RANKED, type CandidateOptions } from "./step/step";
 export { reachesGoal } from "./step/check";
-// Methods: reading their data, running them, searching their runs for the fewest moves
+// Methods: reading their data, running them, searching their runs for the fewest moves, and for the lowest speed cost (beam search)
 export { readMethod } from "./method/config";
 export { runMethod } from "./method/run";
 export { searchMethod, METHOD_SEARCH_MS, type MethodSearchOptions, type MethodSearchResult } from "./method/search";
+export { beamSearchMethod, BEAM_WIDTH, type MethodBeamOptions, type MethodBeamResult } from "./method/beam";
