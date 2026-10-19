@@ -15,7 +15,7 @@ This plan is Part 9 of `plan-engine.md` (hand-written tables) worked out for the
 - [ ] Part 5 — The cube by hand: coordinates, turn tables, the 16 symmetries with mirrors
 - [ ] Part 6 — Phase 1 table: exact distance to domino reduction
 - [ ] Part 7 — Phase 2 tables: the domino finish (only if Part 6's numbers ask)
-- [ ] Part 8 — Long sheets: ZBLL, TTLL, the whole last layer (hours of solving, run outside the chat)
+- [ ] Part 8 — Long sheets: ZBLL, TTLL, the whole last layer (hours of solving, run outside the chat). ZBLL with face turns done (2026-10-18) as an alg set, see Part 8
 
 **Order:** 1 first. Then two lines that don't depend on each other: 2 → 3 → 8 (case tables) and 4 → 5 → 6 → 7 (hand-written tables). Do 2 and 3 before 4: they cover the slow steps of about 12 of the 19 methods; the hand-written line helps one (Two-phase), and mostly its method search.
 **How hard:** 1 easy · 2, 3 medium · 4 medium-hard · 5, 6 hard (each may take two chats) · 7 medium · 8 medium, plus a long run. About 10 chats in all; the hand-written line alone (4–7) is 4 to 6.
@@ -250,7 +250,11 @@ The method search on Two-phase (example 15), same seeds as 8d: time to reach 20 
 1. Rotation classes in the sheet tool: cases that are copies of each other under the rotations keeping the moves and the targets share one search, the answer renamed through the turn map (`Rotations`). With Part 5 done, the mirror too, and for whole-cube goals the inverse.
    A sheet answer is then a shortest answer, but maybe not the one a fresh search would pick first: say so in the README.
 2. Estimate before each run: 30 random cases, then hours = classes × mean time. Write it down and start the run outside the chat; it goes on from where it stopped.
-3. ZBLL with face turns (CFOP with ZBLL), ZBLL and TTLL with `U R L` (ZZ, LEOR, ZZ-CT) if Part 1 shows them slow at all.
+3. [x] ZBLL with face turns (CFOP with ZBLL). [ ] ZBLL and TTLL with `U R L` (ZZ, LEOR, ZZ-CT) if Part 1 shows them slow at all.
+   Done 2026-10-18 another way: not solved by the engine but taken from a published alg database (`@moishy/algsets`, MIT, algs from SpeedCubeDB) by `bench/zbll-sheet.ts`,
+   each alg checked on the cube. `src/engine/algs/zbll.ts` holds the 472 cases (1,896 algs, 86 KB) and the `ZBLL` alg set adds the 21 PLLs: `"algs": "ZBLL"` answers any
+   last layer with its edges oriented, its algs ranked by speed. A goal that solves every edge and corner looks its algs up (`alg-step.ts`), so a ZBLL step takes about 3 ms;
+   `node bench/out/alg-sets.js` checks every alg and all 7,776 states. Its answers are known algs, not shortest ones: the U R L steps (rank by moves) still search.
 4. The whole last layer, if the estimate fits a night or two: one sheet then answers every last-layer step. For a step that keeps everything outside the top layer, any answer is itself a last-layer case,
    so the engine goes through the sheet's answers shortest first and takes the first that reaches the step's goal. Part 3's last-layer sheets (OLL, PLL, CLL, ELL, COLL, EPLL, top cross) are then no longer needed.
 

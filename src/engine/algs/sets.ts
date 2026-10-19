@@ -1,9 +1,10 @@
 // Alg sets: steps that aren't searched but recognised, like a solver does the last layer: the cube shows one case of a known set, and its alg is made.
-// The sets are plain data (oll.ts, pll.ts), so they can be corrected and added to
+// The sets are plain data (oll.ts, pll.ts, zbll.ts), so they can be corrected and added to
 
-// The 57 cases that orient the last layer, and the 21 that permute it
+// The 57 cases that orient the last layer, the 21 that permute it, and the 472 that solve it once its edges are oriented
 import { OLL_CASES } from "./oll";
 import { PLL_CASES } from "./pll";
+import { ZBLL_CASES } from "./zbll";
 
 // One case: its name and its algs as solvers write them (r, M, x … x'), the default first; each alg ends with the cube held as it started
 export interface AlgCase {
@@ -26,6 +27,8 @@ const TOP = ["U", "U'", "U2"];
 export const ALG_SETS: Record<string, AlgSet> = {
   OLL: { name: "OLL", adjust: TOP, cases: OLL_CASES },
   PLL: { name: "PLL", adjust: TOP, cases: PLL_CASES },
+  // ZBLL holds the PLL cases too (corners already oriented), so one ZBLL step finishes any last layer with its edges oriented
+  ZBLL: { name: "ZBLL", adjust: TOP, cases: [...ZBLL_CASES, ...PLL_CASES] },
 };
 
 // The set of this name, whatever its letters' case (undefined = there's none)

@@ -1,6 +1,7 @@
 // Alg sets against the cube (bench/out/alg-sets.js): every last-layer state is made, and each set's step is asked to recognise it.
-// Says, per set, which algs don't end held as they started, which are filed under the wrong case, which cases share a state, and which states no alg fits
-// Usage: node bench/out/alg-sets.js [sets: OLL,PLL by default]
+// Says, per set, which algs don't end held as they started, which are filed under the wrong case, which cases share a state, and which states no alg fits,
+// and fails (exit code 1) when a set has any of those
+// Usage: node bench/out/alg-sets.js [sets: OLL,PLL,ZBLL by default]
 import { cube3x3x3 } from "cubing/puzzles";
 import type { KPattern } from "cubing/kpuzzle";
 import { loadEngine, algCandidates, ALG_SETS, toFaces, goalFromText, type StepResult } from "../src/engine/index.ts";
@@ -8,11 +9,11 @@ import { inverse } from "./faces";
 
 await loadEngine({});
 const kpuzzle = await cube3x3x3.kpuzzle();
-const [which = "OLL,PLL"] = process.argv.slice(2);
+const [which = "OLL,PLL,ZBLL"] = process.argv.slice(2);
 
 // Goals: the first two layers (kept), and each set's own pieces
 const F2L = "DF DR DB DL DFR FR DFL FL DBR BR DBL BL";
-const PIECES: Record<string, string> = { OLL: "UF:o UR:o UB:o UL:o UFR:o UBR:o UBL:o UFL:o", PLL: "UF UR UB UL UFR UBR UBL UFL" };
+const PIECES: Record<string, string> = { OLL: "UF:o UR:o UB:o UL:o UFR:o UBR:o UBL:o UFL:o", PLL: "UF UR UB UL UFR UBR UBL UFL", ZBLL: "UF UR UB UL UFR UBR UBL UFL" };
 const keep = goalFromText(F2L);
 // What a set's step makes of a cube given as the moves that set it up: the algs that fit, fastest first
 const recognise = (set: string, setup: string): StepResult[] => algCandidates(setup, PIECES[set], { keep, earlier: keep, algs: set, rank: "speed" });
@@ -41,6 +42,15 @@ console.log(`${states.length} last-layer states`);
 // How the last layer's pieces are turned (what OLL sees), and whether they're all turned right (what PLL starts from)
 const twists = (pattern: KPattern) => `${pattern.patternData.EDGES.orientation.slice(0, 4)}/${pattern.patternData.CORNERS.orientation.slice(0, 4)}`;
 const SOLVED_TWISTS = twists(kpuzzle.defaultPattern());
+// The states each set has to cover, as a key per state ("" = not one of the set's): one per way the pieces can be turned for OLL, every state with them
+// turned right for PLL, every state with the edges turned right for ZBLL (7,776)
+const COVER: Record<string, (pattern: KPattern) => string> = {
+  OLL: twists,
+  PLL: (pattern) => (twists(pattern) === SOLVED_TWISTS ? keyOf(pattern) : ""),
+  ZBLL: (pattern) => (pattern.patternData.EDGES.orientation.slice(0, 4).every((twist) => !twist) ? keyOf(pattern) : ""),
+};
+// The sets with a problem or a state no alg fits
+const failed: string[] = [];
 
 for (const name of which.split(",")) {
   const set = ALG_SETS[name];
@@ -61,10 +71,10 @@ for (const name of which.split(",")) {
       }
     });
   }
-  // The states the set has to cover: one per way the pieces can be turned for OLL, every state with them turned right for PLL
+  // The states the set has to cover (see COVER)
   const byTwists = new Map<string, string>();
   for (const state of states) {
-    const key = name === "OLL" ? twists(state.pattern) : twists(state.pattern) === SOLVED_TWISTS ? keyOf(state.pattern) : "";
+    const key = COVER[name](state.pattern);
     if (key && !byTwists.has(key)) byTwists.set(key, state.setup);
   }
   const covered = new Set<string>();
@@ -83,5 +93,8 @@ for (const name of which.split(",")) {
   if (unused.length) console.log(`cases never recognised: ${unused.join(", ")}`);
   for (const setup of missed.slice(0, 20)) console.log(`no alg fits the cube after: ${setup}`);
   console.log(problems.length ? problems.join("\n") : "every alg ends held as it started and solves the case it's listed under");
+  if (problems.length || missed.length) failed.push(name);
 }
-process.exit(0);
+// Passes only when every set does
+console.log(failed.length ? `\nFAILED: ${failed.join(", ")}` : "\nEvery set passes");
+process.exit(failed.length ? 1 : 0);

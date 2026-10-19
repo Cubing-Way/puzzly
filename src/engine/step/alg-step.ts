@@ -2,8 +2,8 @@
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
-// Cube patterns
-import type { KPattern } from "cubing/kpuzzle";
+// Cube patterns and what a move sequence does to one
+import type { KPattern, KTransformation } from "cubing/kpuzzle";
 // The sets of cases a step can name
 import { algSet, type AlgSet } from "../algs/sets";
 // Algs as plain face turns
@@ -11,7 +11,7 @@ import { toFaces } from "../core/faces";
 // Move text helpers
 import { countMoves, joinMoves } from "../core/moves";
 // Loaded cube definition and held cubes
-import { heldPattern } from "../core/puzzle";
+import { heldPattern, kpuzzle } from "../core/puzzle";
 // Roles, goal text and goal masks
 import { maskPattern, goalToText } from "../goal/goal";
 // A goal's targets
@@ -19,22 +19,24 @@ import { goalTargets } from "../goal/targets";
 // Speed cost of a move sequence after the moves before it
 import { speedCostAfter } from "../speed/fingering";
 // Engine data shapes
-import type { StepOptions, StepResult } from "../types";
+import type { Goal, StepOptions, StepResult } from "../types";
 // A step's goal in each grip
 import { gripGoals } from "./grip-goals";
 
-// One alg of a set, ready to try: its case, its place among the case's algs (0 = the default), as the hands make it (wide turns written Rw) and as
-// the face turns it makes on the cube
+// One alg of a set, ready to try: its case, its place among the case's algs (0 = the default), as the hands make it (wide turns written Rw), as
+// the face turns it makes on the cube, and what those do to a cube
 interface ReadyAlg {
   name: string;
   place: number;
   hands: string;
   faces: string;
-  turns: Alg;
+  turns: KTransformation;
 }
 
 // Sets made ready so far
 const readied = new WeakMap<AlgSet, ReadyAlg[]>();
+// Per set, per goal targets: which of its algs (by their place among the ready ones) solve a cube, by the cube's key (see solvers)
+const lookups = new WeakMap<AlgSet, Map<string, Map<string, number[]>>>();
 
 // An alg as the engine writes it: a wide turn as Rw where solvers write r
 function engineText(alg: string): string {
@@ -48,12 +50,51 @@ function readyAlgs(set: AlgSet): ReadyAlg[] {
     ready = set.cases.flatMap((item) =>
       item.algs.flatMap((alg, place): ReadyAlg[] => {
         const { faces, home } = toFaces(engineText(alg));
-        return home ? [{ name: item.name, place, hands: engineText(alg), faces, turns: new Alg(faces) }] : [];
+        return home ? [{ name: item.name, place, hands: engineText(alg), faces, turns: kpuzzle.algToTransformation(faces) }] : [];
       }),
     );
     readied.set(set, ready);
   }
   return ready;
+}
+
+// A cube's edges and corners as a key: where each sits and how it's turned
+function pieceKey(pattern: KPattern): string {
+  const { EDGES, CORNERS } = pattern.patternData;
+  return `${EDGES.pieces}/${EDGES.orientation}/${CORNERS.pieces}/${CORNERS.orientation}`;
+}
+
+// True when a goal solves every edge and corner (none only placed, turned or grouped): one cube then reaches each of its targets, whatever the centers
+function solvesAll(goal: Goal, cube: KPattern): boolean {
+  return ["EDGES", "CORNERS"].every((orbit) => cube.patternData[orbit].pieces.every((_, piece) => goal[orbit]?.[piece] === "solve"));
+}
+
+// For a goal that solves every edge and corner: which of a set's algs solve each cube with one of the set's lining-up turns after them, as the cube's
+// key (the targets with the alg and the turn undone). Made once per set and targets, so a step with a long set (ZBLL) looks its case up instead of
+// trying every alg
+function solvers(set: AlgSet, targets: KPattern[]): Map<string, number[]> {
+  let byTargets = lookups.get(set);
+  if (!byTargets) lookups.set(set, (byTargets = new Map()));
+  const targetsKey = targets.map(pieceKey).join("|");
+  const made = byTargets.get(targetsKey);
+  if (made) return made;
+  const found = new Map<string, number[]>();
+  const lasts = ["", ...set.adjust].map((last) => kpuzzle.algToTransformation(last));
+  readyAlgs(set).forEach((alg, index) => {
+    for (const last of lasts) {
+      // The cube this alg and lining-up turn bring to each target
+      const undo = alg.turns.applyTransformation(last).invert();
+      for (const target of targets) {
+        const key = pieceKey(target.applyTransformation(undo));
+        const list = found.get(key);
+        // Each alg once per cube, in the set's order
+        if (!list) found.set(key, [index]);
+        else if (list[list.length - 1] !== index) list.push(index);
+      }
+    }
+  });
+  byTargets.set(targetsKey, found);
+  return found;
 }
 
 // The answers a step with an alg set (options.algs) has for the cube as it is: every alg of the set that reaches the step's goal after one of the set's
@@ -95,6 +136,9 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
     // Already there: nothing to recognise
     if (reached(held) !== undefined) return [];
     const text = goalToText(goal);
+    // A goal that solves every edge and corner: the algs that may fit a cube are looked up (and still checked), any other goal tries every alg
+    const lookup = solvesAll(goal, held) ? solvers(set, targets.map(({ target }) => target)) : undefined;
+    const algs = readyAlgs(set);
     for (const { before, cube } of starts) {
       // Only a lining-up turn away: that turn is the answer, and no alg is tried after it
       const turned = before ? reached(cube) : undefined;
@@ -102,8 +146,8 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
         found.push({ result: { solution: new Alg(before), rotation: "", offset: turned, pieces: text, settled: text, alternative, searches: 0 }, cost: bySpeed ? speedCostAfter(before, previous, undefined, fresh, previousStarts) : 1, place: 0, adjusts: 1 });
         continue;
       }
-      for (const alg of readyAlgs(set)) {
-        const after = cube.applyAlg(alg.turns);
+      for (const alg of lookup ? (lookup.get(pieceKey(cube)) ?? []).map((index) => algs[index]) : algs) {
+        const after = cube.applyTransformation(alg.turns);
         // The goal as it is after the alg, or after one more lining-up turn
         for (const last of ["", ...set.adjust]) {
           const offset = reached(last ? after.applyAlg(last) : after);

@@ -75,9 +75,10 @@ export interface StepOptions {
   // By speed: rotations the hands may make in the middle of an answer, about these axes: the one that makes up for a wide turn (see wideAxes), and with
   // "x", after a solve's first step, the cube tilted for the answer and tilted back (x R2 D2 R U R' D2 R U' R x') (default: the same as wideAxes)
   rotationAxes?: string[];
-  // An alg set ("OLL", "PLL": see algs/sets.ts): the step isn't searched but recognised, as solvers do the last layer. Each alg of the set is tried after
-  // each turn of the top layer, the ones that reach the goal are compared (by speed, or by moves) and the best is the answer, its case's default alg
-  // on a tie. Only a cube that fits no alg of the set is searched, with the options above (default: none, the step is searched)
+  // An alg set ("OLL", "PLL", "ZBLL": see algs/sets.ts): the step isn't searched but recognised, as solvers do the last layer. Each alg of the set is tried
+  // after each turn of the top layer (for a goal that solves every piece, only those a lookup says solve the cube), the ones that reach the goal are
+  // compared (by speed, or by moves) and the best is the answer, its case's default alg on a tie. Only a cube that fits no alg of the set is searched,
+  // with the options above (default: none, the step is searched)
   algs?: string;
   // By speed, in a method: each answer also pays for finding pieces (see speed/look.ts), its own before its first turn (not on a solve's first step, which
   // is planned in inspection), so a pair in sight wins over one in the back, and with `next` the next step's after its last turn (default: false)
@@ -151,7 +152,7 @@ export interface StepConfig {
   rotationAxes?: string; // by speed, axes its answer may rotate the cube about in its middle: x for a tilt (x … x'), and the rotation that makes up for a single wide turn ("" = none; left out = the same as wideAxes)
   style?: "human" | "efficiency"; // by speed in a method: "human" (default) = the step also pays for finding pieces, for turning the cube in the middle of an answer (x2 … Rw2: the pieces tracked are lost) and, as a solve's first step, for planning more than its smallest alternative in inspection (an easy XCross only), "efficiency" = only how fast its moves turn (any XCross)
   rank?: Rank; // how the step picks its answer: "moves" = the fewest moves (default), "speed" = the fastest to turn; with lookahead, what its candidates' totals count
-  algs?: string; // an alg set the step is answered from, "OLL" or "PLL" ("" = none): the case is recognised and its alg made, and only a cube that fits none of the set's algs is searched
+  algs?: string; // an alg set the step is answered from, "OLL", "PLL" or "ZBLL" ("" = none): the case is recognised and its alg made, and only a cube that fits none of the set's algs is searched
   repeat?: boolean; // run the step again and again until it has nothing left to do (e.g. one BLD 3-cycle per round, or "the easiest pair" until F2L is done)
 }
 
