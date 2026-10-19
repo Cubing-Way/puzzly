@@ -1,5 +1,9 @@
 // Method runs: steps in order, each from where the last one left the cube, with lookahead and repeated steps
 
+// Move sequences
+import { Alg } from "cubing/alg";
+// Alg sets and the turns that line their cases up
+import { algSet } from "../algs/sets";
 // Piece names and grips
 import { gripRotations } from "../core/cube";
 // Move text helpers
@@ -160,6 +164,14 @@ export function stepLook(scramble: string, method: Method, index: number, from: 
 // every candidate judged up to the same number of pieces); a step ranked by speed takes its fastest answer, and with lookahead the lowest speed cost over it
 // and its next steps, both with what finding each step's pieces costs (see speed/look.ts)
 export async function runMethod(scramble: string, method: Method, options: MethodOptions = {}): Promise<MethodResult> {
+  const { steps, earlier } = await runMethodRows(scramble, method, options);
+  // Steps that cancel into the answer before them are written as one with it, like an XCross and its pair (see joinCancelled)
+  return methodTotals(joinCancelled(scramble, method, steps), earlier);
+}
+
+// runMethod's rows as each step answered, before steps that cancel are joined (a beam search or method search starts from these, counted step by step),
+// and every step's pieces, named in the grip the run ends in
+export async function runMethodRows(scramble: string, method: Method, options: MethodOptions = {}): Promise<{ steps: MethodStepResult[]; earlier: Goal }> {
   const steps: MethodStepResult[] = [];
   // Moves after the scramble so far, always passed as done (never folded into the scramble), so only their x, y, z change the grip
   let done = options.done ?? "";
@@ -316,8 +328,8 @@ export async function runMethod(scramble: string, method: Method, options: Metho
       if (round >= MAX_REPEATS) throw new Error(`${step.name}: still finding something to do after ${MAX_REPEATS} rounds.`);
     }
   }
-  // Totals over all steps
-  return methodTotals(steps, earlier);
+  // Every step's row as it answered, and the pieces done
+  return { steps, earlier };
 }
 
 // One finished step of a method run: its result, named (numbered by round for a repeated step), with the moves before it, its offsets and solvable-with moves,
@@ -341,6 +353,90 @@ export function methodRow(scramble: string, method: Method, index: number, round
     ok: reachesGoal(scramble, after, result.pieces, offsets, solvableWith, untouched),
     lookahead,
   };
+}
+
+// Whether a step's answer may be written as one with the answer before it: the step keeps every earlier piece (so the joined answer reaches both goals),
+// and neither is a BLD step (those keep every other piece as they find it)
+function joinable(step: StepConfig, before: StepConfig): boolean {
+  return Boolean(step.keep) && !step.untouched && !step.buffer && !before.untouched && !before.buffer;
+}
+
+// Whether two answers cancel where they meet: joined, they make fewer moves than both apart (R' then R is nothing, U then U is U2)
+function cancels(before: string, moves: string): boolean {
+  return countMoves(joinSteps(before, moves)) < countMoves(before) + countMoves(moves);
+}
+
+// Whether a step's answer only lines its case up: one of its alg set's turns of the top alone, with no alg (the case was skipped: a PLL skip's AUF)
+function onlyLinesUp(step: StepConfig, row: MethodStepResult): boolean {
+  const set = step.algs ? algSet(step.algs) : undefined;
+  return Boolean(set && !row.alg && set.adjust.includes(row.solution.toString().trim()));
+}
+
+// Two rows as one: the first one's step, start and grip turn with both answers joined (as the hands make them too), and the goal, offset and pieces
+// done of the second one, where the joined answer now ends
+function joinRows(first: MethodStepResult, second: MethodStepResult): MethodStepResult {
+  const solution = joinSteps(first.solution.toString(), second.solution.toString());
+  const hands = joinSteps(handsMoves(first), handsMoves(second));
+  const row: MethodStepResult = { ...first, solution: new Alg(solution), wide: hands, moves: countMoves(solution), pieces: second.pieces, settled: second.settled, offset: second.offset, offsets: second.offsets, solvableWith: second.solvableWith, searches: first.searches + second.searches };
+  // A wide writing only where the hands turn differently from the face turns
+  if (hands === solution) delete row.wide;
+  // The cases of both, when an alg set answered one of them
+  const algs = [first.alg, second.alg].filter(Boolean).join(" + ");
+  if (algs) row.alg = algs;
+  return row;
+}
+
+// A row whose answer went to the row before it: done with no moves (its grip turn went too)
+function emptied(row: MethodStepResult): MethodStepResult {
+  const empty: MethodStepResult = { ...row, solution: new Alg(""), rotation: "", moves: 0 };
+  delete empty.wide;
+  delete empty.alg;
+  return empty;
+}
+
+// A method run's rows with steps that cancel written as one, the way an XCross leaves its pair done: where a step's first turns cancel into the answer
+// before it, that answer takes its moves (joined) and its goal, and the step is done with no moves (Pair 4 U' R U R' then OLL R U R' U R U2 R' is
+// Pair 4 U' R U2 R' U R U2 R', OLL done). After such a join, an alg step left with only the turn that lines its case up (a PLL skip's AUF) goes with it
+// too, as it does after an answer that did later steps by itself (the steps between them were done with no moves). Every row then starts where the one
+// before it ends, and the rows that changed are checked again on their goals
+export function joinCancelled(scramble: string, method: Method, rows: MethodStepResult[]): MethodStepResult[] {
+  const out = rows.map((row) => ({ ...row }));
+  // The last row with moves (a later one may join it), and the rows changed so far
+  let into = -1;
+  const changed = new Set<number>();
+  for (const [at, row] of out.entries()) {
+    const moves = row.solution.toString();
+    // Nothing turned: nothing to join (a grip turn alone can't be joined past)
+    if (!countMoves(moves)) {
+      if (moves.trim()) into = -1;
+      continue;
+    }
+    // Joined with the last answer when they cancel where they meet, or when this step only lines its case up and the steps between them were skipped
+    const before = into >= 0 ? out[into] : null;
+    const step = method.steps[row.step];
+    if (before && joinable(step, method.steps[before.step]) && (cancels(before.solution.toString(), moves) || cancels(handsMoves(before), handsMoves(row)) || (at > into + 1 && onlyLinesUp(step, row)))) {
+      out[into] = joinRows(before, row);
+      out[at] = emptied(row);
+      changed.add(into).add(at);
+      continue;
+    }
+    // Otherwise this answer is the one a later step may join
+    into = at;
+  }
+  if (!changed.size) return out;
+  // Each row starts where the one before it now ends (the same cube; rows between a joined answer and the step it took start later)
+  for (let at = 1; at < out.length; at++) {
+    const done = joinMoves(out[at - 1].done, out[at - 1].solution.toString());
+    if (done !== out[at].done) changed.add(at);
+    out[at].done = done;
+  }
+  // The rows that changed, checked on their goals from where they now start
+  for (const at of changed) {
+    const row = out[at];
+    const untouched = row.changed === undefined ? undefined : { from: joinMoves(row.done, row.rotation), changed: row.changed };
+    row.ok = reachesGoal(scramble, joinMoves(row.done, row.solution.toString()), row.pieces, row.offsets, row.solvableWith, untouched);
+  }
+  return out;
 }
 
 // A whole method run from its steps: every solution in order, every step's pieces (named in the grip the run ends in), the offset the last step left in, and the totals.

@@ -17,7 +17,7 @@ import { solveStep, stepCandidates, type CandidateOptions } from "../step/step";
 // Engine data shapes
 import type { Goal, Method, MethodResult, MethodStepResult, StepConfig, StepResult, TableProgress } from "../types";
 // Runs a method
-import { runMethod, methodStepOptions, methodRow, methodTotals, piecesAfter, heldBack, nextStep, stepLook, avoided, handTurns, handsMoves, MAX_REPEATS, JUDGING_EXTRA_MOVES } from "./run";
+import { runMethodRows, joinCancelled, methodStepOptions, methodRow, methodTotals, piecesAfter, heldBack, nextStep, stepLook, avoided, handTurns, handsMoves, MAX_REPEATS, JUDGING_EXTRA_MOVES } from "./run";
 
 // Partial solves a beam search keeps after each step for each set of pieces done, and answers each alternative of a step gives (the page's default)
 export const BEAM_WIDTH = 4;
@@ -149,7 +149,7 @@ export async function beamSearchMethod(scramble: string, method: Method, options
   // Seed: the plain run (each step with its own lookahead and all its extra moves). Its path is kept at every step, so the beam never ends above it
   let seedRows: MethodStepResult[] = [];
   try {
-    seedRows = (await runMethod(scramble, method, { done: options.done, onProgress: options.onProgress })).steps;
+    seedRows = (await runMethodRows(scramble, method, { done: options.done, onProgress: options.onProgress })).steps;
   } catch {
     // No plain run: the beam goes on without a seed
   }
@@ -203,11 +203,11 @@ export async function beamSearchMethod(scramble: string, method: Method, options
     if (!level.length) throw new Error(`${step.name}: ${(lastError as Error | null)?.message ?? "no partial solve gets through this step."}`);
   }
 
-  // The cheapest whole solve, its steps made into rows (each checked on its goal), timed as the whole search
+  // The cheapest whole solve, its steps made into rows (each checked on its goal, steps that cancel joined: see joinCancelled), timed as the whole search
   const winner = level.reduce<Partial | null>((best, partial) => (!best || partial.cost < best.cost ? partial : best), null);
   const ms = performance.now() - started;
   const seedCost = seed ? seed.cost : null;
   if (!winner) return { best: null, cost: null, seed: seedCost, look: null, partials, stopped, ms };
   const rows = winner.taken.map(({ index, round, done, result }) => methodRow(scramble, method, index, round, done, result, 0, null));
-  return { best: { ...methodTotals(rows, winner.earlier), ms }, cost: winner.cost, seed: seedCost, look: winner.look, partials, stopped, ms };
+  return { best: { ...methodTotals(joinCancelled(scramble, method, rows), winner.earlier), ms }, cost: winner.cost, seed: seedCost, look: winner.look, partials, stopped, ms };
 }
