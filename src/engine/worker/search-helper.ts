@@ -3,9 +3,11 @@
 // An app's helper script calls runSearchHelper once, passing the compiled Rust code
 
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
-import init, { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
+import { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
 // Messages to and from the search worker's helper pool
 import type { HelperMessage, HelperReply } from "./parallel";
+// Loads the Rust code once per thread
+import { loadWasm } from "./wasm";
 
 // What the app's helper script gives the search helper
 export interface SearchHelperOptions {
@@ -57,7 +59,7 @@ export function runSearchHelper(options: SearchHelperOptions): void {
   const scope = self as unknown as Worker;
   // Messages are handled one at a time, in order, once the Rust code is loaded; a table or goal that fails to load is left out
   // (searching that goal then answers with an error, and the search worker finishes the search by itself)
-  let queue: Promise<void> = init({ module_or_path: options.wasm }).then(() => undefined);
+  let queue: Promise<void> = loadWasm(options.wasm).then(() => undefined);
   scope.onmessage = ({ data }: MessageEvent<HelperMessage>) => {
     queue = queue.then(() => handle(scope, data)).catch(() => undefined);
   };

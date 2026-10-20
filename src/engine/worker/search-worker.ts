@@ -2,7 +2,7 @@
 // over helper workers (parallel.ts). An app's worker script calls runSearchWorker once, passing the compiled Rust code and how to start helpers
 
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
-import init, { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
+import { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
 // Table sizes and memory budgets
 import { HELPER_MB, MAX_HELPERS, TABLE_DATABASE } from "./limits";
 // Helper workers that search parts of long split searches
@@ -13,6 +13,8 @@ import type { SearchRequest } from "./protocol";
 import { entryFor, planLimit, tableKey, tableOf, watchSolvers, type Entry } from "./solvers";
 // Tables stored in this browser
 import { listStored, openTableStore } from "./table-store";
+// Loads the Rust code once per thread
+import { loadWasm } from "./wasm";
 
 // What the app's worker script gives the search worker
 export interface SearchWorkerOptions {
@@ -155,7 +157,7 @@ export function runSearchWorker(options: SearchWorkerOptions): void {
   });
   // The stored-tables database (opened while the Rust code loads), then which tables it holds
   openTableStore(options.tableDatabase === undefined ? TABLE_DATABASE : options.tableDatabase);
-  ready = init({ module_or_path: options.wasm }).then(listStored);
+  ready = loadWasm(options.wasm).then(listStored);
   // Requests run one at a time, in order (loading a stored table waits, and the next request mustn't start meanwhile)
   let queue = Promise.resolve();
   scope.onmessage = ({ data }: MessageEvent<SearchRequest>) => {

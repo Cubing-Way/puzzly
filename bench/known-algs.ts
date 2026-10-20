@@ -52,7 +52,7 @@ function cachingWorker(): SearchWorker {
   return outer;
 }
 runSearchWorker({ wasm, helper: nodeHelper });
-await loadEngine({ searchWorker: cachingWorker, workerIdleMs: 3_600_000 });
+await loadEngine({ searchWorker: cachingWorker, workerIdleMs: 3_600_000, wasm });
 
 // Goals: the first two layers, those with the last layer turned right, and the whole cube
 const F2L = "DF DR DB DL DFR FR DFL FL DBR BR DBL BL";

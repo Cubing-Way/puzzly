@@ -1,0 +1,148 @@
+# puzzly — faster solves (context for new chats)
+
+Start a new chat with: "Read plan-speed.md, then do Part N." Do **one part per chat**, then tick it below and commit.
+
+This plan is about **where and how** the engine runs, so the slow presets (CFOP levels 2–5, pseudo-slotting, ZBLL) get closer to greedy CFOP. The other open plans: `plan.md` (tables for specific goals), `plan-engine.md`, `plan-puzzles.md`.
+
+## Progress
+
+- [ ] Part 1 — Parallel work inside one solve
+- [ ] Part 2 — The speed model in Rust
+- [ ] Part 3 — Pair answers prepared in advance
+- [ ] Part 4 — A server (optional)
+- [ ] Part 5 — Several scrambles at once (optional, for later)
+
+**Order:** 1 → 2: Part 1 moves the scoring into workers, Part 2 then makes it Rust inside those workers. Part 3 doesn't depend on the others. Part 4 only if a faster machine is wanted. Part 5 is optional and for later: it only helps runs of many scrambles (benchmarks), not a single solve.
+**Free:** Parts 1–3 and 5 cost nothing. Part 4 needs a machine, and the free ones are only a bit faster than this PC (see Part 4).
+**How hard:** 1 medium · 2 medium-hard · 3 medium, plus an overnight run · 4 small, plus hosting · 5 none to small.
+
+## Goal
+
+Lookahead and XCross presets in a few seconds a solve on this PC, with the same solves as today. Estimate for Parts 1–3 together: roughly **3–4× faster** (level 3 from ~18 s to ~5 s).
+
+| Part | Free? | Faster on this PC (estimates, not measured) | Same solves? |
+| --- | --- | --- | --- |
+| 1 — Parallel inside one solve | Yes | ~1.5–2× (more on PCs with more cores, 5–10× on a 16-core server) | Yes |
+| 2 — Speed model in Rust | Yes | ~1.5–2× a solve (the scoring itself 2–5×) | Yes |
+| 3 — Pair answers in advance | Yes | Level 2 ~2.5×, level 3 ~1.5× | Yes, when built with the same scoring |
+| 4 — Server (optional) | Oracle free tier, or paid | ~1.5× on Oracle's free machine, ~3× on a modern one | Yes |
+| 5 — Several scrambles at once (optional, for later) | Yes | ~2× more solves per minute; each solve takes as long as before | Yes |
+
+Rules for every part:
+- Same solves as before (the solution text) on CFOP levels 2 and 3, 3 seeded scrambles (`random(77)`), unless the part says otherwise.
+- Before / after times on the same scrambles, run back to back: other programs on this PC can make times ~5× higher, so compare CPU time (`process.cpuUsage()`) too.
+- **The engine still never knows a step by name.** Whatever a part picks (a table, a worker) comes from the request (pieces, moves, kept pieces), never from a step's or a method's name.
+- Say how long the part will take before starting, test what the part asks, then stop.
+- When a part is done: tick it, add what was found to *Facts*, update the README.
+
+## Facts (measured 2026-10-20, `main` at 6f1aab5)
+
+3 seeded scrambles (`random(77)`), Node, one thread, with a CPU profile:
+
+- One solve: level 1 ~4 s, level 2 ~9–10 s, level 3 ~17–20 s.
+- Where the time goes:
+
+| | Search (Rust / WebAssembly) | Scoring answers (speed model, JavaScript) | of which wide / slice writings | of which look costs |
+| --- | --- | --- | --- | --- |
+| Level 1 | 39% | 43% | none | 24% |
+| Level 2 | 16% | 66% | 31% | 13% |
+| Level 3 | 27% | 59% | 28% | 12% |
+
+- So the slow part is scoring how fast each listed answer is to turn, not the search. Level 1 is fast because it has no wide or slice axes (no writings to search) and no lookahead.
+- Most of the scoring is the lookahead step's own list of 16 answers, not judging what comes after them: on level 2, 16.4 s against 5.1 s over the 3 solves. One such step lists ~12,800 answers and scores ~36,000 (each answer in each grip that asks for the same pieces).
+- Everything runs one thing at a time, on one thread: the scoring on the page's thread, the search in one worker (helpers only for long searches), and the lookahead judges its candidates one after another. That's why more cores don't help today.
+- Hottest code: `advance` in `src/engine/speed/fingering.ts` (16–18% of the time alone); cubing.js applying moves to cubes 12–14%.
+- A repeated run gives the same solve (since 2026-10-17), so results could be kept by scramble + method.
+- This PC: i5-3210M (2012), 2 cores / 4 threads, 6 GB.
+- Scripts (gitignored, on this PC): `bench/out/speed-profile.ts` (time per step, worker time by request kind), `bench/out/speed-opt.ts` with a patched engine copy in `bench/out/opt/engine`.
+- Also measured, not part of this plan: three small changes in `src/engine/step/step.ts` (the look cost worked out only when an answer can still win, answers scored best first, judging runs without wide / slice writings) gave −15% CPU time with the same solves.
+
+### Part 2 item 1 — the speed model in Rust (2026-10-20)
+
+- `search/src/speed.rs` (+ `speed/model.rs`, `speed/fingering.rs`, `speed/writings.rs`): `SpeedModel`, built from the hand map's JSON, with `cost`, `floor`, `writingFloor`, `cheapestWriting`. Every sum is made in the same order as in TypeScript, so the costs match to the last bit; `fingering` (who makes each move) stays in TypeScript.
+- The page loads it: `loadEngine({ wasm })` (the same bytes as the search worker's, one shared chunk), and `fingering.ts` calls Rust once it's loaded, TypeScript otherwise. `src/engine/worker/wasm.ts` loads the Rust code once per thread (in Node the bench runs the worker in the same process: two loads at once would leave two instances).
+- Checked: 0 differences from the TypeScript model over ~500k calls in the 3 seeded scrambles × levels 2 and 3, ~280k in `known-algs.js f2l,oll`, and ~40k on every known alg (costs, floors and writings with their text); the same solves.
+- Per call: `speedCost` 7.1 → 1.7 µs a move (4.1×), `cheapestWriting` with x y z 4.1 → 1.2 ms an alg (3.3×); the first straight port was only ~2.2×, until the inner loop stopped dividing (state → wrists and class once per state, regrip and grip costs ahead of time).
+- Whole solves, 3 scrambles, two runs each back to back: level 2 28.3 → 18.6 s (CPU 28.0 → 18.6 s, 1.5×), level 3 43.3 → 29.3 s (CPU 37.5 → 26.5 s, 1.4×). Still in TypeScript: the look costs (cubing.js), `strained`, moves in other grips, cancels.
+- The wasm grew 491 → 569 KB.
+- Each answer is still one call per function: item 2 (one call per list) is next; item 3 needs Part 1's workers.
+
+## Part 1 — Parallel work inside one solve
+
+**Why:** one core works while the other waits.
+
+**Do (one item per chat, each compared with the code before it):**
+1. Scoring off the page's thread: a step's listed answers are scored in a worker (today `stepCandidates` scores on the page and gives it a turn every 25 ms).
+2. Several scoring workers: a step's answers split between them, sharing the bar (the score an answer has to beat).
+3. The lookahead's candidates judged at the same time instead of one after another (today a candidate whose own cost can't win is skipped; at the same time a little of that skipping is lost).
+4. The beam search's partial solves at the same time.
+
+**Test:** the same solves; times with 1, 2 and 4 workers.
+
+**Gain:** ~1.5–2× on this PC (2 cores); more on PCs with more cores; 5–10× on a 16-core server (Part 4).
+
+**Size:** medium.
+
+## Part 2 — The speed model in Rust
+
+**Why:** the scoring is ~60% of the time and it's JavaScript; the search crate is already Rust built to WebAssembly.
+
+**Do:**
+1. Port `src/engine/speed/fingering.ts` (`speedCost`, `speedFloor`, `writingFloor`, `cheapestWriting`; ~700 lines) to the `search/` crate. **Done 2026-10-20** (see *Facts*, Part 2 item 1).
+2. Call it once per list of answers, not once per answer (each call between JavaScript and WebAssembly costs a little).
+3. Run it in Part 1's scoring workers.
+
+**Test:** the same costs to two decimals as the TypeScript model, on every answer scored over the 3 scrambles and on `bench/known-algs.ts`; the same solves.
+
+**Gain:** the scoring ~2–5× faster, a whole solve ~1.5–2×.
+
+**Size:** medium-hard.
+
+## Part 3 — Pair answers prepared in advance
+
+**Why:** a pair step's answer depends only on where its corner and edge are and which slots are still free: a few thousand cases per slot. Solved once ahead of time, the step becomes a lookup, like OLL and PLL from their alg sets (a few hundredths of a second today). Same idea as `plan.md` Parts 2–3 (case tables), for pairs.
+
+**Do:**
+1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once overnight and written to a file.
+2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs.
+3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time.
+4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today.
+
+**Test:** the same solves as the searched steps; times on levels 2 and 3.
+
+**Gain:** level 2 ~2.5×, level 3 ~1.5× (its slow part is the XCross step, which stays searched).
+
+**Size:** medium, plus an overnight run.
+
+## Part 4 — A server (optional)
+
+**Why:** a faster machine runs the same code faster, and this PC is from 2012.
+
+**Do:**
+1. A small Node server around `runMethod` (the engine already runs in Node, see `bench/setup.ts`), with its tables kept on disk and the bigger 40M tables (`DEVICE_GB=8`).
+2. The demo asks the server when a server address is set, and solves in the page otherwise (GitHub Pages stays as it is).
+3. A queue: one solve keeps a core busy for seconds.
+
+**Where:**
+- Oracle Cloud "Always Free" (4 Arm cores, 24 GB; sign-up with a card, and space isn't always available): ~1.5×.
+- A modern PC, or a paid server with dedicated cores: ~3×, more with Part 1.
+- Other free hosts (Render, Fly, Hugging Face Spaces…) share weak CPUs: no faster than this PC.
+- Serverless functions (Cloudflare Workers, Vercel) don't fit: time limits, and the tables are lost between calls.
+
+**Test:** the same solves as in the page; time per solve.
+
+**Size:** small, plus hosting.
+
+## Part 5 — Several scrambles at once (optional, for later)
+
+**Why:** benchmarks and evaluations solve many scrambles, and each process uses one core. Here each core solves its own scramble, so a single solve takes as long as before: it only helps runs of many scrambles, not the demo. Part 1 is the one that makes a single solve faster.
+
+**Do:**
+1. A bench runner that splits a list of scrambles over N Node processes (N = cores), each with its own engine, and collects the results in scramble order.
+2. Optional: a GitHub Actions workflow for long benchmark runs (free for a public repo, 4 cores, each faster than this PC's).
+
+**Test:** the same solves as with one process; solves per minute with N = 1, 2 and 4.
+
+**Gain:** ~2× more solves per minute on this PC; each solve takes as long as before.
+
+**Size:** none to small (no engine change).

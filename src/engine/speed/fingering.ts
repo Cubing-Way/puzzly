@@ -6,6 +6,8 @@ import { type HandModel, type Wrist, type Finger, HANDS, WRISTS, trickName } fro
 import { writingPlan } from "./writings";
 // A step's moves joined onto the moves before it
 import { cancelInto } from "../core/moves";
+// The speed model in Rust (search/src/speed.rs): the class loadEngine hands over once the Rust code is loaded
+import type { SpeedModel } from "../../../search/pkg/puzzly_search.js";
 
 // A hand
 export type Hand = "right" | "left";
@@ -115,6 +117,27 @@ interface Ready {
 
 // Models made ready so far
 const readied = new WeakMap<HandModel, Ready>();
+
+// The speed model in Rust, once loadEngine has loaded it (null until then: the TypeScript code below scores, with the same costs). Only fingering
+// stays in TypeScript: it says who makes each move, for one solution at a time
+let rustModel: typeof SpeedModel | null = null;
+// Each hand map's copy in Rust (made on first use)
+const rustCopies = new WeakMap<HandModel, SpeedModel>();
+// No step starts (most costs are of one step)
+const NO_STARTS = new Uint32Array(0);
+
+// Score with the speed model in Rust from now on (loadEngine calls it once the Rust code is loaded; null goes back to the TypeScript code)
+export function useRustSpeed(model: typeof SpeedModel | null): void {
+  rustModel = model;
+}
+
+// A hand map's copy in Rust, or null while the Rust code isn't loaded
+function rustFor(hands: HandModel): SpeedModel | null {
+  if (!rustModel) return null;
+  let copy = rustCopies.get(hands);
+  if (!copy) rustCopies.set(hands, (copy = new rustModel(JSON.stringify(hands))));
+  return copy;
+}
 
 // A list of fingers as bits
 function bitsOf(fingers: Finger[]): number {
@@ -481,6 +504,15 @@ export function cheapestWriting(moves: string, axes: string[] | { wide: string[]
   const turns = moves.split(/\s+/).filter(Boolean);
   // Wide and slice axes: the same list for both, or each its own
   const [wide, slice] = Array.isArray(axes) ? [axes, axes] : [axes.wide, axes.slice];
+  // In Rust once it's loaded (the writing it gives is read, then freed)
+  const rust = rustFor(hands);
+  if (rust) {
+    const found = rust.cheapestWriting(moves, wide.join(""), slice.join(""), fresh, before, limit);
+    if (!found) return null;
+    const writing = { text: found.text, cost: found.cost };
+    found.free();
+    return writing;
+  }
   const plan = writingPlan(turns, wide, slice);
   if (!plan) return null;
   const ready = readyFor(hands);
@@ -590,6 +622,9 @@ function turnFloor(turn: Turn, hands: HandModel, ready: Ready): number {
 // each turn at its cheapest trick, with everything it pays or saves whoever makes it (a layer turned again, the rhythm, an open opposite layer), and
 // no regrip, awkward grip or way home at all. A step ranked by speed uses it to leave unscored the answers that can't beat the ones it has
 export function speedFloor(moves: string, hands: HandModel = HANDS, fresh = false): number {
+  // In Rust once it's loaded
+  const rust = rustFor(hands);
+  if (rust) return rust.floor(moves, fresh);
   const ready = readyFor(hands);
   const turned = new Set<string>();
   let total = 0;
@@ -635,6 +670,9 @@ function anyFloors(hands: HandModel, ready: Ready): { quarter: number; half: num
 
 // A lower bound of what cheapestWriting can give for an answer (plain face turns) after its grip rotation: no writing of it is cheaper
 export function writingFloor(moves: string, hands: HandModel = HANDS, fresh = false, before = ""): number {
+  // In Rust once it's loaded
+  const rust = rustFor(hands);
+  if (rust) return rust.writingFloor(moves, fresh, before);
   const ready = readyFor(hands);
   const any = (ready.any ??= anyFloors(hands, ready));
   let total = speedFloor(before, hands, fresh);
@@ -668,6 +706,9 @@ export function fingering(moves: string, hands: HandModel = HANDS, fresh = false
 
 // A move sequence's speed cost: its cheapest fingering's (lower = faster to turn); `fresh` and `starts` as for fingering
 export function speedCost(moves: string, hands: HandModel = HANDS, fresh = false, starts: number[] = []): number {
+  // In Rust once it's loaded
+  const rust = rustFor(hands);
+  if (rust) return rust.cost(moves, fresh, starts.length ? Uint32Array.from(starts) : NO_STARTS);
   return evaluate(moves, hands, fresh, false, starts).cost;
 }
 

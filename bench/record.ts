@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 
 // The search worker runs in this process (its helpers, with CORES > 1, in real threads), and the engine talks to it there
 runSearchWorker({ wasm, helper: nodeHelper });
-await loadEngine({ searchWorker: inProcessWorker });
+await loadEngine({ searchWorker: inProcessWorker, wasm });
 const FACE = ["U", "R", "F", "D", "L", "B"];
 const ALL = "UF UR UB UL DF DR DB DL FR FL BR BL UFR UBR UBL UFL DFR DFL DBL DBR";
 const DR = "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o2 FL:o2 BR:o2 BL:o2 UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o";

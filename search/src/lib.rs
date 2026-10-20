@@ -12,6 +12,9 @@ pub use split::SplitSearch;
 mod solvable;
 // Rotations that keep the moves: rotated copies of a sub-goal read through one table
 mod symmetry;
+// The speed model: how fast the hands turn a move sequence (SpeedModel)
+mod speed;
+pub use speed::{SpeedModel, Writing};
 
 use cubing::alg::Move;
 use cubing::kpuzzle::{KPattern, KPuzzle};
