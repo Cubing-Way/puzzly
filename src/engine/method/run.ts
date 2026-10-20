@@ -282,19 +282,36 @@ export async function runMethodRows(scramble: string, method: Method, options: M
           // no lower than the best total so far can't win, whatever comes after it, so the steps after it aren't solved at all
           const totals = candidates.map(() => Infinity);
           const looked = candidates.map(() => 0);
+          const ownLooks = candidates.map((candidate) => (bySpeed ? lookFor(index, done, earlier, candidate) : 0));
+          const owns = candidates.map((candidate, at) => cost(handsMoves(candidate), done, previous) + ownLooks[at]);
           let lowest = Infinity;
           let until = Infinity;
-          for (const at of order) {
-            const candidate = candidates[at];
-            const ownLook = bySpeed ? lookFor(index, done, earlier, candidate) : 0;
-            const own = cost(handsMoves(candidate), done, previous) + ownLook;
-            if (own >= lowest) continue;
-            const after = await movesAhead(index, ahead, joinMoves(done, candidate.solution.toString()), piecesAfter(earlier, candidate), joinStep(previous, handsMoves(candidate)), cost, bySpeed, until);
-            if (until === Infinity && counts[at] === fewest && Number.isFinite(after.total)) until = after.pieces;
-            totals[at] = own + after.total;
-            looked[at] = ownLook + after.look;
+          // What the next steps take after one candidate, judged up to `until` pieces
+          const judge = (at: number) => movesAhead(index, ahead, joinMoves(done, candidates[at].solution.toString()), piecesAfter(earlier, candidates[at]), joinStep(previous, handsMoves(candidates[at])), cost, bySpeed, until);
+          // A candidate judged: its total and look, and the best total so far
+          const count = (at: number, after: { total: number; look: number }): void => {
+            totals[at] = owns[at] + after.total;
+            looked[at] = ownLooks[at] + after.look;
             lowest = Math.min(lowest, totals[at]);
+          };
+          // One after another until one of the candidates doing the least gets through its steps: it sets how far the others go
+          let first = 0;
+          for (; first < order.length && until === Infinity && counts[order[first]] === fewest; first++) {
+            const at = order[first];
+            if (owns[at] >= lowest) continue;
+            const after = await judge(at);
+            if (Number.isFinite(after.total)) until = after.pieces;
+            count(at, after);
           }
+          // Then all the others at the same time (the search and scoring workers take their requests in turn, so each one's answers are the same), each
+          // that can still win as things stand; their totals then count in order, as if judged one after another, so one that would have been skipped
+          // still is (and a tie goes to the same one)
+          const rest = order.slice(first);
+          const afters = await Promise.all(rest.map((at) => (owns[at] < lowest ? judge(at) : null)));
+          rest.forEach((at, place) => {
+            const after = afters[place];
+            if (after && owns[at] < lowest) count(at, after);
+          });
           // The lowest total wins; on a tie the earlier candidate (the step's own best answer comes first)
           const winner = totals.indexOf(Math.min(...totals));
           result = candidates[winner];

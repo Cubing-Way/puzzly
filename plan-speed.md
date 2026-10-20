@@ -6,11 +6,11 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
 
 ## Progress
 
-- [ ] Part 1 — Parallel work inside one solve
+- [x] Part 1 — Parallel work inside one solve
   - [x] 1. Scoring in a worker while the search worker lists (2026-10-20)
   - [x] 2. Scoring helpers sharing the bar (2026-10-20): the same solves, no gain on this 2-core PC, so they only start on devices with more than 4 threads
-  - [ ] 3. The lookahead's candidates judged at the same time
-  - [ ] 4. The beam search's partial solves at the same time
+  - [x] 3. The lookahead's candidates judged at the same time (2026-10-20)
+  - [x] 4. The beam search's partial solves at the same time (2026-10-20)
 - [x] Part 2 — The speed model in Rust
   - [x] 1. The model ported to the `search/` crate (2026-10-20)
   - [x] 2. One call per list of answers: done with Part 1 item 1, the scoring worker gets each list in one message (calls into Rust stay one per answer: batching them would save under 0.5%, see *Facts*)
@@ -93,6 +93,15 @@ Rules for every part:
 - So helpers start only on devices reporting more than 4 threads (`SCORING_HELPER_THREADS`): one per 2 threads more, at most 2. Bench: `SCORING_HELPERS=n`.
 - The same limit holds for items 3 and 4 on this PC: they need idle cores. Here, doing less work pays more (Part 3; or the looks, which are cubing.js parsing and applying moves).
 
+### Part 1 items 3–4 — lookahead candidates and beam partial solves at the same time (2026-10-20)
+
+- Item 3 (`runMethodRows` in `method/run.ts`): the candidates are judged one after another only until the first of those doing the least gets through its steps (it sets `until`, how far the others go), then all the others at the same time. Their totals then count in order as before (one whose own cost is no lower than the best total so far is still left out, a tie goes to the same one), so the winner is the same; the price is judging a few candidates that would have been skipped.
+- Item 4 (`beamSearchMethod` in `method/beam.ts`): a step's partial solves ask for their answers all at once, then they're taken in order as before. A `stop` asked meanwhile counts from the next step on.
+- Both rely on the search and scoring workers answering each request the same whatever else is asked (they take them in turn; table plans don't depend on what ran before since 2026-10-17).
+- Checked: the same solves and speeds on levels 2 and 3 (3 scrambles; with the scoring worker and with scoring on the page); beam searches give the same best solves, costs and partial solves (CFOP level 1 at width 4 on 3 scrambles, level 2 at width 2 on 2).
+- Times on this PC, back to back, with the scoring worker: item 3 level 2 18.5 → 15.6 s (−16%), level 3 ~19.8 s either way; item 4 level 1 at width 4 19.2 → 18.8 s, level 2 at width 2 17.9 s either way. On 2 cores there's little idle time left to fill; more cores would show more (not measured here).
+- Part 1 in all, from Part 2 item 1's state, wall time on 3 scrambles: level 2 ~18.6 → 15.6 s, level 3 ~29.5 → 19.8 s.
+
 ## Part 1 — Parallel work inside one solve
 
 **Why:** one core works while the other waits.
@@ -100,8 +109,8 @@ Rules for every part:
 **Do (one item per chat, each compared with the code before it):**
 1. Scoring off the page's thread: a step's listed answers are scored in a worker (today `stepCandidates` scores on the page and gives it a turn every 25 ms). **Done 2026-10-20** (see *Facts*, Part 1 item 1).
 2. Several scoring workers: a step's answers split between them, sharing the bar (the score an answer has to beat). **Done 2026-10-20** as scoring helpers (see *Facts*, Part 1 item 2).
-3. The lookahead's candidates judged at the same time instead of one after another (today a candidate whose own cost can't win is skipped; at the same time a little of that skipping is lost).
-4. The beam search's partial solves at the same time.
+3. The lookahead's candidates judged at the same time instead of one after another (today a candidate whose own cost can't win is skipped; at the same time a little of that skipping is lost). **Done 2026-10-20** (see *Facts*, Part 1 items 3–4).
+4. The beam search's partial solves at the same time. **Done 2026-10-20** (see *Facts*, Part 1 items 3–4).
 
 **Test:** the same solves; times with 1, 2 and 4 workers.
 

@@ -162,14 +162,21 @@ export async function beamSearchMethod(scramble: string, method: Method, options
     for (let round = 1; going.length; round++) {
       if (round > MAX_REPEATS) throw new Error(`${step.name}: still finding something to do after ${MAX_REPEATS} rounds.`);
       options.onLevel?.(index, round, going.length);
-      // Every partial solve with each of its answers
+      // Every partial solve's answers, asked for all at once (the search and scoring workers take the requests in turn, so each partial solve's answers
+      // are the same; a stop asked meanwhile counts from the next step on), then each partial solve with each of its answers, in order as before
+      const asked = await Promise.all(
+        going.map((partial) =>
+          stepAnswers(index, partial).then(
+            (answers) => ({ answers, error: null }),
+            (error: unknown) => ({ answers: null, error }),
+          ),
+        ),
+      );
       const children: Partial[] = [];
-      for (const partial of going) {
+      for (const [place, partial] of going.entries()) {
         partials++;
-        let answers: StepResult[];
-        try {
-          answers = await stepAnswers(index, partial);
-        } catch (error) {
+        const { answers, error } = asked[place];
+        if (!answers) {
           // A repeated step with nothing new left is done for this partial solve; any other error (no answer) drops it
           if (round > 1 && (error as Error).message === NOTHING_NEW) finished.push(partial);
           else lastError = error;
