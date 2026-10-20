@@ -501,20 +501,34 @@ interface Place {
 // writing is the only one. With a `limit`, writings that can't cost that or less are given up on the way (each turn left costs at least what
 // writingFloor says), and null is given when none is left
 export function cheapestWriting(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity): { text: string; cost: number } | null {
+  return writingSearch(moves, axes, hands, fresh, before, limit).found;
+}
+
+// What a writing search gave: the cheapest writing (null: none, or none left under the limit), and which other limits would have searched the very same
+// way, so given the very same writing: those that go on from every place with a lower bound up to `kept` and give up on every place from `pruned` on
+// (a place gives up when its bound is over limit + 1e-6). A search with no writing but the plain one gives the same for any limit
+export interface WritingSearch {
+  found: { text: string; cost: number } | null;
+  kept: number;
+  pruned: number;
+}
+
+// The search behind cheapestWriting, with its bounds (see WritingSearch)
+export function writingSearch(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity): WritingSearch {
   const turns = moves.split(/\s+/).filter(Boolean);
   // Wide and slice axes: the same list for both, or each its own
   const [wide, slice] = Array.isArray(axes) ? [axes, axes] : [axes.wide, axes.slice];
   // In Rust once it's loaded (the writing it gives is read, then freed)
   const rust = rustFor(hands);
   if (rust) {
-    const found = rust.cheapestWriting(moves, wide.join(""), slice.join(""), fresh, before, limit);
-    if (!found) return null;
-    const writing = { text: found.text, cost: found.cost };
-    found.free();
-    return writing;
+    const searched = rust.cheapestWriting(moves, wide.join(""), slice.join(""), fresh, before, limit);
+    if (!searched) return { found: null, kept: -Infinity, pruned: Infinity };
+    const result = { found: searched.found ? { text: searched.text, cost: searched.cost } : null, kept: searched.kept, pruned: searched.pruned };
+    searched.free();
+    return result;
   }
   const plan = writingPlan(turns, wide, slice);
-  if (!plan) return null;
+  if (!plan) return { found: null, kept: -Infinity, pruned: Infinity };
   const ready = readyFor(hands);
   // The least the turns from each place on can cost, whatever the writing
   const any = (ready.any ??= anyFloors(hands, ready));
@@ -561,6 +575,8 @@ export function cheapestWriting(moves: string, axes: string[] | { wide: string[]
     return place;
   };
   placeOn(levels[0], plan.home, turned, rhythmOf(last), apart).costs = costs;
+  // The highest lower bound of a place gone on from, and the lowest of a place given up on
+  let [kept, pruned] = [-Infinity, Infinity];
   // One token made from a place into the next one, which keeps the cheapest way into each of its states
   const make = (place: Place, next: Place, token: string, turn: Turn | null, first: boolean, again: number, open: number, flow: number): void => {
     advance(hands, ready, turn, place.costs, first, false, again, open, flow, (to, total, from) => {
@@ -577,7 +593,12 @@ export function cheapestWriting(moves: string, axes: string[] | { wide: string[]
     // Each way to go on from a place leads to a place further on
     for (const place of levels[at].values()) {
       // No way on from here can come in under the limit: its cheapest hand state plus the least the turns left cost is over it
-      if (limit < Infinity && Math.min(...place.costs) + rest[at] > limit + 1e-6) continue;
+      const least = Math.min(...place.costs) + rest[at];
+      if (limit < Infinity && least > limit + 1e-6) {
+        pruned = Math.min(pruned, least);
+        continue;
+      }
+      kept = Math.max(kept, least);
       for (const option of plan.optionsAt(at, place.frame)) {
         const turn = readTurn(option.token);
         const bit = turn ? layers.indexOf(turn.layer) : -1;
@@ -597,11 +618,11 @@ export function cheapestWriting(moves: string, axes: string[] | { wide: string[]
       if (!best || round(total) < round(best.total)) best = { place, state, total };
     }
   }
-  if (!best || best.total === Infinity) return null;
+  if (!best || best.total === Infinity) return { found: null, kept, pruned };
   // Walk back from it, one token per place
   const tokens: string[] = [];
   for (let { place, state } = best; place.from[state]; [place, state] = [place.from[state], place.state[state]]) tokens.unshift(place.token[state]);
-  return { text: tokens.join(" "), cost: round(best.total) };
+  return { found: { text: tokens.join(" "), cost: round(best.total) }, kept, pruned };
 }
 
 // The least a turn can cost: its cheapest trick from any hand position, a reach's finger regrip and the layer's own cost included (`other` when no

@@ -1,6 +1,8 @@
-// A search helper (src/engine/worker/search-helper.ts) in a Node worker_threads thread, looking like the browser Worker the helper pool expects (bench/out/helper.js)
+// A search helper (src/engine/worker/search-helper.ts) in a Node worker_threads thread, looking like the browser Worker the helper pool expects (bench/out/helper.js),
+// and the scoring worker (src/engine/worker/scoring-worker.ts) and its helpers (scoring-helper.ts) in threads too (bench/out/scoring.js, scoring-helper.js)
 import { Worker as NodeWorker } from "node:worker_threads";
 import type { HelperWorker } from "../src/engine/worker/parallel";
+import type { ScoringHelperWorker, ScoringWorker } from "../src/engine/worker/protocol";
 
 // Start one helper thread; it keeps the process alive only while a search waits on it, so a benchmark ends without closing its helpers
 export function nodeHelper(): HelperWorker {
@@ -13,6 +15,52 @@ export function nodeHelper(): HelperWorker {
     postMessage: (message, transfer) => {
       if (message.kind === "iterate" && waiting++ === 0) worker.ref();
       worker.postMessage(message, transfer as any);
+    },
+    terminate: () => void worker.terminate(),
+  };
+  worker.on("message", (data) => {
+    if (--waiting === 0) worker.unref();
+    helper.onmessage?.({ data });
+  });
+  worker.on("error", (error) => helper.onerror?.(error));
+  worker.unref();
+  return helper;
+}
+
+// Start the scoring worker in a thread (bench/out/scoring.js, next to the bundle); like a helper, it keeps the process alive only while a scoring waits on it
+export function nodeScoringWorker(): ScoringWorker {
+  const worker = new NodeWorker(new URL("./scoring.js", import.meta.url));
+  let waiting = 0;
+  const scoring: ScoringWorker = {
+    onmessage: null,
+    onerror: null,
+    // Only a finish gets a reply
+    postMessage: (message) => {
+      if (message.kind === "finish" && waiting++ === 0) worker.ref();
+      worker.postMessage(message);
+    },
+    terminate: () => void worker.terminate(),
+  };
+  worker.on("message", (data) => {
+    if (--waiting === 0) worker.unref();
+    scoring.onmessage?.({ data });
+  });
+  worker.on("error", (error) => scoring.onerror?.(error));
+  worker.unref();
+  return scoring;
+}
+
+// Start one scoring helper in a thread (bench/out/scoring-helper.js, next to the bundle); it keeps the process alive only while a chunk waits on it
+export function nodeScoringHelper(): ScoringHelperWorker {
+  const worker = new NodeWorker(new URL("./scoring-helper.js", import.meta.url));
+  let waiting = 0;
+  const helper: ScoringHelperWorker = {
+    onmessage: null,
+    onerror: null,
+    // Each chunk gets one reply
+    postMessage: (message) => {
+      if (message.kind === "chunk" && waiting++ === 0) worker.ref();
+      worker.postMessage(message);
     },
     terminate: () => void worker.terminate(),
   };

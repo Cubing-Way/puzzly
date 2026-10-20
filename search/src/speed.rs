@@ -18,12 +18,16 @@ pub struct SpeedModel {
     model: Model,
 }
 
-// An answer's cheapest writing (see SpeedModel::cheapest_writing): its text (handed over as a copy) and its cost
+// What a writing search gave (see SpeedModel::cheapest_writing): whether a writing was left under the limit, its text (handed over as a copy) and its
+// cost, and the bounds that say which other limits would have searched the very same way (see fingering.rs's Searched)
 #[wasm_bindgen]
 pub struct Writing {
+    pub found: bool,
     #[wasm_bindgen(getter_with_clone)]
     pub text: String,
     pub cost: f64,
+    pub kept: f64,
+    pub pruned: f64,
 }
 
 #[wasm_bindgen]
@@ -53,9 +57,12 @@ impl SpeedModel {
     }
 
     // An answer's cheapest writing with wide turns about the `wide` axes and slice turns about the `slice` axes (letters of "xyz"), after `before`
-    // (cheapestWriting); none when the plain writing is the only one, or when no writing costs `limit` or less
+    // (cheapestWriting); none when the plain writing is the only one, and not found when no writing costs `limit` or less
     #[wasm_bindgen(js_name = cheapestWriting)]
     pub fn cheapest_writing(&self, moves: &str, wide: &str, slice: &str, fresh: bool, before: &str, limit: f64) -> Option<Writing> {
-        fingering::cheapest_writing(&self.model, moves, wide, slice, fresh, before, limit).map(|(text, cost)| Writing { text, cost })
+        fingering::cheapest_writing(&self.model, moves, wide, slice, fresh, before, limit).map(|searched| {
+            let (text, cost) = searched.found.clone().unwrap_or((String::new(), f64::INFINITY));
+            Writing { found: searched.found.is_some(), text, cost, kept: searched.kept, pruned: searched.pruned }
+        })
     }
 }

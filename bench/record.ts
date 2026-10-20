@@ -2,7 +2,7 @@
 // for the direct-wasm replay (bench/replay.ts); pass 2 runs the same again with every table already built (warm)
 // Usage: node bench/out/record.js [requests file, - = none] [scenarios, comma-separated, all = every one] [passes, default 2]
 import { recorded, recording, random, scramble, inProcessWorker } from "./setup";
-import { nodeHelper } from "./node-helper";
+import { nodeHelper, nodeScoringWorker } from "./node-helper";
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
 import { runSearchWorker } from "../src/engine/worker/search-worker.ts";
 import { loadEngine, solveStep, runMethod, readMethod, reachesGoal, countMoves } from "../src/engine/index.ts";
@@ -12,9 +12,10 @@ import { KPattern } from "cubing/kpuzzle";
 import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 import { writeFileSync } from "node:fs";
 
-// The search worker runs in this process (its helpers, with CORES > 1, in real threads), and the engine talks to it there
+// The search worker runs in this process (its helpers, with CORES > 1, in real threads), and the engine talks to it there; the scoring worker runs in a
+// thread of its own, as on the page
 runSearchWorker({ wasm, helper: nodeHelper });
-await loadEngine({ searchWorker: inProcessWorker, wasm });
+await loadEngine({ searchWorker: inProcessWorker, scoringWorker: nodeScoringWorker, wasm });
 const FACE = ["U", "R", "F", "D", "L", "B"];
 const ALL = "UF UR UB UL DF DR DB DL FR FL BR BL UFR UBR UBL UFL DFR DFL DBL DBR";
 const DR = "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o2 FL:o2 BR:o2 BL:o2 UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o";

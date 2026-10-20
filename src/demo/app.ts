@@ -1,7 +1,7 @@
 // Test bench page for the cube engine: pick a start position and a goal, solve, check, replay. This wires the form and starts the page
 
 // Cube engine
-import { joinMoves, invertMoves, type SearchWorker, type EngineOptions, loadEngine } from "../engine";
+import { joinMoves, invertMoves, type EngineOptions, loadEngine } from "../engine";
 // Piece chips and presets
 import { buildChips } from "./chips";
 // Page elements
@@ -168,13 +168,13 @@ function wireForm(): void {
   keepBox.addEventListener("change", () => syncViewer());
 }
 
-// Start the page: wire its events, load the engine (searchWorker starts the page's search worker, wasm is the Rust code for the speed model), build
-// the chips, show the default goal and the first example method, get a first scramble
-export async function startPage(searchWorker: () => SearchWorker, wasm?: EngineOptions["wasm"]): Promise<void> {
+// Start the page: wire its events, load the engine (`engine`: how the page starts its search and scoring workers, and the Rust code for the speed
+// model), build the chips, show the default goal and the first example method, get a first scramble
+export async function startPage(engine: EngineOptions): Promise<void> {
   wireForm();
   wireMethodEditor();
   wireMethodRun();
-  await loadEngine({ searchWorker, wasm });
+  await loadEngine(engine);
   buildChips();
   piecesInput.value = presetSelect.value;
   showExamples();

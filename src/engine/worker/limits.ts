@@ -1,4 +1,4 @@
-// Search worker limits: table sizes and memory budgets, picked from the memory the device reports
+// Worker limits: table sizes and memory budgets, picked from the memory the device reports, and how many helpers the workers start
 
 // This device's memory in GB as the browser reports it (Chrome and Edge round it and report at most 8), or null where it isn't reported (Firefox, Safari, Node)
 const DEVICE_GB: number | null = (globalThis.navigator as { deviceMemory?: number } | undefined)?.deviceMemory ?? null;
@@ -18,6 +18,12 @@ export const MAX_CACHE_MB = BIG_TABLE_STATES > MAX_TABLE_STATES ? 512 : 256;
 export const SEARCHER_MB = 2;
 // Most helper workers for long searches, unless the app sets its own: each holds copies of the tables of the goals it helps with, so memory grows with them (3 helpers = 4 copies)
 export const MAX_HELPERS = 3;
+// Most scoring helpers, unless the app sets its own: each works out looks and writings ahead of the scoring worker
+export const MAX_SCORING_HELPERS = 2;
+// Devices reporting this many threads or fewer start no scoring helper: on 2 cores the page's search and the scoring worker already keep both busy, so
+// helpers only share them out (measured on 2 cores, 4 threads: the same speed on level 2, 7% slower on level 3, ~70% more CPU). Above it, one helper per
+// 2 threads more, up to MAX_SCORING_HELPERS
+export const SCORING_HELPER_THREADS = 4;
 // Tables each helper may hold (the goal being searched always fits, whatever its size); past it, the goals helped least recently are freed
 export const HELPER_MB = MAX_CACHE_MB / 2;
 // Tables with at least this many states (4 per byte, so ~25 KB) are stored in this browser: they take 0.1–0.8 s to build but load in a few ms (tinier ones build about as fast)

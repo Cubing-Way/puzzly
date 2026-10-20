@@ -7,7 +7,14 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
 ## Progress
 
 - [ ] Part 1 — Parallel work inside one solve
-- [ ] Part 2 — The speed model in Rust
+  - [x] 1. Scoring in a worker while the search worker lists (2026-10-20)
+  - [x] 2. Scoring helpers sharing the bar (2026-10-20): the same solves, no gain on this 2-core PC, so they only start on devices with more than 4 threads
+  - [ ] 3. The lookahead's candidates judged at the same time
+  - [ ] 4. The beam search's partial solves at the same time
+- [x] Part 2 — The speed model in Rust
+  - [x] 1. The model ported to the `search/` crate (2026-10-20)
+  - [x] 2. One call per list of answers: done with Part 1 item 1, the scoring worker gets each list in one message (calls into Rust stay one per answer: batching them would save under 0.5%, see *Facts*)
+  - [x] 3. Run in Part 1's scoring worker (2026-10-20)
 - [ ] Part 3 — Pair answers prepared in advance
 - [ ] Part 4 — A server (optional)
 - [ ] Part 5 — Several scrambles at once (optional, for later)
@@ -65,15 +72,34 @@ Rules for every part:
 - Per call: `speedCost` 7.1 → 1.7 µs a move (4.1×), `cheapestWriting` with x y z 4.1 → 1.2 ms an alg (3.3×); the first straight port was only ~2.2×, until the inner loop stopped dividing (state → wrists and class once per state, regrip and grip costs ahead of time).
 - Whole solves, 3 scrambles, two runs each back to back: level 2 28.3 → 18.6 s (CPU 28.0 → 18.6 s, 1.5×), level 3 43.3 → 29.3 s (CPU 37.5 → 26.5 s, 1.4×). Still in TypeScript: the look costs (cubing.js), `strained`, moves in other grips, cancels.
 - The wasm grew 491 → 569 KB.
-- Each answer is still one call per function: item 2 (one call per list) is next; item 3 needs Part 1's workers.
+- Each answer is still one call per function. Measured after: one call into Rust costs ~0.18 µs by itself (a 9-move answer's cost 12 µs), so the ~500k calls of the 6 solves are ~0.1 s of ~45 s: item 2 alone would save under 0.5%, so it's folded into Part 1 item 1 (a scoring worker gets a whole list anyway). Item 3 needs Part 1's workers.
+
+### Part 1 item 1 — scoring in a worker (2026-10-20)
+
+- Before it, with the Rust model, a profile per step (3 scrambles, seconds): listing (the search worker) is 0.7 s of ~20 s on level 2 and 9.2 s of ~37 s on level 3 (8.4 s of it the first step's XCross listing); the rest is mostly the pairs' lookahead scoring and judging, and building tables.
+- `src/engine/step/scoring.ts`: the by-speed scoring moved out of `step.ts` as it was (`makeScorer`: `add` each listed answer in order, `rank` at the end). `src/engine/worker/scoring-client.ts` sends a step's combos once (patterns as their data, twins as places in one list), then each list reply's answers as they come, while the search worker lists the next ones; `finish` brings the ranked answers back. `src/engine/worker/scoring-worker.ts` (`runScoringWorker`) loads the cube definition and the Rust model and runs the same scorer. Answers are scored in the same order as before, so the bars and the results are the same.
+- `loadEngine({ scoringWorker })` turns it on (the test bench has `scoring-worker.js`; `bench/record.ts` and `known-algs.ts` a Node thread, `nodeScoringWorker`). Without it the page scores as before, once every answer is listed.
+- Checked: the same solves and speeds on levels 2 and 3 (3 scrambles), on the page and in the worker; `known-algs.js f2l,oll` picks the same; the test bench runs level 3 with no console errors.
+- Times, 3 scrambles, two runs each back to back (wall time; CPU now counts both threads and stays as it was, ~19 s and ~27 s): level 2 18.6 → 15.7 s (−16%), level 3 29.5 → 19.8 s (−33%, 1.5×). Scoring on the page (no worker) is as before (18.5 s, 29.3 s).
+- Since Part 2 item 1: level 2 28.3 → 15.7 s (1.8×), level 3 43.3 → 19.8 s (2.2×).
+
+### Part 1 item 2 — scoring helpers (2026-10-20)
+
+- Splitting a step's answers between independent workers could change the solves: with *avoid F B* (every CFOP preset's pairs) an answer's tier depends on which other answers were scored (a clean answer in the same hold), and which get scored depends on the bar as it was then. So the scoring worker still scores every answer in order, and helpers only work out the expensive parts ahead: in that worker the looks were 22% of its time and the wide / slice writings 28% (scoring 69%).
+- `src/engine/worker/scoring-helper.ts` (`runScoringHelper`): the scoring worker hands a free helper the next chunk (64 answers) with its fastest answers so far (its bar then), the helper scores the chunk the same way (its bar moving as the worker's will) and sends back each look and writing, by what it was worked out from. The scoring worker uses a look whenever its combo and moves match, and a writing when its grip and moves match and its own limit would have searched the same way: the Rust (and TypeScript) writing search now also gives the highest lower bound among the places it went on from and the lowest among those it gave up on. Same answer by construction; the TypeScript and Rust searches give the same bounds on every known alg (1,230 searches).
+- Reuse: looks 100%; writings 1–12% when chunks went out as soon as they were listed (the bar was still open then), ~52% handed out one at a time when a helper is free, ~77% with the bounds.
+- Checked: the same solves and speeds with 0, 1, 2 and 3 helpers (levels 2 and 3, 3 scrambles), the same `known-algs.js f2l,oll` picks.
+- Times on this PC (2 cores, 4 threads), 3 scrambles, back to back: 0 helpers level 2 15.5–16.1 s, level 3 19.4–20.4 s; 2 helpers 16.1–16.2 s and 21.4–21.5 s (CPU ~70% more). No gain: since item 1 the search (or the page) and the scoring worker keep both cores busy, so helpers only share them out, and they repeat the control flow the scoring worker keeps (~27% of a chunk). A chunk the helpers worked out costs the scoring worker ~16 ms against ~25 ms alone, so on more cores the big lists should get ~1.5× faster (not measured here).
+- So helpers start only on devices reporting more than 4 threads (`SCORING_HELPER_THREADS`): one per 2 threads more, at most 2. Bench: `SCORING_HELPERS=n`.
+- The same limit holds for items 3 and 4 on this PC: they need idle cores. Here, doing less work pays more (Part 3; or the looks, which are cubing.js parsing and applying moves).
 
 ## Part 1 — Parallel work inside one solve
 
 **Why:** one core works while the other waits.
 
 **Do (one item per chat, each compared with the code before it):**
-1. Scoring off the page's thread: a step's listed answers are scored in a worker (today `stepCandidates` scores on the page and gives it a turn every 25 ms).
-2. Several scoring workers: a step's answers split between them, sharing the bar (the score an answer has to beat).
+1. Scoring off the page's thread: a step's listed answers are scored in a worker (today `stepCandidates` scores on the page and gives it a turn every 25 ms). **Done 2026-10-20** (see *Facts*, Part 1 item 1).
+2. Several scoring workers: a step's answers split between them, sharing the bar (the score an answer has to beat). **Done 2026-10-20** as scoring helpers (see *Facts*, Part 1 item 2).
 3. The lookahead's candidates judged at the same time instead of one after another (today a candidate whose own cost can't win is skipped; at the same time a little of that skipping is lost).
 4. The beam search's partial solves at the same time.
 

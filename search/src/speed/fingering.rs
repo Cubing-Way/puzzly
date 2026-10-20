@@ -245,11 +245,20 @@ impl Level {
     }
 }
 
+// What a writing search gave: the cheapest writing and its cost (None: none was left under the limit), and which other limits would have searched the
+// very same way, so given the very same answer: the highest lower bound among the places it went on from, and the lowest among those it gave up on
+pub(crate) struct Searched {
+    pub found: Option<(String, f64)>,
+    pub kept: f64,
+    pub pruned: f64,
+}
+
 // The cheapest way for the hands to write an answer's face turns when some may be made as wide turns about the `wide` axes or slice turns about the
 // `slice` axes (letters of "xyz"), the cube ending held as it started (fingering.ts's cheapestWriting): its text and its cost with `before` (the grip
-// rotation); None when the plain writing is the only one. Writings that can't cost `limit` or less are given up on the way, and None is given when none is left
+// rotation); None when the plain writing is the only one. Writings that can't cost `limit` or less are given up on the way, and none is found when none
+// is left
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &str, fresh: bool, before: &str, limit: f64) -> Option<(String, f64)> {
+pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &str, fresh: bool, before: &str, limit: f64) -> Option<Searched> {
     let turns: Vec<&str> = moves.split_whitespace().collect();
     let mut plan = writing_plan(&turns, wide, slice)?;
     // The least the turns from each place on can cost, whatever the writing
@@ -301,6 +310,8 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
     let mut levels: Vec<Level> = (0..=turns.len()).map(|_| Level::default()).collect();
     let home = levels[0].place_on(plan.home(), turned, model.rhythm_of(last), apart, size);
     levels[0].places[home].costs = costs;
+    // The highest lower bound of a place gone on from, and the lowest of a place given up on
+    let (mut kept, mut pruned) = (f64::NEG_INFINITY, f64::INFINITY);
     for at in 0..turns.len() {
         // Regrips before a solve's first turn cost less
         let first = fresh && !started && at == 0;
@@ -308,9 +319,12 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
         let (done, later) = levels.split_at_mut(at + 1);
         for (number, place) in done[at].places.iter().enumerate() {
             // No way on from here can come in under the limit: its cheapest hand state plus the least the turns left cost is over it
-            if limit < f64::INFINITY && place.costs.iter().copied().fold(f64::INFINITY, f64::min) + rest[at] > limit + 1e-6 {
+            let least = place.costs.iter().copied().fold(f64::INFINITY, f64::min) + rest[at];
+            if limit < f64::INFINITY && least > limit + 1e-6 {
+                pruned = pruned.min(least);
                 continue;
             }
+            kept = kept.max(least);
             for option in plan.options_at(at, place.frame) {
                 let turn = read_turn(option.token.as_str());
                 let after = place.turned | again_bit(turn);
@@ -348,15 +362,17 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
             }
         }
     }
-    let (mut number, mut state, total) = best.filter(|(_, _, total)| *total < f64::INFINITY)?;
-    // Walk back from it, one token per place
-    let mut tokens = Vec::new();
-    let mut level = turns.len();
-    while let Some((back_level, back_number)) = levels[level].places[number].from[state] {
-        let place = &levels[level].places[number];
-        tokens.push(place.token[state].as_str().to_owned());
-        (level, number, state) = (back_level, back_number, place.state[state]);
-    }
-    tokens.reverse();
-    Some((tokens.join(" "), round(total)))
+    let found = best.filter(|(_, _, total)| *total < f64::INFINITY).map(|(mut number, mut state, total)| {
+        // Walk back from it, one token per place
+        let mut tokens = Vec::new();
+        let mut level = turns.len();
+        while let Some((back_level, back_number)) = levels[level].places[number].from[state] {
+            let place = &levels[level].places[number];
+            tokens.push(place.token[state].as_str().to_owned());
+            (level, number, state) = (back_level, back_number, place.state[state]);
+        }
+        tokens.reverse();
+        (tokens.join(" "), round(total))
+    });
+    Some(Searched { found, kept, pruned })
 }

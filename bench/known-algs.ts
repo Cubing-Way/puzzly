@@ -3,7 +3,7 @@
 // Usage: node bench/out/known-algs.js [groups: f2l,oll,pll; default f2l,oll] [extra moves, default 2] [case names to run, a regular expression]
 // PATCH='{"tilt":1}' tries other numbers of the hand model (whole objects for layers and such)
 import { inProcessWorker } from "./setup";
-import { nodeHelper } from "./node-helper";
+import { nodeHelper, nodeScoringWorker } from "./node-helper";
 import { CASES } from "./known-cases";
 import { toFaces, canon, inverse } from "./faces";
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
@@ -52,7 +52,7 @@ function cachingWorker(): SearchWorker {
   return outer;
 }
 runSearchWorker({ wasm, helper: nodeHelper });
-await loadEngine({ searchWorker: cachingWorker, workerIdleMs: 3_600_000, wasm });
+await loadEngine({ searchWorker: cachingWorker, scoringWorker: nodeScoringWorker, workerIdleMs: 3_600_000, wasm });
 
 // Goals: the first two layers, those with the last layer turned right, and the whole cube
 const F2L = "DF DR DB DL DFR FR DFL FL DBR BR DBL BL";

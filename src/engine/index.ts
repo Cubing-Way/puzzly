@@ -5,8 +5,8 @@
 export { loadEngine, type EngineOptions } from "./setup";
 // Data shapes: goals, step options and results, methods and their runs
 export type { Role, Goal, GoalPiece, Rank, StepOptions, NextStep, TableProgress, StepResult, StepConfig, Method, MethodStepResult, MethodResult, MethodOptions } from "./types";
-// The part of a Worker the engine needs from the app
-export type { SearchWorker } from "./worker/protocol";
+// The parts of a Worker the engine needs from the app
+export type { SearchWorker, ScoringWorker } from "./worker/protocol";
 // Piece names and grips
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text

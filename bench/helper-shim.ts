@@ -1,4 +1,4 @@
-// Worker globals for the search helper in a Node thread: self, postMessage and onmessage over the parent port
+// Worker globals for the search helper and the scoring worker in a Node thread: self, postMessage and onmessage over the parent port
 import { parentPort } from "node:worker_threads";
 
 (globalThis as any).self = globalThis;
