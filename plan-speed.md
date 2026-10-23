@@ -119,6 +119,14 @@ Rules for every part:
 - So "overnight" was too much: ~1–2.5 h for one set of step options. Each set is a file of its own: levels 3–4 (4 extra moves: more answers, not measured), level 1 (no wide or slice turns), level 5 (rotations on x z), pseudo-slotting (offsets).
 - The file's size matters more than the time: every answer is ~8.9M (at a rough 30 bytes each, a few hundred MB as text; ~65 MB for one slot). Only the 16 fastest by turning cost aren't enough for the same solves, since looks and cancels re-rank answers at the time; a bar with a margin over the 16th (as much as looks and cancels can change) sits in between.
 
+### The same tables on every device (2026-10-22)
+
+- Found with a user's color-neutral CFOP method: Cross with 14 alternatives (cross to quad XCross), all 24 grips, offsets D D2 D', moves with M E S, lookahead 6 over 64 candidates, 4 extra moves, wide / slice / rotation axes x y z; then pairs, OLL and PLL. It took 900 s on the page the first time, 74 s once the tables were stored, and gave another solve on another computer.
+- Cause: split goals got 40M sub-tables where the browser reports 8 GB or more (`navigator.deviceMemory`), 10M elsewhere. A list stops at its node budget (`LIST_NODES`, 1M), and bigger tables use fewer nodes per answer, so the same step listed other answers and could pick another one. A plain search's answer doesn't depend on the tables (IDA* finds the first answer in turn order whatever its bound), only lists do; one core or four gave the same solve.
+- Measured in Node, one seeded scramble (`random(77)`), `CORES=4`, Run method: no device memory 56–65 s, 42 moves, the Cross step listing 58k answers; `deviceMemory` 8: 1015 s (~920 s of it building 40M tables before the first list), 40 moves, 84k answers in the same ~1M nodes. Search fastest (beam, width 4) without device memory: 88 s (56 s of it the plain run).
+- Now every device plans split goals on 10M sub-tables (`BIG_TABLE_STATES` = `MAX_TABLE_STATES` in `limits.ts`) with a 256 MB cache, and `navigator.deviceMemory` isn't read. After it: `deviceMemory` 8 in Node gives the 42-move solve in 60 s, and the page in a browser reporting 16 GB gives the same 42 moves in 48 s (34 tables built). Devices without 8 GB, and Firefox, Safari and Node, are unchanged.
+- The price: 8 GB devices lose the 40M plans' 3–4× fewer search nodes on F2L-type goals (see `plan-engine.md`, Part 8f) and the longer lists they allowed (on this scramble a 2-move-shorter solve). `bench/replay.ts` still measures them with `BIG=40000000`; the bench's `DEVICE_GB` is gone. Tables those devices stored stay in IndexedDB unused until the site's data is cleared.
+
 ## Part 1 — Parallel work inside one solve
 
 **Why:** one core works while the other waits.
@@ -171,7 +179,7 @@ Rules for every part:
 **Why:** a faster machine runs the same code faster, and this PC is from 2012.
 
 **Do:**
-1. A small Node server around `runMethod` (the engine already runs in Node, see `bench/setup.ts`), with its tables kept on disk and the bigger 40M tables (`DEVICE_GB=8`).
+1. A small Node server around `runMethod` (the engine already runs in Node, see `bench/setup.ts`), with its tables kept on disk. Not the bigger 40M tables: since 2026-10-22 every device uses 10M ones, so the server gives the same solves as the page (see *Facts*).
 2. The demo asks the server when a server address is set, and solves in the page otherwise (GitHub Pages stays as it is).
 3. A queue: one solve keeps a core busy for seconds.
 

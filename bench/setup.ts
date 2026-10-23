@@ -3,8 +3,6 @@
 import type { SearchWorker } from "../src/engine";
 
 (globalThis as any).self = globalThis;
-// DEVICE_GB=8: the worker sees this much device memory (Node reports none, like Firefox and Safari), so it picks that device's table budget
-if (process.env.DEVICE_GB) Object.defineProperty(navigator, "deviceMemory", { value: Number(process.env.DEVICE_GB), configurable: true });
 // CORES=4: the worker sees this many cores and starts helpers for long searches (real threads, bench/out/helper.js); default 1 = no helpers, as before
 Object.defineProperty(navigator, "hardwareConcurrency", { value: Number(process.env.CORES ?? 1), configurable: true });
 // The engine's side of the worker (the last one it started)

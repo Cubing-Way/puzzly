@@ -1,7 +1,7 @@
 // Direct-wasm benchmark: replays recorded worker requests (bench/record.ts) on the Rust search code bundled in, each goal on its big plan (exact table up to 10M states,
 // else split tables of up to BIG states each, as the worker ends up using), and reports per scenario: bound vs real length, nodes, µs per node, time, table builds
 // Usage: node bench/out/replay.js [requests file] [results file, - = none] [scenarios, comma-separated, all = every one]; FRESH=1 builds every table,
-// BIG=40000000 plans split goals like the worker on a device with 8 GB or more (default 10M); CORES=4 spreads long split searches over 3 helper threads (default 1: none)
+// BIG=40000000 plans split goals on 40M sub-tables (the worker uses 10M on every device, the default); CORES=4 spreads long split searches over 3 helper threads (default 1: none)
 import { initSync, SplitSearch, DistanceTable } from "../search/pkg/puzzly_search.js";
 import { HelperPool, type ParallelGoal } from "../src/engine/worker/parallel";
 import { nodeHelper } from "./node-helper";

@@ -1,19 +1,18 @@
-// Worker limits: table sizes and memory budgets, picked from the memory the device reports, and how many helpers the workers start
+// Worker limits: table sizes and memory budgets, the same on every device, and how many helpers the workers start
 
-// This device's memory in GB as the browser reports it (Chrome and Edge round it and report at most 8), or null where it isn't reported (Firefox, Safari, Node)
-const DEVICE_GB: number | null = (globalThis.navigator as { deviceMemory?: number } | undefined)?.deviceMemory ?? null;
 // Biggest exact table to build for a whole goal, in states: up to 10M build in about a second, so a goal's first answer never waits on a bigger build
 export const MAX_TABLE_STATES = 10_000_000;
-// Sub-table limit of a split goal's big plan: 40M on devices with 8 GB or more (F2L-type plans then see 6 edges together: 3–4× fewer search nodes, but one method's
-// big plans may hold ~350 MB), else 10M (20M was measured too: little gain, since the next useful tables are 21M and up)
-const BIG_TABLE_STATES = DEVICE_GB !== null && DEVICE_GB >= 8 ? 40_000_000 : MAX_TABLE_STATES;
+// Sub-table limit of a split goal's big plan: 10M on every device. Devices reporting 8 GB or more used to get 40M (F2L-type plans then see 6 edges together:
+// 3–4× fewer search nodes), but a list stops at a node budget, so they listed other answers and got another solve than other devices (and a color-neutral
+// method's first run spent ~15 min building them). 20M was measured too: little gain, since the next useful tables are 21M and up
+const BIG_TABLE_STATES = MAX_TABLE_STATES;
 // Sub-table limit of a split goal's smallest plan: small tables build in a fraction of a second (the last fallback when bigger ones can't be built)
 const SMALL_TABLE_STATES = 1_000_000;
 // Sub-table limits of a split goal's plans, smallest first: a goal takes the biggest whose tables can be built (the smaller ones are fallbacks). It used
 // to start small and move up after enough search nodes, which made a run's lists depend on what ran before it
 export const PLAN_STATES = [...new Set([SMALL_TABLE_STATES, MAX_TABLE_STATES, BIG_TABLE_STATES])];
-// Memory the kept solvers may hold; past it the least recently used ones are freed (with 40M big plans, enough for one method's whole set)
-export const MAX_CACHE_MB = BIG_TABLE_STATES > MAX_TABLE_STATES ? 512 : 256;
+// Memory the kept solvers may hold; past it the least recently used ones are freed
+export const MAX_CACHE_MB = 256;
 // Twips's prune table size can't be read, so each Searcher counts as this much (most stay near 1 MB)
 export const SEARCHER_MB = 2;
 // Most helper workers for long searches, unless the app sets its own: each holds copies of the tables of the goals it helps with, so memory grows with them (3 helpers = 4 copies)
