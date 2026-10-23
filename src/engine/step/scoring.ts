@@ -2,7 +2,7 @@
 // against a bar that rises as answers come in, then ranked. The same code runs on the page or in a scoring worker (see worker/scoring-worker.ts)
 
 // Move text helpers
-import { joinMoves, invertMoves, cancelsInto } from "../core/moves";
+import { joinMoves, invertMoves, cancelsInto, shortRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -108,8 +108,8 @@ export function turnsFaces(moves: string, faces: string[]): boolean {
 // `holds` = the holds in which some answer is clean, given by a caller that knows of answers left out of `entries`
 export function setTiers(entries: Listed[], avoid: string[], bySpeed: boolean, ending: (candidate: Answer) => string, holds?: Set<string>): void {
   if (!avoid.length) return;
-  // An answer as the hands make it (its wide writing when it has one), its grip rotation first
-  const handsText = (entry: Listed) => joinMoves(entry.wide?.start ?? entry.answer.combo.rotation, entry.wide ? entry.wide.wide : joinMoves(entry.answer.moves, ending(entry.answer)));
+  // An answer as the hands make it (its wide writing when it has one), its grip rotation first (with a rotation the writing starts with, the short way)
+  const handsText = (entry: Listed) => shortRotations(joinMoves(entry.wide?.start ?? entry.answer.combo.rotation, entry.wide ? entry.wide.wide : joinMoves(entry.answer.moves, ending(entry.answer))));
   // Whether an answer turns a face to avoid (or is strained), and the rotations it starts with (how the cube is held for it)
   // An answer that turns L against an open R layer (or the reverse) is no clean answer either: it only wins where the ranking says so
   const dirty = (entry: Listed) => (entry.avoided ??= turnsFaces(handsText(entry), avoid) || strained(handsText(entry)));
@@ -429,9 +429,10 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
         const from: Listed = own ?? base;
         const all = joinMoves(from.answer.moves, tail).split(" ").filter(Boolean);
         const plain = all.join(" ");
-        // One turn made as the opposite wide turn, with a rotation about its axis to make up for it
+        // One turn made as the opposite wide turn, with a rotation about its axis to make up for it (made first, it's one grip with the grip rotation:
+        // z y then z is x y2)
         wideForms(all, rotation, madeUp).forEach((wide, place) => {
-          const result = score(joinMoves(rotation, wide.wide), held, look + flip);
+          const result = score(shortRotations(joinMoves(rotation, wide.wide)), held, look + flip);
           if (result) keep({ ...from, form: `wide${place}/`, speed: result.speed, wide }, result.clean);
         });
         // Only worth writing out when no writing at all would be under the bar, nor beat the plain writing, which it has to beat to take its place (the
@@ -451,7 +452,7 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
           own = { ...from, speed: written.cost + writtenLook, wide: { wide: written.text, plain, ...(written.start === undefined ? {} : { start: written.start }) }, clean: noteClean(hands) };
         // The cube tilted for the answer and tilted back (x rotations only)
         for (const tilt of rotationAxes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
-          const result = score(joinMoves(rotation, tilt.wide), held, look);
+          const result = score(shortRotations(joinMoves(rotation, tilt.wide)), held, look);
           if (result && (!own || result.speed < own.speed)) own = { ...from, wide: tilt, ...result };
         }
       }

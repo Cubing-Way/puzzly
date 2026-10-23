@@ -5,7 +5,7 @@ import { Alg } from "cubing/alg";
 // Full 3x3x3 solver
 import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 // Move text helpers
-import { FACE_MOVES, countMoves, joinMoves } from "../core/moves";
+import { FACE_MOVES, countMoves, joinMoves, shortRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Goal text
@@ -280,9 +280,9 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
     const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };
     // An answer with a wide turn is the plain one's result with its own solution, in both writings (one that starts with the cube held another way
-    // starts with its own rotations instead of the grip rotation)
+    // starts with its own rotations instead of the grip rotation), a rotation it starts with joined to the grip rotation the short way (z y then z is x y2)
     const { rotation } = entry.answer.combo;
-    return entry.wide ? { ...result, solution: new Alg(joinMoves(rotation, entry.wide.plain)), wide: joinMoves(entry.wide.start ?? rotation, entry.wide.wide) } : result;
+    return entry.wide ? { ...result, solution: new Alg(shortRotations(joinMoves(rotation, entry.wide.plain))), wide: shortRotations(joinMoves(entry.wide.start ?? rotation, entry.wide.wide)) } : result;
   });
 }
 
