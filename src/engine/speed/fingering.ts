@@ -2,10 +2,12 @@
 
 // The hand map, its wrist positions and its fingers
 import { type HandModel, type Wrist, type Finger, HANDS, WRISTS, trickName } from "./hands";
-// The ways an answer can be written with wide and slice turns
-import { writingPlan } from "./writings";
+// The ways an answer can be written with wide and slice turns, and the frames rotations leave the cube in
+import { writingPlan, frameAfter, undoRotations } from "./writings";
 // A step's moves joined onto the moves before it
 import { cancelInto } from "../core/moves";
+// The 24 ways to hold the cube
+import { ALL_GRIPS } from "../core/cube";
 // The speed model in Rust (search/src/speed.rs): the class loadEngine hands over once the Rust code is loaded
 import type { SpeedModel } from "../../../search/pkg/puzzly_search.js";
 
@@ -482,7 +484,9 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
 
 // One place in an answer being written: the frame the cube is held in there, the layers turned so far that cost more to turn again (as bits), the rhythm
 // the move made last leaves (1 = it's on a layer that flows, 2 = on a slow one, 0 = neither), which of R and L are a quarter turn off the middle layer
-// (see openCost), each hand state's cheapest cost so far, and how each state was reached (the place before, the state there and the token made)
+// (see openCost), each hand state's cheapest cost so far, and how each state was reached (the place before, the state there and the token made). A
+// place a writing starts from also says whether its first turn is a solve's first (regrips cost less), and for a start other than after the moves
+// given first, the rotations the hands make instead
 interface Place {
   frame: string;
   turned: number;
@@ -492,77 +496,146 @@ interface Place {
   from: Place[];
   state: number[];
   token: string[];
+  first?: boolean;
+  start?: string;
 }
 
 // The cheapest way for the hands to write an answer's face turns when some may be made as wide or slice turns about these axes ("x", "y", "z") with the
-// cube ending held as it started (see writings.ts): the same search as evaluate, over every such writing at once, so `r U R' U' r' F R F'` is found from
-// `L F R' F' L' F R F'`. `axes` = one list for both kinds, or the wide turns' and the slice turns' axes apart. `before` = moves made first (the grip
-// rotation), `fresh` as for fingering. Gives the writing and its cost with `before` (the plain writing when nothing beats it); null when the plain
-// writing is the only one. With a `limit`, writings that can't cost that or less are given up on the way (each turn left costs at least what
-// writingFloor says), and null is given when none is left
-export function cheapestWriting(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity): { text: string; cost: number } | null {
-  return writingSearch(moves, axes, hands, fresh, before, limit).found;
+// cube ending held as its grip names it (see writings.ts): the same search as evaluate, over every such writing at once, so `r U R' U' r' F R F'` is
+// found from `L F R' F' L' F R F'`. `axes` = one list for both kinds, or the wide turns' and the slice turns' axes apart. `before` = moves made first
+// (the grip rotation), `fresh` as for fingering. With `angles` the writing may also start held another way (see writingStarts) and let its wide and
+// slice turns bring the cube round to its grip: `x' z' r' F R2 r' U r D F2` for `x2 y L' F R2 L' B L D F2`. Gives the writing and its cost with what
+// the hands make first (the plain writing when nothing beats it), and for a writing that starts another way the rotations made in place of `before`
+// (`start`, "" for none); null when the plain writing is the only one. With a `limit`, writings that can't cost that or less are given up on the way
+// (each turn left costs at least what writingFloor says), and null is given when none is left
+export function cheapestWriting(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity, angles = false): Writing | null {
+  return writingSearch(moves, axes, hands, fresh, before, limit, angles).found;
 }
 
 // What a writing search gave: the cheapest writing (null: none, or none left under the limit), and which other limits would have searched the very same
 // way, so given the very same writing: those that go on from every place with a lower bound up to `kept` and give up on every place from `pruned` on
 // (a place gives up when its bound is over limit + 1e-6). A search with no writing but the plain one gives the same for any limit
 export interface WritingSearch {
-  found: { text: string; cost: number } | null;
+  found: Writing | null;
   kept: number;
   pruned: number;
+  ends?: (Writing | null)[]; // with ends: the cheapest writing that ends in each of them, the same way
 }
 
-// The search behind cheapestWriting, with its bounds (see WritingSearch)
-export function writingSearch(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity): WritingSearch {
+// A writing the search found: its text, its cost with what the hands make first, and when it starts held another way than the grip it ends in names
+// it, the rotations the hands make first (in place of the grip rotation; "" = none)
+export interface Writing {
+  text: string;
+  cost: number;
+  start?: string;
+}
+
+// A rotation's token
+const ROTATION_TOKEN = /^[xyz][2']?$/;
+
+// Where a writing may start besides after `before` (the grip rotation), each as the frame the cube is then held in (its faces as the grip names them)
+// and the rotations the hands make to hold it so: on a solve's first step any of the 24 ways to pick the cube up (free, as the grip rotation is); on a
+// later step as the hands hold it now, with no rotation, when every rotation of the grip is about an axis the wide or slice turns may turn about (so
+// `Dw R' U R` for `y' U R' U R`). None when `before` isn't made of rotations alone. Worked out once per case
+const startsMade = new Map<string, { frame: string; rotations: string }[]>();
+function writingStarts(fresh: boolean, before: string, axes: string[]): { frame: string; rotations: string }[] {
+  const key = `${fresh}/${before}/${axes.join("")}`;
+  let starts = startsMade.get(key);
+  if (!starts) {
+    starts = [];
+    const rotations = before.split(/\s+/).filter(Boolean);
+    if (rotations.every((rotation) => ROTATION_TOKEN.test(rotation))) {
+      // The frame the hands hold the cube in now, before the grip rotation
+      const held = frameAfter(undoRotations(before));
+      const choices = fresh ? ALL_GRIPS : rotations.length && rotations.every((rotation) => axes.includes(rotation[0])) ? [""] : [];
+      // Each frame once, the one `before` leads to (the grip's own) left to it
+      const seen = new Set([frameAfter("")]);
+      for (const choice of choices) {
+        const frame = frameAfter(choice, held);
+        if (seen.has(frame)) continue;
+        seen.add(frame);
+        starts.push({ frame, rotations: choice });
+      }
+    }
+    startsMade.set(key, starts);
+  }
+  return starts;
+}
+
+// The search behind cheapestWriting, with its bounds (see WritingSearch). With `ends` (frames, as writingStarts gives them) it also gives the
+// cheapest writing that ends held each of those ways: on a solve's first step, where every start is free, one search writes an answer for all its
+// twin grips at once (the same turns held with each front), each ending in its own (its start is left out when it starts held as it ends)
+export function writingSearch(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity, angles = false, ends: string[] = []): WritingSearch {
   const turns = moves.split(/\s+/).filter(Boolean);
   // Wide and slice axes: the same list for both, or each its own
   const [wide, slice] = Array.isArray(axes) ? [axes, axes] : [axes.wide, axes.slice];
+  // Other starts the writing may take
+  const starts = angles ? writingStarts(fresh, before, [...new Set([...wide, ...slice])]) : [];
   // In Rust once it's loaded (the writing it gives is read, then freed)
   const rust = rustFor(hands);
   if (rust) {
-    const searched = rust.cheapestWriting(moves, wide.join(""), slice.join(""), fresh, before, limit);
-    if (!searched) return { found: null, kept: -Infinity, pruned: Infinity };
-    const result = { found: searched.found ? { text: searched.text, cost: searched.cost } : null, kept: searched.kept, pruned: searched.pruned };
+    const searched = rust.cheapestWriting(moves, wide.join(""), slice.join(""), fresh, before, limit, starts.map((start) => `${start.frame} ${start.rotations}`.trim()).join(","), ends.join(","));
+    if (!searched) return { found: null, kept: -Infinity, pruned: Infinity, ...(ends.length ? { ends: ends.map(() => null) } : {}) };
+    const found = searched.found ? { text: searched.text, cost: searched.cost, ...(searched.start === undefined ? {} : { start: searched.start }) } : null;
+    // The other ends' writings come as JSON: [text, cost, start or null] or null for each
+    const others = ends.length ? (JSON.parse(searched.ends) as ([string, number, string | null] | null)[]).map((end) => end && { text: end[0], cost: end[1], ...(end[2] === null ? {} : { start: end[2] }) }) : null;
+    const result = { found, kept: searched.kept, pruned: searched.pruned, ...(others ? { ends: others } : {}) };
     searched.free();
     return result;
   }
-  const plan = writingPlan(turns, wide, slice);
-  if (!plan) return { found: null, kept: -Infinity, pruned: Infinity };
+  const plan = writingPlan(turns, wide, slice, starts.map((start) => start.frame), ends);
+  if (!plan) return { found: null, kept: -Infinity, pruned: Infinity, ...(ends.length ? { ends: ends.map(() => null) } : {}) };
   const ready = readyFor(hands);
-  // The least the turns from each place on can cost, whatever the writing
-  const any = (ready.any ??= anyFloors(hands, ready));
-  const rest = new Array<number>(turns.length + 1).fill(0);
-  for (let at = turns.length - 1; at >= 0; at--) rest[at] = rest[at + 1] + (turns[at].endsWith("2") ? any.half : any.quarter);
+  // The least the rest of the answer can cost from a place in a frame, whatever the hands do: the cheapest way on to the end with each token at its
+  // floor (see turnFloor) less what keeping the rhythm could save it. A frame the cube has to be brought round from pays for the wide turns that do it,
+  // so starts far from the grip are given up on early. Worked out once per place and frame
+  const restFloors = new Map<string, number>();
+  const restOf = (at: number, frame: string): number => {
+    if (at === plan.length) return 0;
+    const key = `${at}/${frame}`;
+    let floor = restFloors.get(key);
+    if (floor === undefined) {
+      floor = Infinity;
+      for (const option of plan.optionsAt(at, frame)) {
+        const turn = readTurn(option.token)!;
+        floor = Math.min(floor, turnFloor(turn, hands, ready) - (hands.flow[turn.layer] ?? 0) + restOf(at + option.covers, option.frame));
+      }
+      restFloors.set(key, floor);
+    }
+    return floor;
+  };
   const { classes } = ready;
   const size = STATES * classes;
   // Layers that cost more to turn again, each a bit of a place's `turned`; what a turn of a layer pays when its bit is set
   const layers = Object.keys(hands.again);
   const againCost = (turned: number, bit: number) => (bit >= 0 && turned & (1 << bit) ? hands.again[layers[bit]] : 0);
-  // The moves made first, as evaluate makes them: both hands start at home with every finger in place
-  let costs = new Array<number>(size).fill(Infinity);
-  costs[HOME_STATE * classes] = 0;
-  let started = false;
-  let turned = 0;
-  // The move made last (null = none yet, or one the model can't read): the next one may keep its rhythm
-  let last: Turn | null = null;
-  // Which of R and L are a quarter turn off the middle layer so far
-  let apart = 0;
-  for (const turn of before.split(/\s+/).filter(Boolean).map(readTurn)) {
-    const next = new Array<number>(size).fill(Infinity);
-    const rotation = turn !== null && ROTATIONS.includes(turn.layer);
-    const bit = turn && !rotation ? layers.indexOf(turn.layer) : -1;
-    advance(hands, ready, turn, costs, fresh && !started, fresh && !started, againCost(turned, bit) + leaveAfter(hands, last, turn), openCost(hands, turn, apart), flowAfter(hands, last, turn), (to, total) => {
-      if (total < next[to]) next[to] = total;
-    });
-    if (!rotation) started = true;
-    // A rotation starts the layers turned again over (as evaluate counts them)
-    if (rotation) turned = 0;
-    if (bit >= 0) turned |= 1 << bit;
-    costs = next;
-    last = turn;
-    apart = apartAfter(turn, apart);
-  }
+  // Moves made first, as evaluate makes them: both hands start at home with every finger in place. Gives each hand state's cost after them, whether a
+  // turn was made, the layers turned (that cost more to turn again), the move made last (null = none yet, or one the model can't read: the next one
+  // may keep its rhythm) and which of R and L are a quarter turn off the middle layer
+  const madeFirst = (text: string) => {
+    let costs = new Array<number>(size).fill(Infinity);
+    costs[HOME_STATE * classes] = 0;
+    let started = false;
+    let turned = 0;
+    let last: Turn | null = null;
+    let apart = 0;
+    for (const turn of text.split(/\s+/).filter(Boolean).map(readTurn)) {
+      const next = new Array<number>(size).fill(Infinity);
+      const rotation = turn !== null && ROTATIONS.includes(turn.layer);
+      const bit = turn && !rotation ? layers.indexOf(turn.layer) : -1;
+      advance(hands, ready, turn, costs, fresh && !started, fresh && !started, againCost(turned, bit) + leaveAfter(hands, last, turn), openCost(hands, turn, apart), flowAfter(hands, last, turn), (to, total) => {
+        if (total < next[to]) next[to] = total;
+      });
+      if (!rotation) started = true;
+      // A rotation starts the layers turned again over (as evaluate counts them)
+      if (rotation) turned = 0;
+      if (bit >= 0) turned |= 1 << bit;
+      costs = next;
+      last = turn;
+      apart = apartAfter(turn, apart);
+    }
+    return { costs, started, turned, last, apart };
+  };
   // The rhythm a move leaves for the next one: 1 = it's on a layer that flows, 2 = on a slow one, 0 = neither (a slice turn, a tilt, no move yet)
   const rhythmOf = (turn: Turn | null) => (!turn ? 0 : hands.flow[turn.layer] !== undefined ? 1 : hands.leave[turn.layer] !== undefined ? 2 : 0);
   // Places by how many of the answer's turns are made so far, then by frame, layers turned, the rhythm the last move leaves and which of R and L are off the middle layer
@@ -574,7 +647,13 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
     if (!place) level.set(key, (place = { frame, turned, rhythm, apart, costs: new Array<number>(size).fill(Infinity), from: [], state: [], token: [] }));
     return place;
   };
-  placeOn(levels[0], plan.home, turned, rhythmOf(last), apart).costs = costs;
+  // Where the writing starts: after `before`, held as the grip names the cube, then from each other start the rest of the answer can end right from
+  for (const start of [{ frame: plan.home, rotations: undefined }, ...starts]) {
+    if (start.rotations !== undefined && !plan.optionsAt(0, start.frame).length) continue;
+    const made = madeFirst(start.rotations ?? before);
+    const place = placeOn(levels[0], start.frame, made.turned, rhythmOf(made.last), made.apart);
+    Object.assign(place, { costs: made.costs, first: fresh && !made.started, ...(start.rotations === undefined ? {} : { start: start.rotations }) });
+  }
   // The highest lower bound of a place gone on from, and the lowest of a place given up on
   let [kept, pruned] = [-Infinity, Infinity];
   // One token made from a place into the next one, which keeps the cheapest way into each of its states
@@ -588,12 +667,12 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
     });
   };
   for (let at = 0; at < plan.length; at++) {
-    // Regrips before a solve's first turn cost less
-    const first = fresh && !started && at === 0;
     // Each way to go on from a place leads to a place further on
     for (const place of levels[at].values()) {
+      // Regrips before a solve's first turn cost less
+      const first = at === 0 && Boolean(place.first);
       // No way on from here can come in under the limit: its cheapest hand state plus the least the turns left cost is over it
-      const least = Math.min(...place.costs) + rest[at];
+      const least = Math.min(...place.costs) + restOf(at, place.frame);
       if (limit < Infinity && least > limit + 1e-6) {
         pruned = Math.min(pruned, least);
         continue;
@@ -610,19 +689,27 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
       }
     }
   }
-  // The cheapest end state with its hands brought back home, over the places the answer can end in (all held as it started)
-  let best: { place: Place; state: number; total: number } | null = null;
+  // The cheapest end state with its hands brought back home, over the places the answer can end in, for each frame it may end in (held as its grip
+  // names it first, then the other ends); the first one on a tie
+  const frames = [plan.home, ...ends];
+  const bests: ({ place: Place; state: number; total: number } | null)[] = frames.map(() => null);
   for (const place of levels[plan.length].values()) {
+    const end = frames.indexOf(place.frame);
     for (let state = 0; state < size; state++) {
       const total = place.costs[state] + hands.lastRegrip * HANDS_MOVED[Math.floor(state / classes) * STATES + HOME_STATE];
-      if (!best || round(total) < round(best.total)) best = { place, state, total };
+      const best = bests[end];
+      if (!best || round(total) < round(best.total)) bests[end] = { place, state, total };
     }
   }
-  if (!best || best.total === Infinity) return { found: null, kept, pruned };
-  // Walk back from it, one token per place
-  const tokens: string[] = [];
-  for (let { place, state } = best; place.from[state]; [place, state] = [place.from[state], place.state[state]]) tokens.unshift(place.token[state]);
-  return { found: { text: tokens.join(" "), cost: round(best.total) }, kept, pruned };
+  // Each one walked back, one token per place, to the place it started from: its start is left out when it started held as it ends
+  const writings = bests.map((best, end): Writing | null => {
+    if (!best || best.total === Infinity) return null;
+    const tokens: string[] = [];
+    let { place, state } = best;
+    for (; place.from[state]; [place, state] = [place.from[state], place.state[state]]) tokens.unshift(place.token[state]);
+    return { text: tokens.join(" "), cost: round(best.total), ...(place.frame === frames[end] ? {} : { start: place.start ?? before }) };
+  });
+  return { found: writings[0], kept, pruned, ...(ends.length ? { ends: writings.slice(1) } : {}) };
 }
 
 // The least a turn can cost: its cheapest trick from any hand position, a reach's finger regrip and the layer's own cost included (`other` when no
@@ -689,14 +776,17 @@ function anyFloors(hands: HandModel, ready: Ready): { quarter: number; half: num
   return { quarter: Math.min(least(1), least(3)), half: least(2) };
 }
 
-// A lower bound of what cheapestWriting can give for an answer (plain face turns) after its grip rotation: no writing of it is cheaper
-export function writingFloor(moves: string, hands: HandModel = HANDS, fresh = false, before = ""): number {
+// A lower bound of what cheapestWriting can give for an answer (plain face turns) after its grip rotation: no writing of it is cheaper. With `angles`
+// (and the axes the writing turns about) the writing may start another way instead (see writingStarts): those starts are rotations, free on a solve's
+// first step and none at all on a later one, so the bound counts nothing for what the hands make first
+export function writingFloor(moves: string, hands: HandModel = HANDS, fresh = false, before = "", angles = false, axes: string[] = []): number {
+  const first = angles && writingStarts(fresh, before, axes).length ? "" : before;
   // In Rust once it's loaded
   const rust = rustFor(hands);
-  if (rust) return rust.writingFloor(moves, fresh, before);
+  if (rust) return rust.writingFloor(moves, fresh, first);
   const ready = readyFor(hands);
   const any = (ready.any ??= anyFloors(hands, ready));
-  let total = speedFloor(before, hands, fresh);
+  let total = speedFloor(first, hands, fresh);
   for (const token of moves.split(/\s+/).filter(Boolean)) total += token.endsWith("2") ? any.half : any.quarter;
   return total;
 }

@@ -54,6 +54,31 @@ function rotate(frame: string, rotation: string): string {
   return next;
 }
 
+// A frame after rotations made one after another ("x2 y'"), from the frame the answer is named in unless another is given
+export function frameAfter(rotations: string, frame = SIDES): string {
+  return rotations.split(" ").filter(Boolean).reduce(rotate, frame);
+}
+
+// Face turns named in a grip (the cube held after these rotations), named as the cube held without them names its faces (after x, U is F)
+export function turnsBefore(moves: string, rotations: string): string {
+  const frame = frameAfter(rotations);
+  return moves
+    .split(" ")
+    .filter(Boolean)
+    .map((move) => frame[SIDES.indexOf(move[0])] + move.slice(1))
+    .join(" ");
+}
+
+// The rotations that undo these ("x2 y'" → "y x2")
+export function undoRotations(rotations: string): string {
+  return rotations
+    .split(" ")
+    .filter(Boolean)
+    .reverse()
+    .map((rotation) => (rotation.endsWith("'") ? rotation.slice(0, -1) : rotation.endsWith("2") ? rotation : `${rotation}'`))
+    .join(" ");
+}
+
 // A turn or rotation given for one quarter turn clockwise, made `quarters` times (1–3): "x'" twice is "x2", three times "x"
 function times(turn: string, quarters: number): string {
   const prime = turn.endsWith("'");
@@ -67,8 +92,9 @@ export interface WritingOption {
   frame: string;
 }
 
-// An answer ready to be written: how many turns it has, the frame it starts and ends in, and the ways to go on from each place in each frame
-// (only those the rest of the answer can still bring back to that frame; the plain turn first)
+// An answer ready to be written: how many turns it has, the frame its grip names it in (where it ends, and starts unless it starts held another way),
+// and the ways to go on from each place in each frame (only those the rest of the answer can still bring round to a frame it may end in; the plain
+// turn first)
 export interface WritingPlan {
   length: number;
   home: string;
@@ -76,10 +102,12 @@ export interface WritingPlan {
 }
 
 // The ways the hands can write an answer (plain face turns, as its grip names them) with some turns made as wide turns about the wide axes ("x", "y",
-// "z") or slice turns about the slice axes (slices = the wide axes when left out), the cube ending held as it started, so each writing is the answer
-// itself to the cube: R … R' may be Lw … Lw', and R L' is M with the cube turned as by x'. Null when the plain writing is the only one (or a move isn't
-// a plain face turn)
-export function writingPlan(moves: string[], axes: string[], slices: string[] = axes): WritingPlan | null {
+// "z") or slice turns about the slice axes (slices = the wide axes when left out), the cube ending held as its grip names it, so each writing is the
+// answer itself to the cube: R … R' may be Lw … Lw', and R L' is M with the cube turned as by x'. A writing starts held that way too, or in one of the
+// `starts` frames, when its wide and slice turns can bring the cube round to its grip by the end (r' F R2 r' U r D F2 held as by x' z' ends as by
+// x2 y). It may also end in one of the `ends` frames (the same turns held as a twin grip names them, see writingSearch). Null when the plain writing
+// is the only one (or a move isn't a plain face turn)
+export function writingPlan(moves: string[], axes: string[], slices: string[] = axes, starts: string[] = [], ends: string[] = []): WritingPlan | null {
   const turns = moves.map((move) => FACE_TURN.exec(move));
   // Wide turns (one face each) about the wide axes, slice turns (two faces) about the slice axes
   const forms = ["x", "y", "z"].flatMap((axis) => (WRITTEN[axis] ?? []).filter((form) => (form.faces.length === 1 ? axes : slices).includes(axis)));
@@ -107,14 +135,14 @@ export function writingPlan(moves: string[], axes: string[], slices: string[] = 
     }
     return options;
   };
-  // Whether the rest of the answer can still end held as it started from a place in a frame (so no writing is followed that can't), worked out only
-  // for the places and frames a writing really passes through, and once each
-  const ends = new Map<string, boolean>();
+  // Whether the rest of the answer can still end held as its grip names it (or in one of the other frames it may end in) from a place in a frame (so
+  // no writing is followed that can't), worked out only for the places and frames a writing really passes through, and once each
+  const reaches = new Map<string, boolean>();
   const canEnd = (at: number, frame: string): boolean => {
-    if (at === steps.length) return frame === SIDES;
+    if (at === steps.length) return frame === SIDES || ends.includes(frame);
     const key = `${at}/${frame}`;
-    let end = ends.get(key);
-    if (end === undefined) ends.set(key, (end = allAt(at, frame).some((option) => canEnd(at + option.covers, option.frame))));
+    let end = reaches.get(key);
+    if (end === undefined) reaches.set(key, (end = allAt(at, frame).some((option) => canEnd(at + option.covers, option.frame))));
     return end;
   };
   // The ways that can still end right, worked out once per place and frame (the search asks again for each set of layers turned)
@@ -125,7 +153,7 @@ export function writingPlan(moves: string[], axes: string[], slices: string[] = 
     if (!options) kept.set(key, (options = allAt(at, frame).filter((option) => canEnd(at + option.covers, option.frame))));
     return options;
   };
-  // A writing with a wide or slice turn leaves the starting frame somewhere: none does when no place lets it
-  if (!steps.some((_, at) => optionsAt(at, SIDES).length > 1)) return null;
+  // A writing with a wide or slice turn leaves the starting frame somewhere, or starts in another one: none does when no place lets it
+  if (!steps.some((_, at) => optionsAt(at, SIDES).length > 1) && !starts.some((frame) => frame !== SIDES && canEnd(0, frame))) return null;
   return { length: steps.length, home: SIDES, optionsAt };
 }

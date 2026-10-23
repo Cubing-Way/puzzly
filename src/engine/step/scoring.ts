@@ -14,7 +14,9 @@ import { rotateGoal } from "../goal/grips";
 // Solvable-with moves
 import { solvableIndex } from "../goal/solvable";
 // Speed cost of a move sequence, and an answer's cheapest writing with wide and slice turns (with the bounds of its search)
-import { speedCost, speedFloor, writingFloor, writingSearch, strained, cancelSaving, type WritingSearch } from "../speed/fingering";
+import { speedCost, speedFloor, writingFloor, writingSearch, strained, cancelSaving, type WritingSearch, type Writing } from "../speed/fingering";
+// Frames rotations hold the cube in, and turns named without a grip's rotations
+import { frameAfter, undoRotations, turnsBefore } from "../speed/writings";
 // What finding a step's pieces costs
 import { LOOK, hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount, inspectionLook } from "../speed/look";
 // Engine data shapes
@@ -23,14 +25,15 @@ import type { Goal, StepOptions } from "../types";
 import type { Combo, Answer } from "./combo";
 
 // One listed answer: its length, its combo's place in the queue, how it leaves the cube, its speed cost (0 unless ranking by speed),
-// and when it's the answer with one turn made as a wide turn, that solution in both its writings (after the grip rotation)
+// and when it's the answer with one turn made as a wide turn, that solution in both its writings (after the grip rotation, or for a writing that starts
+// held another way after the rotations in `start`, "" = none)
 export interface Listed {
   answer: Answer;
   length: number;
   order: number;
   key: string;
   speed: number;
-  wide?: { wide: string; plain: string };
+  wide?: { wide: string; plain: string; start?: string };
   form?: string; // an answer with one turn made wide: which of its wide forms it is (they're answers of their own, though they leave the cube the same way)
   avoided?: boolean;
   tier?: number;
@@ -106,7 +109,7 @@ export function turnsFaces(moves: string, faces: string[]): boolean {
 export function setTiers(entries: Listed[], avoid: string[], bySpeed: boolean, ending: (candidate: Answer) => string, holds?: Set<string>): void {
   if (!avoid.length) return;
   // An answer as the hands make it (its wide writing when it has one), its grip rotation first
-  const handsText = (entry: Listed) => joinMoves(entry.answer.combo.rotation, entry.wide ? entry.wide.wide : joinMoves(entry.answer.moves, ending(entry.answer)));
+  const handsText = (entry: Listed) => joinMoves(entry.wide?.start ?? entry.answer.combo.rotation, entry.wide ? entry.wide.wide : joinMoves(entry.answer.moves, ending(entry.answer)));
   // Whether an answer turns a face to avoid (or is strained), and the rotations it starts with (how the cube is held for it)
   // An answer that turns L against an open R layer (or the reverse) is no clean answer either: it only wins where the ranking says so
   const dirty = (entry: Listed) => (entry.avoided ??= turnsFaces(handsText(entry), avoid) || strained(handsText(entry)));
@@ -279,8 +282,9 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   const rotationAxes = options.rotationAxes ?? wideAxes;
   // A single wide turn needs a rotation about its own axis to make up for it
   const madeUp = wideAxes.filter((axis) => rotationAxes.includes(axis));
-  // Whether some writing with wide or slice turns that cancel out may be tried
+  // Whether some writing with wide or slice turns that cancel out (or that start with the cube held another way) may be tried, and the axes they turn about
   const writes = wideAxes.length > 0 || sliceAxes.length > 0;
+  const writtenAxes = [...new Set([...wideAxes, ...sliceAxes])];
   // The answers scored so far, and the holds in which some answer is clean (scored or not: it decides the tiers)
   const scored: Listed[] = [];
   const cleanHolds = new Set<string>();
@@ -344,15 +348,16 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
     }
     return known.own + (known.groups.length ? nextLook(combo.held.applyAlg(joinMoves(held.moves, ending(held))), known.groups) : 0);
   };
-  // An answer's cheapest writing with wide and slice turns that costs `limit` or less (see cheapestWriting): worked out ahead by a helper under a limit
-  // that searches the same way, or here (then noted for the scoring worker, in a helper)
-  const writingOf = (plain: string, rotation: string, limit: number): { text: string; cost: number } | null => {
-    const key = share && `${rotation}\n${plain}`;
+  // An answer's cheapest writing with wide and slice turns that costs `limit` or less, after its grip rotation or with the cube held another way at its
+  // start, and with `ends` the cheapest ending held each of those ways (see writingSearch): worked out ahead by a helper under a limit that searches the
+  // same way, or here (then noted for the scoring worker, in a helper)
+  const writingOf = (plain: string, rotation: string, limit: number, ends: string[] = []): WritingSearch => {
+    const key = share && `${rotation}\n${plain}${ends.length ? `\n${ends.join(",")}` : ""}`;
     const ahead = key === undefined ? undefined : share!.ahead?.writings.get(key);
-    if (ahead && searchesAlike(ahead, limit)) return ahead.found;
-    const searched = writingSearch(plain, { wide: wideAxes, slice: sliceAxes }, undefined, fresh, rotation, limit);
+    if (ahead && searchesAlike(ahead, limit)) return ahead;
+    const searched = writingSearch(plain, { wide: wideAxes, slice: sliceAxes }, undefined, fresh, rotation, limit, true, ends);
     if (key !== undefined) share!.record?.writings.set(key, { ...searched, limit });
-    return searched.found;
+    return searched;
   };
   // Whether moves as the hands make them are clean (none of the faces to avoid, no turn against an open layer); a clean one's hold is noted
   const noteClean = (text: string): boolean => {
@@ -388,12 +393,32 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
       const renamed = movesInGrip(moves, combo.rotation, twin.rotation);
       return renamed === null ? [] : [{ combo: twin, moves: renamed }];
     });
-    [raw.answer, ...twins].forEach((held, index) => {
+    const helds = [raw.answer, ...twins];
+    // Finding pieces costs the same in every writing (they all leave the cube alike)
+    const looks = helds.map(lookOf);
+    // On a solve's first step every start is free, so twins that make the very same turns share one writing search, each writing ending held as its
+    // own grip names it (see writingSearch's ends), under the highest of their bars: their writings by those turns (as the cube names its faces), then
+    // by grip rotation
+    const shared = new Map<string, Map<string, Writing | null>>();
+    const sharedWriting = (index: number, plain: string, rotation: string): Writing | null => {
+      const turns = turnsBefore(plain, rotation);
+      let writings = shared.get(turns);
+      if (!writings) {
+        // The other twins' grips as frames of this one's
+        const held = frameAfter(undoRotations(rotation));
+        const others = helds.filter((_, at) => at !== index).map((twin) => twin.combo.rotation);
+        const limit = Math.max(...helds.map((twin, at) => barOf(twin) - looks[at] - flip));
+        const searched = writingOf(plain, rotation, limit, others.map((other) => frameAfter(other, held)));
+        writings = new Map([[rotation, searched.found], ...others.map((other, at): [string, Writing | null] => [other, searched.ends?.[at] ?? null])]);
+        shared.set(turns, writings);
+      }
+      return writings.get(rotation) ?? null;
+    };
+    helds.forEach((held, index) => {
       const base: Listed = index ? { answer: held, length: raw.length, order: raw.order, key: "", speed: Infinity } : raw;
       const { rotation } = held.combo;
       const tail = ending(held);
-      // Finding pieces costs the same in every writing (they all leave the cube alike)
-      const look = lookOf(held);
+      const look = looks[index];
       let own: (Listed & { clean: boolean }) | null = null;
       for (const order of moveOrders(held.moves)) {
         const result = score(joinMoves(rotation, order, tail), held, look);
@@ -409,17 +434,21 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
           const result = score(joinMoves(rotation, wide.wide), held, look + flip);
           if (result) keep({ ...from, form: `wide${place}/`, speed: result.speed, wide }, result.clean);
         });
-        // Only worth writing out when no writing at all would be under the bar (the writing's own cost is the bar less what finding pieces and the flip
-        // add, plus what the plain writing saves by cancelling into the moves before the step: another writing may save as much). The plain writing
-        // itself was scored above, so leaving it out here loses nothing
-        const bar = barOf(held) - look - flip + Math.max(0, cut(joinMoves(rotation, plain))?.saving ?? 0);
-        const found = !writes || writingFloor(plain, undefined, fresh, rotation) > bar + 1e-6 ? null : writingOf(plain, rotation, bar);
+        // Only worth writing out when no writing at all would be under the bar, nor beat the plain writing, which it has to beat to take its place (the
+        // writing's own cost is the lower of the two less what finding pieces and the flip add, plus what the plain writing saves by cancelling into the
+        // moves before the step: another writing may save as much). The plain writing itself was scored above, so leaving it out here loses nothing
+        const bar = Math.min(barOf(held), own?.speed ?? Infinity) - look - flip + Math.max(0, cut(joinMoves(rotation, plain))?.saving ?? 0);
+        const writable = writes && writingFloor(plain, undefined, fresh, rotation, true, writtenAxes) <= bar + 1e-6;
+        const found = !writable ? null : fresh && helds.length > 1 ? sharedWriting(index, plain, rotation) : writingOf(plain, rotation, bar).found;
+        // As the hands make it: the grip rotation (or the rotations a writing that starts held another way makes instead), then the writing
+        const hands = found ? joinMoves(found.start ?? rotation, found.text) : "";
         // Its cost after the moves before the step, as the other writings are scored
-        const joined = found && cut(joinMoves(rotation, found.text));
+        const joined = found && cut(hands);
         const written = found && { ...found, cost: joined ? speedCost(joined.rest, undefined, fresh) - joined.saving : found.cost };
         // A writing with wide or slice turns pays for the flip; the plain one (given when nothing beats it) doesn't
-        const writtenLook = written && written.text !== plain ? look + flip : look;
-        if (written && (!own || written.cost + writtenLook < own.speed)) own = { ...from, speed: written.cost + writtenLook, wide: { wide: written.text, plain }, clean: noteClean(joinMoves(rotation, written.text)) };
+        const writtenLook = written && (written.text !== plain || written.start !== undefined) ? look + flip : look;
+        if (written && (!own || written.cost + writtenLook < own.speed))
+          own = { ...from, speed: written.cost + writtenLook, wide: { wide: written.text, plain, ...(written.start === undefined ? {} : { start: written.start }) }, clean: noteClean(hands) };
         // The cube tilted for the answer and tilted back (x rotations only)
         for (const tilt of rotationAxes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
           const result = score(joinMoves(rotation, tilt.wide), held, look);

@@ -279,9 +279,10 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   return ranked.slice(0, most).map((entry) => {
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
     const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };
-    // An answer with a wide turn is the plain one's result with its own solution, in both writings
+    // An answer with a wide turn is the plain one's result with its own solution, in both writings (one that starts with the cube held another way
+    // starts with its own rotations instead of the grip rotation)
     const { rotation } = entry.answer.combo;
-    return entry.wide ? { ...result, solution: new Alg(joinMoves(rotation, entry.wide.plain)), wide: joinMoves(rotation, entry.wide.wide) } : result;
+    return entry.wide ? { ...result, solution: new Alg(joinMoves(rotation, entry.wide.plain)), wide: joinMoves(entry.wide.start ?? rotation, entry.wide.wide) } : result;
   });
 }
 

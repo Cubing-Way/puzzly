@@ -76,7 +76,7 @@ export interface RankedData {
   order: number;
   key: string;
   speed: number;
-  wide?: { wide: string; plain: string };
+  wide?: { wide: string; plain: string; start?: string };
   form?: string;
   tier?: number;
 }

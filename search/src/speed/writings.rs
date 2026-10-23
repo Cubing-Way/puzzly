@@ -65,6 +65,12 @@ impl Frame {
     pub fn code(&self) -> u32 {
         self.0.iter().fold(0, |code, &face| code << 3 | SIDES.iter().position(|&side| side == face).unwrap_or(0) as u32)
     }
+
+    // A frame from its six letters in the order of SIDES ("RLBFDU"); None when they aren't six faces
+    pub fn from_text(text: &str) -> Option<Frame> {
+        let bytes: [u8; 6] = text.as_bytes().try_into().ok()?;
+        bytes.iter().all(|face| SIDES.contains(face)).then_some(Frame(bytes))
+    }
 }
 
 // A token the hands make, as its few bytes (at most 4: "Rw2'" never comes up, "Lw'" does)
@@ -103,18 +109,21 @@ pub(crate) struct WritingOption {
     pub frame: Frame,
 }
 
-// An answer ready to be written: each turn as (the cube's own face, quarter turns clockwise), the turns it may be made with, and the ways on from each
-// place and frame worked out so far (only those the rest of the answer can still bring back to the frame it started in; the plain turn first)
+// An answer ready to be written: each turn as (the cube's own face, quarter turns clockwise), the turns it may be made with, the other frames it may
+// end in, and the ways on from each place and frame worked out so far (only those the rest of the answer can still bring round to a frame it may end
+// in; the plain turn first)
 pub(crate) struct WritingPlan {
     steps: Vec<(u8, usize)>,
     forms: Vec<&'static Form>,
-    ends: HashMap<(usize, Frame), bool>,
+    ends: Vec<Frame>,
+    reaches: HashMap<(usize, Frame), bool>,
     kept: HashMap<(usize, Frame), Vec<WritingOption>>,
 }
 
 // The ways the hands can write an answer (plain face turns) with some turns made as wide turns about the `wide` axes or slice turns about the `slice`
-// axes (letters of "xyz"), the cube ending held as it started; None when the plain writing is the only one (or a move isn't a plain face turn)
-pub(crate) fn writing_plan(moves: &[&str], wide: &str, slice: &str) -> Option<WritingPlan> {
+// axes (letters of "xyz"), the cube ending held as its grip names it (or in one of the `ends` frames), from there or from one of the `starts` frames
+// (writings.ts's writingPlan); None when the plain writing is the only one (or a move isn't a plain face turn)
+pub(crate) fn writing_plan(moves: &[&str], wide: &str, slice: &str, starts: &[Frame], ends: &[Frame]) -> Option<WritingPlan> {
     // Each turn as its face and quarter turns, when every one is a plain face turn
     let steps = moves
         .iter()
@@ -130,18 +139,23 @@ pub(crate) fn writing_plan(moves: &[&str], wide: &str, slice: &str) -> Option<Wr
     if forms.is_empty() {
         return None;
     }
-    let mut plan = WritingPlan { steps, forms, ends: HashMap::new(), kept: HashMap::new() };
-    // A writing with a wide or slice turn leaves the starting frame somewhere: none does when no place lets it
-    if !(0..plan.steps.len()).any(|at| plan.options_at(at, Frame::HOME).len() > 1) {
+    let mut plan = WritingPlan { steps, forms, ends: ends.to_vec(), reaches: HashMap::new(), kept: HashMap::new() };
+    // A writing with a wide or slice turn leaves the starting frame somewhere, or starts in another one: none does when no place lets it
+    if !(0..plan.steps.len()).any(|at| plan.options_at(at, Frame::HOME).len() > 1) && !starts.iter().any(|&frame| frame != Frame::HOME && plan.can_end(0, frame)) {
         return None;
     }
     Some(plan)
 }
 
 impl WritingPlan {
-    // The frame the answer starts and ends in
+    // The frame the answer is named in, where it ends (and starts, unless it starts held another way)
     pub fn home(&self) -> Frame {
         Frame::HOME
+    }
+
+    // How many turns the answer has
+    pub fn length(&self) -> usize {
+        self.steps.len()
     }
 
     // Every way to go on from a place in a frame: the turn itself, the wide turn that makes it, or a slice turn that makes it and the next one
@@ -171,16 +185,17 @@ impl WritingPlan {
         options
     }
 
-    // Whether the rest of the answer can still end held as it started from a place in a frame, worked out once each
+    // Whether the rest of the answer can still end held as its grip names it (or in one of the other frames it may end in) from a place in a frame,
+    // worked out once each
     fn can_end(&mut self, at: usize, frame: Frame) -> bool {
         if at == self.steps.len() {
-            return frame == Frame::HOME;
+            return frame == Frame::HOME || self.ends.contains(&frame);
         }
-        if let Some(&end) = self.ends.get(&(at, frame)) {
+        if let Some(&end) = self.reaches.get(&(at, frame)) {
             return end;
         }
         let end = self.all_at(at, frame).iter().any(|option| self.can_end(at + option.covers, option.frame));
-        self.ends.insert((at, frame), end);
+        self.reaches.insert((at, frame), end);
         end
     }
 

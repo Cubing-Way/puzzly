@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::model::{apart_after, read_turn, round, Model, Turn, Way, BACK, HOME_STATE, STATES, WRISTS, X};
-use super::writings::{writing_plan, Frame, Token};
+use super::writings::{writing_plan, Frame, Token, WritingPlan};
 
 // A state the hands can be in before a move: its number, and its wrist state and class (state = wrists * classes + class)
 #[derive(Clone, Copy)]
@@ -214,7 +214,8 @@ pub(crate) fn writing_floor(model: &Model, moves: &str, fresh: bool, before: &st
 
 // One place in an answer being written: the frame the cube is held in, the layers turned so far that cost more to turn again, the rhythm the move made last
 // leaves, which of R and L are off the middle layer, each hand state's cheapest cost so far, and how each state was reached (the place before as its
-// level and number, the state there and the token made)
+// level and number, the state there and the token made). A place a writing starts from also says whether its first turn is a solve's first (regrips
+// cost less), and for a start other than after `before`, which of the other starts it is
 struct Place {
     frame: Frame,
     turned: u32,
@@ -224,6 +225,8 @@ struct Place {
     from: Vec<Option<(usize, usize)>>,
     state: Vec<usize>,
     token: Vec<Token>,
+    first: bool,
+    start: Option<usize>,
 }
 
 // The places with the same number of the answer's turns made, in the order they were first reached, found by their key
@@ -239,33 +242,59 @@ impl Level {
         let key = (frame.code() as u64) << 32 | (turned as u64) << 8 | (rhythm as u64) << 4 | apart as u64;
         let places = &mut self.places;
         *self.keys.entry(key).or_insert_with(|| {
-            places.push(Place { frame, turned, rhythm, apart, costs: vec![f64::INFINITY; size], from: vec![None; size], state: vec![0; size], token: vec![Token::default(); size] });
+            places.push(Place { frame, turned, rhythm, apart, costs: vec![f64::INFINITY; size], from: vec![None; size], state: vec![0; size], token: vec![Token::default(); size], first: false, start: None });
             places.len() - 1
         })
     }
 }
 
-// What a writing search gave: the cheapest writing and its cost (None: none was left under the limit), and which other limits would have searched the
-// very same way, so given the very same answer: the highest lower bound among the places it went on from, and the lowest among those it gave up on
+// The least the rest of an answer can cost from a place in a frame, whatever the hands do (fingering.ts's restOf in writingSearch): the cheapest way on
+// to the end with each token at its floor less what keeping the rhythm could save it, so a frame the cube has to be brought round from pays for the
+// wide turns that do it. Worked out once per place and frame
+fn rest_floor(model: &Model, plan: &mut WritingPlan, floors: &mut HashMap<(usize, Frame), f64>, at: usize, frame: Frame) -> f64 {
+    if at == plan.length() {
+        return 0.0;
+    }
+    if let Some(&floor) = floors.get(&(at, frame)) {
+        return floor;
+    }
+    let options: Vec<(Option<Turn>, usize, Frame)> = plan.options_at(at, frame).iter().map(|option| (read_turn(option.token.as_str()), option.covers, option.frame)).collect();
+    let mut floor = f64::INFINITY;
+    for (turn, covers, next) in options {
+        let Some(turn) = turn else { continue };
+        floor = floor.min(model.turn_floor(turn) - model.flow[turn.layer].unwrap_or(0.0) + rest_floor(model, plan, floors, at + covers, next));
+    }
+    floors.insert((at, frame), floor);
+    floor
+}
+
+// What a writing search gave: the cheapest writing, its cost and for a writing that starts held another way the rotations made in place of `before`
+// (None: none was left under the limit), and which other limits would have searched the very same way, so given the very same answer: the highest
+// lower bound among the places it went on from, and the lowest among those it gave up on
 pub(crate) struct Searched {
-    pub found: Option<(String, f64)>,
+    pub found: Option<(String, f64, Option<String>)>,
     pub kept: f64,
     pub pruned: f64,
+    pub ends: Vec<Option<(String, f64, Option<String>)>>,
 }
 
 // The cheapest way for the hands to write an answer's face turns when some may be made as wide turns about the `wide` axes or slice turns about the
-// `slice` axes (letters of "xyz"), the cube ending held as it started (fingering.ts's cheapestWriting): its text and its cost with `before` (the grip
-// rotation); None when the plain writing is the only one. Writings that can't cost `limit` or less are given up on the way, and none is found when none
-// is left
+// `slice` axes (letters of "xyz"), the cube ending held as its grip names it (fingering.ts's cheapestWriting): its text and its cost with `before` (the
+// grip rotation) or with one of the `starts` (fingering.ts's writingStarts, each "frame rotations", comma-separated), and the cheapest that ends in each
+// of the `ends` frames (comma-separated: fingering.ts's writingSearch); None when the plain writing is the only one. Writings that can't cost `limit`
+// or less are given up on the way, and none is found when none is left
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &str, fresh: bool, before: &str, limit: f64) -> Option<Searched> {
+pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &str, fresh: bool, before: &str, limit: f64, starts: &str, ends: &str) -> Option<Searched> {
     let turns: Vec<&str> = moves.split_whitespace().collect();
-    let mut plan = writing_plan(&turns, wide, slice)?;
-    // The least the turns from each place on can cost, whatever the writing
-    let mut rest = vec![0.0; turns.len() + 1];
-    for at in (0..turns.len()).rev() {
-        rest[at] = rest[at + 1] + if turns[at].ends_with('2') { model.any_half } else { model.any_quarter };
-    }
+    // The other starts: the frame the cube is held in, and the rotations the hands make to hold it so
+    let starts: Vec<(Frame, &str)> = starts.split(',').filter(|start| !start.is_empty()).filter_map(|start| Some((Frame::from_text(start.get(..6)?)?, start[6..].trim()))).collect();
+    let frames: Vec<Frame> = starts.iter().map(|&(frame, _)| frame).collect();
+    // The frames it may end in: held as its grip names it, then the others
+    let ends: Vec<Frame> = ends.split(',').filter_map(Frame::from_text).collect();
+    let mut plan = writing_plan(&turns, wide, slice, &frames, &ends)?;
+    let ends: Vec<Frame> = std::iter::once(plan.home()).chain(ends).collect();
+    // The least the rest of the answer can cost from each place and frame, whatever the hands do (see rest_floor)
+    let mut rest = HashMap::new();
     let classes = model.classes;
     let size = STATES * classes;
     let mut open = Vec::with_capacity(size);
@@ -275,51 +304,65 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
         Some(turn) if turned & again_bit(Some(turn)) != 0 => model.again[turn.layer].unwrap_or(0.0),
         _ => 0.0,
     };
-    // The moves made first, as the cost makes them: both hands start at home with every finger in place
-    let mut costs = vec![f64::INFINITY; size];
-    costs[HOME_STATE * classes] = 0.0;
-    let mut started = false;
-    let mut turned = 0;
-    let mut last: Option<Turn> = None;
-    let mut apart = 0;
-    for token in before.split_whitespace() {
-        let turn = read_turn(token);
-        let rotation = turn.is_some_and(|turn| turn.rotation());
-        let bits = if rotation { 0 } else { again_bit(turn) };
-        let mut next = vec![f64::INFINITY; size];
-        let first = fresh && !started;
-        let again = (if rotation { 0.0 } else { again_cost(turned, turn) }) + model.leave_after(last, turn);
-        advance(model, turn, &costs, first, first, again, model.open_cost(turn, apart), model.flow_after(last, turn), &mut open, |to, total, _| {
-            if total < next[to] {
-                next[to] = total;
+    // Moves made first, as the cost makes them: both hands start at home with every finger in place. Gives each hand state's cost after them, whether a
+    // turn was made, the layers turned (that cost more to turn again), the move made last and which of R and L are off the middle layer
+    let mut made_first = |text: &str| {
+        let mut costs = vec![f64::INFINITY; size];
+        costs[HOME_STATE * classes] = 0.0;
+        let mut started = false;
+        let mut turned = 0;
+        let mut last: Option<Turn> = None;
+        let mut apart = 0;
+        for token in text.split_whitespace() {
+            let turn = read_turn(token);
+            let rotation = turn.is_some_and(|turn| turn.rotation());
+            let bits = if rotation { 0 } else { again_bit(turn) };
+            let mut next = vec![f64::INFINITY; size];
+            let first = fresh && !started;
+            let again = (if rotation { 0.0 } else { again_cost(turned, turn) }) + model.leave_after(last, turn);
+            advance(model, turn, &costs, first, first, again, model.open_cost(turn, apart), model.flow_after(last, turn), &mut open, |to, total, _| {
+                if total < next[to] {
+                    next[to] = total;
+                }
+            });
+            if !rotation {
+                started = true;
             }
-        });
-        if !rotation {
-            started = true;
+            // A rotation starts the layers turned again over
+            if rotation {
+                turned = 0;
+            }
+            turned |= bits;
+            costs = next;
+            last = turn;
+            apart = apart_after(turn, apart);
         }
-        // A rotation starts the layers turned again over
-        if rotation {
-            turned = 0;
-        }
-        turned |= bits;
-        costs = next;
-        last = turn;
-        apart = apart_after(turn, apart);
-    }
+        (costs, started, turned, last, apart)
+    };
     // Places by how many of the answer's turns are made so far, then by frame, layers turned, the rhythm the last move leaves and which of R and L are off
     let mut levels: Vec<Level> = (0..=turns.len()).map(|_| Level::default()).collect();
-    let home = levels[0].place_on(plan.home(), turned, model.rhythm_of(last), apart, size);
-    levels[0].places[home].costs = costs;
+    // Where the writing starts: after `before`, held as the grip names the cube, then from each other start the rest of the answer can end right from
+    for (start, (frame, rotations)) in std::iter::once((None, (plan.home(), before))).chain(starts.iter().enumerate().map(|(index, &start)| (Some(index), start))) {
+        if start.is_some() && plan.options_at(0, frame).is_empty() {
+            continue;
+        }
+        let (costs, started, turned, last, apart) = made_first(rotations);
+        let number = levels[0].place_on(frame, turned, model.rhythm_of(last), apart, size);
+        let place = &mut levels[0].places[number];
+        place.costs = costs;
+        place.first = fresh && !started;
+        place.start = start;
+    }
     // The highest lower bound of a place gone on from, and the lowest of a place given up on
     let (mut kept, mut pruned) = (f64::NEG_INFINITY, f64::INFINITY);
     for at in 0..turns.len() {
-        // Regrips before a solve's first turn cost less
-        let first = fresh && !started && at == 0;
         // Each way to go on from a place leads to a place further on
         let (done, later) = levels.split_at_mut(at + 1);
         for (number, place) in done[at].places.iter().enumerate() {
+            // Regrips before a solve's first turn cost less
+            let first = at == 0 && place.first;
             // No way on from here can come in under the limit: its cheapest hand state plus the least the turns left cost is over it
-            let least = place.costs.iter().copied().fold(f64::INFINITY, f64::min) + rest[at];
+            let least = place.costs.iter().copied().fold(f64::INFINITY, f64::min) + rest_floor(model, &mut plan, &mut rest, at, place.frame);
             if limit < f64::INFINITY && least > limit + 1e-6 {
                 pruned = pruned.min(least);
                 continue;
@@ -352,27 +395,34 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
             }
         }
     }
-    // The cheapest end state with its hands brought back home, over the places the answer can end in (all held as it started); the first one on a tie
-    let mut best: Option<(usize, usize, f64)> = None;
+    // The cheapest end state with its hands brought back home, over the places the answer can end in, for each frame it may end in (held as its grip
+    // names it first, then the other ends); the first one on a tie
+    let mut bests: Vec<Option<(usize, usize, f64)>> = vec![None; ends.len()];
     for (number, place) in levels[turns.len()].places.iter().enumerate() {
+        let Some(end) = ends.iter().position(|&frame| frame == place.frame) else { continue };
         for state in 0..size {
             let total = place.costs[state] + model.last_regrip * model.hands_moved[state / classes * STATES + HOME_STATE] as f64;
-            if best.is_none_or(|(_, _, best)| round(total) < round(best)) {
-                best = Some((number, state, total));
+            if bests[end].is_none_or(|(_, _, best)| round(total) < round(best)) {
+                bests[end] = Some((number, state, total));
             }
         }
     }
-    let found = best.filter(|(_, _, total)| *total < f64::INFINITY).map(|(mut number, mut state, total)| {
-        // Walk back from it, one token per place
-        let mut tokens = Vec::new();
-        let mut level = turns.len();
-        while let Some((back_level, back_number)) = levels[level].places[number].from[state] {
-            let place = &levels[level].places[number];
-            tokens.push(place.token[state].as_str().to_owned());
-            (level, number, state) = (back_level, back_number, place.state[state]);
-        }
-        tokens.reverse();
-        (tokens.join(" "), round(total))
+    // Each one walked back, one token per place, to the place it started from: its start is left out when it started held as it ends
+    let mut writings = bests.iter().zip(&ends).map(|(best, &end)| {
+        best.filter(|(_, _, total)| *total < f64::INFINITY).map(|(mut number, mut state, total)| {
+            let mut tokens = Vec::new();
+            let mut level = turns.len();
+            while let Some((back_level, back_number)) = levels[level].places[number].from[state] {
+                let place = &levels[level].places[number];
+                tokens.push(place.token[state].as_str().to_owned());
+                (level, number, state) = (back_level, back_number, place.state[state]);
+            }
+            tokens.reverse();
+            let first = &levels[level].places[number];
+            let start = (first.frame != end).then(|| first.start.map_or(before, |index| starts[index].1).to_owned());
+            (tokens.join(" "), round(total), start)
+        })
     });
-    Some(Searched { found, kept, pruned })
+    let found = writings.next().flatten();
+    Some(Searched { found, kept, pruned, ends: writings.collect() })
 }
