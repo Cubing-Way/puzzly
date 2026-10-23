@@ -21,7 +21,7 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
 
 **Order:** 1 → 2: Part 1 moves the scoring into workers, Part 2 then makes it Rust inside those workers. Part 3 doesn't depend on the others. Part 4 only if a faster machine is wanted. Part 5 is optional and for later: it only helps runs of many scrambles (benchmarks), not a single solve.
 **Free:** Parts 1–3 and 5 cost nothing. Part 4 needs a machine, and the free ones are only a bit faster than this PC (see Part 4).
-**How hard:** 1 medium · 2 medium-hard · 3 medium, plus an overnight run · 4 small, plus hosting · 5 none to small.
+**How hard:** 1 medium · 2 medium-hard · 3 medium, plus a run of ~1–2.5 h per set of step options · 4 small, plus hosting · 5 none to small.
 
 ## Goal
 
@@ -102,6 +102,23 @@ Rules for every part:
 - Times on this PC, back to back, with the scoring worker: item 3 level 2 18.5 → 15.6 s (−16%), level 3 ~19.8 s either way; item 4 level 1 at width 4 19.2 → 18.8 s, level 2 at width 2 17.9 s either way. On 2 cores there's little idle time left to fill; more cores would show more (not measured here).
 - Part 1 in all, from Part 2 item 1's state, wall time on 3 scrambles: level 2 ~18.6 → 15.6 s, level 3 ~29.5 → 19.8 s.
 
+### Part 3 — how long the pair file takes to build (measured 2026-10-22, `main` at 9af6355)
+
+- Timed with `bench/out/pair-time.ts` (gitignored, bundled next to `scoring.js`): 96 cases, 3 for each target slot × set of other slots filled (4 × 8), seed 5, each a cube with the cross and those slots solved and the pair anywhere else. Each case is level 2's pair step on that one pair: all four fronts (its twins), 3 extra moves, avoid F B, wide and slice turns on x z; no looks, no cancels into the moves before. Two ways: scored against a bar of 16 places (as the lookahead step's own run), and every listed answer scored (no bar).
+- Cases: with k other slots filled, the corner on 8−k places × 3 twists and the edge on 8−k places × 2 flips, less the solved one: 383, 293, 215, 149 per target slot and set, 2,056 per slot, 8,224 in all. A case in one slot is a case in another seen from another front, and the step already scores every answer in all four fronts, so one slot's 2,056 cases hold them all.
+
+| | Bar of 16 | Every answer |
+| --- | --- | --- |
+| Per case, weighted mean (median, slowest) | 0.52 s (0.28, 3.8) | 1.0 s (0.42, 4.2) |
+| All 8,224 cases | 1.2 h (CPU 1.5 h) | 2.3 h (CPU 2.6 h) |
+| One slot's 2,056 cases | 18 min | 35 min |
+| Answers in the file | ~130k | ~8.9M |
+
+- By slots filled (every answer): none 2.0 s and ~2,450 answers a case, one 0.9 s and ~1,070, two 0.5 s and ~480, three 1.0 s and ~220. Tables for a new set of kept pieces: ~0.7 s, once.
+- All 128 runs (warm-ups included) reach their goal.
+- So "overnight" was too much: ~1–2.5 h for one set of step options. Each set is a file of its own: levels 3–4 (4 extra moves: more answers, not measured), level 1 (no wide or slice turns), level 5 (rotations on x z), pseudo-slotting (offsets).
+- The file's size matters more than the time: every answer is ~8.9M (at a rough 30 bytes each, a few hundred MB as text; ~65 MB for one slot). Only the 16 fastest by turning cost aren't enough for the same solves, since looks and cancels re-rank answers at the time; a bar with a margin over the 16th (as much as looks and cancels can change) sits in between.
+
 ## Part 1 — Parallel work inside one solve
 
 **Why:** one core works while the other waits.
@@ -138,7 +155,7 @@ Rules for every part:
 **Why:** a pair step's answer depends only on where its corner and edge are and which slots are still free: a few thousand cases per slot. Solved once ahead of time, the step becomes a lookup, like OLL and PLL from their alg sets (a few hundredths of a second today). Same idea as `plan.md` Parts 2–3 (case tables), for pairs.
 
 **Do:**
-1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once overnight and written to a file.
+1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3).
 2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs.
 3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time.
 4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today.
@@ -147,7 +164,7 @@ Rules for every part:
 
 **Gain:** level 2 ~2.5×, level 3 ~1.5× (its slow part is the XCross step, which stays searched).
 
-**Size:** medium, plus an overnight run.
+**Size:** medium, plus a run of ~1–2.5 h on this PC per set of step options (level 2's measured; levels 3–4 have 4 extra moves, so more).
 
 ## Part 4 — A server (optional)
 
