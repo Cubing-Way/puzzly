@@ -143,7 +143,7 @@ export interface StepConfig {
   moves: string[]; // moves the search may use, e.g. ["U", "R", "L"]
   maxDepth?: number | null; // longest solution to look for (null = no limit)
   firstFound?: boolean; // stop at the first grip × offset with an answer
-  lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way, comparing one extra move at most while it only judges), fewest moves in total wins (0 = none, the step's own shortest)
+  lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way, comparing one extra move at most while it only judges), fewest moves in total wins (0 = none, the step's own shortest); from 2, the picks of every shorter lookahead are played to the end of the solve too, and the cheapest whole solve wins, so a longer lookahead never ends worse than a shorter one
   candidates?: number; // with lookahead: how many of the step's answers the later steps judge, best first (0 or left out = 64, the most); fewer is quicker, and a solver weighs a handful of crosses, not dozens
   extraMoves?: number; // with lookahead or rank "speed": candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
   avoid?: string; // faces the answer avoids when it can, e.g. "F B" ("" = none): answers that turn none of them come first among those compared
@@ -174,8 +174,9 @@ export interface MethodStepResult extends StepResult {
   ok: boolean; // scramble + done + solution really reaches the step's goal
   // With lookahead: answers compared, later steps they were judged over (at most: an answer that does more, like an XCross, is judged over fewer, so all
   // end at the same point), the winner's total over this step and those (null = no answer got through them), what that total counts (moves when left
-  // out), and by speed how much of it is finding pieces (see speed/look.ts)
-  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank; look?: number } | null;
+  // out), and by speed how much of it is finding pieces (see speed/look.ts). From a lookahead of 2: how many different picks it and the shorter lookaheads
+  // made, played to the end of the solve (left out when they all picked the same answer), and when a shorter lookahead's pick won that way, its length
+  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank; look?: number; played?: number; kept?: number } | null;
 }
 
 // A whole method run

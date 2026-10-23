@@ -200,8 +200,11 @@ function lookaheadCell(run: Run): { text: string; title: string } {
   const takes = ahead.total === null ? "?" : ahead.rank === "speed" ? `a speed cost of ${ahead.total}` : plural(ahead.total, "move");
   // By speed, how much of it is finding the steps' pieces (see the engine's speed/look.ts)
   const looks = ahead.look ? ` (${ahead.look} of it finding pieces)` : "";
-  const title = `Compared ${plural(ahead.candidates, "candidate answer")}; the winner takes ${takes}${looks} over this step and up to the next ${plural(ahead.steps, "step")} (fewer for an answer that already did a later step's part, like an XCross, so every answer is judged up to the same pieces)`;
-  return { text: `${ahead.candidates} → ${total}`, title };
+  // From a lookahead of 2: the different picks of it and the shorter lookaheads, played to the end of the solve, and which one won that way
+  const kept = ahead.kept ? `lookahead ${ahead.kept}'s pick` : "its own pick";
+  const played = ahead.played ? `. Its pick and the shorter lookaheads' (${ahead.played} different answers) were played to the end of the solve, and ${kept} made the cheapest whole solve` : "";
+  const title = `Compared ${plural(ahead.candidates, "candidate answer")}; the winner takes ${takes}${looks} over this step and up to the next ${plural(ahead.steps, "step")} (fewer for an answer that already did a later step's part, like an XCross, so every answer is judged up to the same pieces)${played}`;
+  return { text: `${ahead.candidates} → ${total}${ahead.kept ? ` (lookahead ${ahead.kept})` : ""}`, title };
 }
 
 // One table row for a run: label, moves, speed, offset, lookahead, time, check and solution cells (pick and order them with `cells`)
