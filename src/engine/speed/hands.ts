@@ -52,6 +52,9 @@ const DOUBLE = 1.6;
 const PUSH = 1.2;
 // A thumb push costs more than a flick: a short drag by the finger the hand holds the cube with
 const THUMB = 1.5;
+// Added to a flick (or double flick) of the layer the hand's own thumb lies on, F with the thumb on the front and U with it on top: the thumb holds that
+// layer and has to let go, so it's no plain flick and costs more than a push (at home the other hand's index finger pushes the same turn instead)
+const AGAINST_THUMB = 0.5;
 
 // A cost to two decimals (sums of tenths drift otherwise)
 function tenths(cost: number): number {
@@ -64,19 +67,21 @@ function tricks(fingers: Finger[], turns: Record<string, number>, reach = false)
 }
 
 // A finger's tricks on the layer it lies on: a flick (the turn given), a double flick with the finger beside it, and, only where the finger can get
-// behind the layer (`pushes`), a push the other way; `extra` is added to each where the finger is weaker or the reach is awkward
-function layer(finger: Finger, beside: Finger, flick: string, extra = 0, pushes = false): Trick[] {
+// behind the layer (`pushes`), a push the other way; `extra` is added to each where the finger is weaker or the reach is awkward, and `against` to the
+// flicks alone where they pull the layer the hand's own thumb lies on (see AGAINST_THUMB)
+function layer(finger: Finger, beside: Finger, flick: string, extra = 0, pushes = false, against = 0): Trick[] {
   const push = flick.endsWith("'") ? flick.slice(0, -1) : `${flick}'`;
   return [
-    { turn: flick, fingers: [finger], cost: tenths(FLICK + extra) },
-    { turn: `${flick[0]}2`, fingers: [finger, beside], cost: tenths(DOUBLE + extra) },
+    { turn: flick, fingers: [finger], cost: tenths(FLICK + extra + against) },
+    { turn: `${flick[0]}2`, fingers: [finger, beside], cost: tenths(DOUBLE + extra + against) },
     ...(pushes ? [{ turn: push, fingers: [finger], push: true, reach: true, cost: tenths(PUSH + extra) }] : []),
   ];
 }
 
 // The default hands (first guesses, to be tuned against real solving). The three fingers keep their tricks as the wrist turns, on whichever layers they then lie on:
 // the index finger's U tricks become F tricks with the thumb on the bottom and B tricks with it on top, the ring finger's D tricks become B and F tricks.
-// Pushes don't follow: a finger can only push a layer it reaches from behind (U and D at home, and U for the index finger with the thumb on top).
+// Pushes don't follow: a finger can only push a layer it reaches from behind (U and D at home, and U for the index finger with the thumb on top), or F'
+// at home, where the index finger reaches over the top.
 // Tricks a finger has to leave its place for are reaches (a finger regrip each): F at home with the index finger or the thumb, every slice turn, every push.
 // Every wide turn takes a finger regrip too (see fingering.ts), so only wrist turns and plain flicks (and double flicks) turn without one
 export const HANDS: HandModel = {
@@ -84,10 +89,12 @@ export const HANDS: HandModel = {
     // Thumb on the bottom (after R'): the fingers lie over the top, index on F, middle beside the S slice, ring on B, and each pulls its layer down the right side
     down: [...layer("index", "middle", "F"), ...tricks(["middle"], { S: FLICK }, true), ...layer("ring", "pinky", "B'")],
     // Thumb on the front: the fingers lie on the back, index on U, middle beside the E slice, ring on D, and each pulls its layer round to the right;
-    // the index finger also reaches over the top to F, the thumb pushes F up, and the middle slice is turned from behind (or by the thumb)
+    // the index finger also reaches over the top to F, where it pushes F' or pulls F against its own thumb (slower), the thumb pushes F up, and the
+    // middle slice is turned from behind (or by the thumb)
     home: [
       ...layer("index", "middle", "U", 0, true),
-      ...tricks(["index"], { F: FLICK, M: FLICK }, true),
+      ...tricks(["index"], { F: FLICK + AGAINST_THUMB, M: FLICK }, true),
+      { turn: "F'", fingers: ["index"], push: true, reach: true, cost: PUSH },
       ...tricks(["middle"], { "E'": FLICK + 0.1 }, true),
       ...layer("ring", "pinky", "D'", 0, true),
       ...tricks(["ring"], { "M'": FLICK }, true),
@@ -95,10 +102,11 @@ export const HANDS: HandModel = {
       ...tricks(["thumb"], { "F'": THUMB, "M'": THUMB }, true),
     ],
     // Thumb on top (after R): the fingers lie under the cube, index on B, middle beside the S slice, ring on F, and each pulls its layer up the right side;
-    // the index finger also still reaches U (the U of R U R' U') from behind, and with a longer reach D
+    // the index finger also still reaches U (the U of R U R' U') from behind, where its flicks pull against its own thumb (slower, as F at home), and
+    // with a longer reach D
     up: [
       ...layer("index", "middle", "B"),
-      ...layer("index", "middle", "U", 0, true),
+      ...layer("index", "middle", "U", 0, true, AGAINST_THUMB),
       ...tricks(["index"], { "D'": FLICK }, true),
       ...tricks(["middle"], { "S'": FLICK + 0.2 }, true),
       ...layer("ring", "pinky", "F'"),
