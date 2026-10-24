@@ -116,6 +116,7 @@ function readStep(data: unknown, index: number): StepConfig {
       lookahead,
       candidates,
       extraMoves,
+      pastCut: Boolean(step.pastCut),
       rank,
       style,
       avoid: avoid.join(" "),

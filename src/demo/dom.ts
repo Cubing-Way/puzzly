@@ -34,6 +34,7 @@ export const searchCount = $("search-count");
 export const maxDepthInput = $<HTMLInputElement>("max-depth");
 export const firstFoundBox = $<HTMLInputElement>("first-found");
 export const extraMovesInput = $<HTMLInputElement>("step-extra");
+export const pastCutBox = $<HTMLInputElement>("past-cut");
 export const candidatesInput = $<HTMLInputElement>("candidates-input");
 export const avoidInput = $<HTMLInputElement>("avoid-input");
 export const solveButton = $<HTMLButtonElement>("solve-button");

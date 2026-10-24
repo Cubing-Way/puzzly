@@ -5,7 +5,7 @@ import { type Rank, randomScramble, splitAlternatives, solveFull, solveStep, ste
 // Piece chips and presets
 import { goalLabel } from "./chips";
 // Page elements
-import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox, extraMovesInput, candidatesInput, undoOffsetBox, algsSelect } from "./dom";
+import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDepthInput, firstFoundBox, extraMovesInput, pastCutBox, candidatesInput, undoOffsetBox, algsSelect } from "./dom";
 // Reads the step form
 import { readMoves, currentMode, readBld, chosenMoves, chosenGrips, chosenRank, chosenAvoid, chosenHandTurns, readOffsets, readSolvable } from "./form";
 // Result panel and runs tables
@@ -98,7 +98,7 @@ export async function solve(): Promise<void> {
       const ok = reachesGoal(scramble, joinMoves(done, solution), null, offsets, solvableWith);
       run = { scramble, done, mode, pieces: "", alternatives, alternative: 0, offsets, solvableWith, goal, solution, offset: "", moves: countMoves(solution), ms, ok, bld };
     } else {
-      const options = { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, rank, extraMoves, avoid: chosenAvoid(), ...chosenHandTurns(), undoOffset: undoOffsetBox.checked, algs: algsSelect.value || undefined, onProgress: tables.onProgress };
+      const options = { generatorMoves, maxDepth, rotations, done, offsets, solvableWith, firstFound, ...bld, rank, extraMoves, pastCut: mode === "step" && pastCutBox.checked, avoid: chosenAvoid(), ...chosenHandTurns(), undoOffset: undoOffsetBox.checked, algs: algsSelect.value || undefined, onProgress: tables.onProgress };
       // The best answer alone, or with the other answers it was compared with (best first)
       const results = others > 0 ? await stepCandidates(scramble, pieces, { ...options, maxCandidates: others + 1 }) : [await solveStep(scramble, pieces, options)];
       const ms = performance.now() - started;

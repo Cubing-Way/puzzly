@@ -15,13 +15,15 @@ import { settledGoal } from "../goal/solvable";
 // Engine data shapes
 import type { StepOptions, StepResult } from "../types";
 // Page side of the search worker
-import { askWorker } from "../worker/client";
+import { askWorker, type WorkerRequest } from "../worker/client";
 // What a list that used up its node budget fails with
 import { NODE_LIMIT } from "../worker/protocol";
 // A step's scoring by speed: in the scoring worker, or on the page
 import { scoringSession } from "../worker/scoring-client";
 // Steps answered from an alg set
 import { algCandidates } from "./alg-step";
+// The speed bound a list ranked by speed prunes with
+import { speedBound } from "./bound";
 // One alternative × grip of a step
 import { type Combo, type Answer, knownAnswer, searchCombo, orbitTables } from "./combo";
 // Scoring answers by speed, and what ranking by moves shares with it (order, tiers, offsets reached)
@@ -115,6 +117,12 @@ export const MAX_RANKED = 1000;
 // goal (a long last-layer case) compares fewer extra moves than it was given, or only its shortest answer, instead of searching for minutes
 export const LIST_NODES = 1_000_000;
 
+// By speed, what a step's lists may still give (per combo) and search once they're cut short by those two, when they go on listing only the answers that
+// could beat the step's pick (see stepCandidates): a quarter of the answers and half the nodes again. On 6 seeded solves CFOP level 3 took a third
+// longer with them (13.0 → 17.3 s) and level 2 a twelfth (7.3 → 7.9 s); the back slot's triple sexy needs more than 250k nodes
+export const PRUNED_ANSWERS = 250;
+export const PRUNED_NODES = 500_000;
+
 // Options for listing a step's answers: solveStep's (extraMoves = how much longer than the shortest an answer may be), plus how many to give
 export interface CandidateOptions extends StepOptions {
   maxCandidates?: number; // most answers given (default MAX_CANDIDATES), best first
@@ -200,6 +208,12 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   // shortest first: it sets the bar
   const scoring = bySpeed ? scoringSession(scramble, pieces, scoringOptions(options), { most, apart, bySize }, queue) : null;
   scoring?.add([first]);
+  // By speed, each combo's speed bound once it needs one: its lists leave out the answers no way of making could bring in under the step's bar (see bound.ts)
+  const bounds = new Map<Combo, ReturnType<typeof speedBound>>();
+  const boundOf = (combo: Combo) => {
+    if (!bounds.has(combo)) bounds.set(combo, speedBound(combo, options, deepest));
+    return bounds.get(combo)!;
+  };
   let lists = 0;
   // A step that's already done (0 moves) has nothing else worth trying, and by moves one candidate is just the shortest answer (unless endings may change which that is)
   if (shortest > 0 && (most > 1 || bySpeed || undo || avoid.length)) {
@@ -210,6 +224,44 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     // at a time over every combo, shortest first, while the step's node budget lasts
     const must = Math.min(shortest + countMoves(ending(answer)), longest);
     let budget = LIST_NODES;
+    // One list of a combo's answers (`page`: the worker only lists answers shorter than its maxDepth, hence + 1 from the callers), each answer counted
+    // in `count` and scored by speed or kept by moves: the answers (none when there's no answer within the limit, null when the nodes ran out) and the
+    // nodes they took
+    const listAnswers = async (order: number, combo: Combo, count: number[], page: Pick<WorkerRequest, "maxDepth" | "maxAnswers" | "minDepth" | "after" | "maxNodes" | "speed">): Promise<{ answers: string[] | null; nodes: number }> => {
+      let reply;
+      try {
+        reply = await askWorker(
+          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, orbitTables: orbitTables(combo), ...page },
+          options.onProgress,
+        );
+      } catch (error) {
+        // Out of nodes: no longer answers from here on (any other error: no answer within the limit for this combo)
+        return String((error as Error).message ?? error).includes(NODE_LIMIT) ? { answers: null, nodes: Infinity } : { answers: [], nodes: 0 };
+      }
+      const listed: Listed[] = [];
+      for (const moves of reply.answers ?? []) {
+        count[order]++;
+        // The first answers of a size set where its extra moves end
+        sizeShortest.set(combo.fresh, Math.min(sizeShortest.get(combo.fresh) ?? Infinity, countMoves(moves)));
+        const candidate = { combo, moves };
+        // By speed every answer goes on to be scored, where the fastest of those leaving the cube the same way stays
+        if (bySpeed) {
+          listed.push({ answer: candidate, length: lengthOf(candidate), order, key: "", speed: Infinity });
+          continue;
+        }
+        // By moves an answer leaving the cube like an earlier one is dropped here
+        const key = leaves(candidate);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push({ answer: candidate, length: lengthOf(candidate), order, key, speed: 0 });
+      }
+      scoring?.add(listed);
+      return { answers: reply.answers ?? [], nodes: reply.nodes ?? 0 };
+    };
+    // Where each combo's lists were cut short, if they were: the depth, and the last answer listed there when the combo gave all the answers it may
+    // (running out of nodes cuts every combo short at the depth it was to list next, `next`)
+    const cuts: ({ depth: number; after?: string } | undefined)[] = queue.map(() => undefined);
+    const next = queue.map(() => must);
     for (let depth = must; depth <= deepest && budget > 0; depth++) {
       const extra = depth > must;
       // By moves the answers a step has to list are never cut short
@@ -219,48 +271,41 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
         // that only ever gives its one answer
         if (combo.bound > depth || depth > limitOf(combo) || given[order] >= cap || (extra && combo.twips)) continue;
         if (!given[order]) lists++;
-        try {
-          // Every answer of this combo up to this depth, or on an extra depth only the ones that long (the worker only lists answers shorter than its
-          // maxDepth, hence + 1)
-          const reply = await askWorker(
-            {
-              kind: "list",
-              start: combo.start,
-              targets: combo.targets,
-              moves: options.generatorMoves ?? FACE_MOVES,
-              solvableWith: options.solvableWith,
-              orbitTables: orbitTables(combo),
-              maxDepth: depth + 1,
-              maxAnswers: cap - given[order],
-              ...(extra ? { minDepth: depth } : {}),
-              ...(counted ? { maxNodes: budget } : {}),
-            },
-            options.onProgress,
-          );
-          if (counted) budget -= reply.nodes ?? 0;
-          const listed: Listed[] = [];
-          for (const moves of reply.answers ?? []) {
-            given[order]++;
-            // The first answers of a size set where its extra moves end
-            sizeShortest.set(combo.fresh, Math.min(sizeShortest.get(combo.fresh) ?? Infinity, countMoves(moves)));
-            const candidate = { combo, moves };
-            // By speed every answer goes on to be scored, where the fastest of those leaving the cube the same way stays
-            if (bySpeed) {
-              listed.push({ answer: candidate, length: lengthOf(candidate), order, key: "", speed: Infinity });
-              continue;
-            }
-            // By moves an answer leaving the cube like an earlier one is dropped here
-            const key = leaves(candidate);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            found.push({ answer: candidate, length: lengthOf(candidate), order, key, speed: 0 });
-          }
-          scoring?.add(listed);
-        } catch (error) {
-          // Out of nodes: no longer answers from here on (any other error: no answer within the limit for this combo)
-          if (String((error as Error).message ?? error).includes(NODE_LIMIT)) budget = 0;
-        }
+        // Every answer of this combo up to this depth, or on an extra depth only the ones that long
+        const room = cap - given[order];
+        const listed = await listAnswers(order, combo, given, { maxDepth: depth + 1, maxAnswers: room, ...(extra ? { minDepth: depth } : {}), ...(counted ? { maxNodes: budget } : {}) });
+        if (counted) budget -= listed.nodes;
+        next[order] = depth + 1;
+        if (listed.answers === null) cuts[order] = { depth };
+        else if (listed.answers.length >= room) cuts[order] = { depth, after: listed.answers.at(-1) };
         if (budget <= 0) break;
+      }
+    }
+    // By speed with pastCut, the combos cut short go on where they stopped, less what can't beat the step's own pick (see bound.ts): the answers they
+    // may still give and the nodes they may still search (PRUNED_ANSWERS, PRUNED_NODES) go to answers that could win, not to the next ones in turn
+    // order. They go on once every other list is made, when the scoring the bar waits for is mostly done (the step would wait for it anyway), with the
+    // bar as it then stands, so the lists are the same however the scoring kept up
+    const pruned = queue.map(() => 0);
+    let prunedBudget = PRUNED_NODES;
+    for (const [order, combo] of scoring && options.pastCut ? queue.entries() : []) {
+      const cut = cuts[order] ?? (budget <= 0 && next[order] <= Math.min(deepest, limitOf(combo)) ? { depth: next[order] } : undefined);
+      const bound = cut && boundOf(combo);
+      if (!cut || !bound) continue;
+      const speed = bound(await scoring!.limit(combo, 1));
+      // No answer sure of a place yet, or too many grips without a clean answer to tell apart: nothing more
+      if (!speed) continue;
+      for (let depth = cut.depth; depth <= deepest && pruned[order] < PRUNED_ANSWERS && prunedBudget > 0; depth++) {
+        const extra = depth > must;
+        if (combo.bound > depth || depth > limitOf(combo) || (extra && combo.twips)) continue;
+        const after = depth === cut.depth ? cut.after : undefined;
+        const listed = await listAnswers(order, combo, pruned, {
+          maxDepth: depth + 1,
+          maxAnswers: PRUNED_ANSWERS - pruned[order],
+          ...(after ? { minDepth: countMoves(after), after } : extra ? { minDepth: depth } : {}),
+          maxNodes: prunedBudget,
+          speed,
+        });
+        prunedBudget -= listed.nodes;
       }
     }
   }

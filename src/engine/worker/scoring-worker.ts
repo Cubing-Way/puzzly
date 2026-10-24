@@ -179,6 +179,11 @@ export function runScoringWorker(options: ScoringWorkerOptions): void {
         scorings.set(request.id, { begin: request, scorer: makeScorer(request.scramble, request.pieces, request.options, request.places, share), combos, share, chunks: [], next: 0, given: 0, running: false, idle: [] });
       } else if (scoring && request.kind === "add") {
         add(scoring, request.answers);
+      } else if (request.kind === "limit") {
+        // Every answer added so far scored, so the bar is the same however the scoring kept up (a scoring that failed leaves nothing out)
+        if (scoring && (scoring.running || scoring.next < scoring.chunks.length)) await new Promise<void>((done) => scoring.idle.push(done));
+        const limit = scoring && !scoring.error ? scoring.scorer.limit(request.combos.map((place) => scoring.combos[place]), request.places) : { bar: Infinity, clean: [], look: 0 };
+        scope.postMessage({ id: request.id, limit } satisfies ScoringReply);
       } else if (request.kind === "finish") {
         if (!scoring) throw new Error("Scoring never began.");
         // Every chunk scored, the helpers told to drop it, then the ranked answers with their combos as places in the step's list
@@ -200,7 +205,7 @@ export function runScoringWorker(options: ScoringWorkerOptions): void {
     }
   };
   // Messages are handled one at a time, in order, once the cube definition and the Rust code are loaded (if they can't be, each finish says why); answers
-  // added go out to the helpers at once, and a finish waits for every answer of its scoring to be scored
+  // added go out to the helpers at once, and a limit or a finish waits for every answer of its scoring to be scored
   const ready = Promise.all([loadPuzzle(), loadWasm(options.wasm).then(() => useRustSpeed(SpeedModel))]);
   let queue: Promise<void> = Promise.resolve();
   scope.onmessage = ({ data }: MessageEvent<ScoringRequest>) => {
@@ -208,6 +213,7 @@ export function runScoringWorker(options: ScoringWorkerOptions): void {
       () => handle(data),
       (error) => {
         if (data.kind === "finish") scope.postMessage({ id: data.id, error: `The scoring worker couldn't load: ${String(error?.message ?? error)}` } satisfies ScoringReply);
+        else if (data.kind === "limit") scope.postMessage({ id: data.id, limit: { bar: Infinity, clean: [], look: 0 } } satisfies ScoringReply);
       },
     );
   };

@@ -1,7 +1,7 @@
 // Known algs against the engine (bench/out/known-algs.js): each alg solvers agree on is undone on a solved cube and given back as a step ranked by speed.
 // Says whether the engine's pick is the known alg as written, its turns in another writing, or another alg, and how the known one scores
 // Usage: node bench/out/known-algs.js [groups: f2l,oll,pll; default f2l,oll] [extra moves, default 2] [case names to run, a regular expression]
-// PATCH='{"tilt":1}' tries other numbers of the hand model (whole objects for layers and such)
+// PATCH='{"tilt":1}' tries other numbers of the hand model (whole objects for layers and such); PAST_CUT=1 lists past a cut (see StepOptions.pastCut)
 import { inProcessWorker } from "./setup";
 import { nodeHelper, nodeScoringWorker } from "./node-helper";
 import { CASES } from "./known-cases";
@@ -94,7 +94,7 @@ for (const item of CASES) {
     // The engine's pick by speed in each setup
     const picks: string[] = [];
     for (const [label, more] of Object.entries(SETUPS)) {
-      const [result] = await stepCandidates(scramble, pieces, { ...options, ...more, rank: "speed", extraMoves: extra, maxCandidates: 1 });
+      const [result] = await stepCandidates(scramble, pieces, { ...options, ...more, rank: "speed", extraMoves: extra, maxCandidates: 1, pastCut: Boolean(process.env.PAST_CUT) });
       const moves = result.wide ?? result.solution.toString();
       const speed = speedCost(moves);
       const kind: Kind = item.algs.some((alg) => engineText(alg) === moves) ? "written" : toFaces(moves).faces === known ? "same" : speed < fastest ? "faster" : "other";

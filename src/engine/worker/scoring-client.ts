@@ -5,6 +5,8 @@
 import type { Combo } from "../step/combo";
 // A step's scoring by speed, the same on the page and in the worker
 import { makeScorer, type Listed, type Places, type ScoringOptions } from "../step/scoring";
+// The bar a list's speed bound prunes with
+import type { Limit } from "../step/bound";
 // Messages to and from the scoring worker
 import type { ComboData, ScoringReply, ScoringWorker } from "./protocol";
 
@@ -68,9 +70,12 @@ async function givePageATurn(): Promise<void> {
   lastTurnGiven = performance.now();
 }
 
-// A step's scoring by speed: its listed answers are added as they come (the step's own shortest first), then `finish` gives them ranked (see makeScorer)
+// A step's scoring by speed: its listed answers are added as they come (the step's own shortest first), `limit` gives the bar a combo's answers have to
+// come in under to make the first `places` (all by default) once all of them are scored (with the grips a clean answer was given in), then `finish`
+// gives them ranked (see makeScorer)
 export interface ScoringSession {
   add(entries: Listed[]): void;
+  limit(combo: Combo, places?: number): Promise<Limit>;
   finish(): Promise<Listed[]>;
 }
 
@@ -80,13 +85,21 @@ export function scoringSession(scramble: string, pieces: string, options: Scorin
   if (!startWorker) {
     const scorer = makeScorer(scramble, pieces, options, places);
     const pending: Listed[] = [];
+    // Score every answer added so far, in order
+    const scoreAll = async () => {
+      for (const raw of pending.splice(0)) {
+        scorer.add(raw);
+        await givePageATurn();
+      }
+    };
     return {
       add: (entries) => void pending.push(...entries),
+      limit: async (combo, places) => {
+        await scoreAll();
+        return scorer.limit([combo, ...(combo.twins ?? [])], places);
+      },
       finish: async () => {
-        for (const raw of pending) {
-          scorer.add(raw);
-          await givePageATurn();
-        }
+        await scoreAll();
         return scorer.rank();
       },
     };
@@ -121,6 +134,13 @@ export function scoringSession(scramble: string, pieces: string, options: Scorin
   return {
     add: (entries) => {
       if (entries.length) worker.postMessage({ id, kind: "add", answers: entries.map((entry) => [placeOf.get(entry.answer.combo)!, entry.answer.moves, entry.length, entry.order]) });
+    },
+    limit: async (combo, places) => {
+      const reply = await new Promise<ScoringReply>((resolve, reject) => {
+        waiting.set(id, { resolve, reject });
+        worker.postMessage({ id, kind: "limit", combos: [combo, ...(combo.twins ?? [])].map((each) => placeOf.get(each)!), places });
+      });
+      return reply.limit ?? { bar: Infinity, clean: [], look: 0 };
     },
     finish: async () => {
       const reply = await new Promise<ScoringReply>((resolve, reject) => {

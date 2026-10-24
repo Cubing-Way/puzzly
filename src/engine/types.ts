@@ -56,6 +56,10 @@ export interface StepOptions {
   // Answers up to this many moves longer than the shortest count too: for rank "speed", and for listing candidates (default 0: the shortest answers only).
   // They're listed one move longer at a time while the step's search budget lasts (LIST_NODES in step.ts), so a step far from its goal may compare fewer
   extraMoves?: number;
+  // By speed: once a combo's list is cut short (it gave the answers a step may list, or the step spent its search budget: MAX_RANKED and LIST_NODES in
+  // step.ts), go on listing only answers that could beat the step's pick, with PRUNED_ANSWERS more per combo and PRUNED_NODES more (see stepCandidates).
+  // It reaches answers far on in turn order (a triple sexy 1,815 answers on), and costs time where lists are cut (default: off, the list stops there)
+  pastCut?: boolean;
   // Faces the answer avoids when it can, e.g. ["F", "B"] for a first-two-layers pair: among the answers compared (the shortest and those up to extraMoves
   // longer), by moves one that turns none of them comes before all others, whatever its length. By speed an answer that turns some only loses outright
   // to one held the same way that doesn't: rotating to avoid them, staying, and turning them where nothing held that way does without are ranked
@@ -146,6 +150,7 @@ export interface StepConfig {
   lookahead?: number; // later steps that judge this step's answers: each candidate is followed by that many steps (each its own shortest way, comparing one extra move at most while it only judges), fewest moves in total wins (0 = none, the step's own shortest); from 2, the picks of every shorter lookahead are played to the end of the solve too, and the cheapest whole solve wins, so a longer lookahead never ends worse than a shorter one
   candidates?: number; // with lookahead: how many of the step's answers the later steps judge, best first (0 or left out = 64, the most); fewer is quicker, and a solver weighs a handful of crosses, not dozens
   extraMoves?: number; // with lookahead or rank "speed": candidates may be this many moves longer than the step's shortest answer (0 = the shortest answers only)
+  pastCut?: boolean; // by speed: once a list is cut short by the step's cap on answers or its search budget, go on listing only answers that could beat the step's pick (slower where lists are cut; default off)
   avoid?: string; // faces the answer avoids when it can, e.g. "F B" ("" = none): answers that turn none of them come first among those compared
   wideAxes?: string; // by speed, axes its answer may make wide turns about, e.g. "x" or "x z" ("" = none): r … r' and f … f' that cancel out, or R as Lw with an x rotation (see rotationAxes)
   sliceAxes?: string; // by speed, axes its answer may make slice turns about: "x" = M, "y" = E, "z" = S ("" = none; left out = the same as wideAxes, as older method files mean)

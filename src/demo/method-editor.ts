@@ -17,6 +17,7 @@ import {
   judgedInput,
   algsSelect,
   extraMovesInput,
+  pastCutBox,
   addStepButton,
   saveMethodButton,
   exportMethodButton,
@@ -172,6 +173,7 @@ function loadMethod(next: Method): void {
   lookaheadInput.value = "0";
   judgedInput.value = "64";
   extraMovesInput.value = "2";
+  pastCutBox.checked = false;
   showRank("speed");
   algsSelect.value = "";
   showAvoid("");

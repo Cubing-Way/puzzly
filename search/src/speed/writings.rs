@@ -8,15 +8,15 @@ const CYCLES: [&[u8; 4]; 3] = [b"FUBD", b"FLBR", b"URDL"];
 
 // A turn the hands make on more than one layer: its axis (0 = x, 1 = y, 2 = z), its token, the face turns it makes (a prime = the other way round) and the
 // rotation it leaves the cube in. Lw is R then x': the left hand turns two layers and the right one stays; M is R and L' with the middle staying, x' too
-struct Form {
-    axis: usize,
-    token: &'static str,
-    faces: &'static [&'static str],
-    rotation: &'static str,
+pub(crate) struct Form {
+    pub axis: usize,
+    pub token: &'static str,
+    pub faces: &'static [&'static str],
+    pub rotation: &'static str,
 }
 
 // Every such turn, by axis
-const WRITTEN: [Form; 9] = [
+pub(crate) const WRITTEN: [Form; 9] = [
     Form { axis: 0, token: "Lw", faces: &["R"], rotation: "x'" },
     Form { axis: 0, token: "Rw", faces: &["L"], rotation: "x" },
     Form { axis: 0, token: "M", faces: &["R", "L'"], rotation: "x'" },
@@ -29,7 +29,7 @@ const WRITTEN: [Form; 9] = [
 ];
 
 // What follows a turn's letter, by its quarter turns clockwise (1 = plain, 2 = half, 3 = prime)
-const SUFFIXES: [&str; 4] = ["", "", "2", "'"];
+pub(crate) const SUFFIXES: [&str; 4] = ["", "", "2", "'"];
 
 // The sides of a frame, in order
 const SIDES: &[u8; 6] = b"UDRLFB";
@@ -40,15 +40,15 @@ pub(crate) struct Frame([u8; 6]);
 
 impl Frame {
     // The frame the answer is named in
-    const HOME: Frame = Frame(*SIDES);
+    pub(crate) const HOME: Frame = Frame(*SIDES);
 
     // The side a face of the cube is on
-    fn side_of(&self, face: u8) -> u8 {
+    pub(crate) fn side_of(&self, face: u8) -> u8 {
         SIDES[self.0.iter().position(|&each| each == face).unwrap_or(0)]
     }
 
     // The frame after a rotation about an axis, `quarters` quarter turns clockwise (x' = three): each face of the cycle goes to the next one's side
-    fn rotate(&self, axis: usize, quarters: usize) -> Frame {
+    pub(crate) fn rotate(&self, axis: usize, quarters: usize) -> Frame {
         let cycle = CYCLES[axis];
         let place = |side: u8| SIDES.iter().position(|&each| each == side).unwrap_or(0);
         let mut sides = self.0;
@@ -95,7 +95,7 @@ impl Token {
 }
 
 // A turn or rotation given for one quarter turn clockwise (or a prime), made `quarters` times (1–3): its text, and its quarter turns clockwise
-fn times(turn: &str, quarters: usize) -> (String, usize) {
+pub(crate) fn times(turn: &str, quarters: usize) -> (String, usize) {
     match turn.strip_suffix('\'') {
         Some(plain) => (format!("{plain}{}", SUFFIXES[4 - quarters]), 4 - quarters),
         None => (format!("{turn}{}", SUFFIXES[quarters]), quarters),

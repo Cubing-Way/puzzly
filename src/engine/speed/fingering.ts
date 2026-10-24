@@ -538,7 +538,7 @@ const ROTATION_TOKEN = /^[xyz][2']?$/;
 // later step as the hands hold it now, with no rotation, when every rotation of the grip is about an axis the wide or slice turns may turn about (so
 // `Dw R' U R` for `y' U R' U R`). None when `before` isn't made of rotations alone. Worked out once per case
 const startsMade = new Map<string, { frame: string; rotations: string }[]>();
-function writingStarts(fresh: boolean, before: string, axes: string[]): { frame: string; rotations: string }[] {
+export function writingStarts(fresh: boolean, before: string, axes: string[]): { frame: string; rotations: string }[] {
   const key = `${fresh}/${before}/${axes.join("")}`;
   let starts = startsMade.get(key);
   if (!starts) {
@@ -774,6 +774,27 @@ function anyFloors(hands: HandModel, ready: Ready): { quarter: number; half: num
       ...["M", "E", "S"].map((layer) => turnFloor({ layer, wide: false, quarters }, hands, ready) / 2),
     );
   return { quarter: Math.min(least(1), least(3)), half: least(2) };
+}
+
+// The least each token the hands may make costs, for the speed bound a step's lists prune with (see step/bound.ts): a face, wide or slice turn at its
+// floor less what keeping the rhythm could save it (as the writing search's own bound counts it), and a rotation as speedFloor counts it after a
+// solve's first turn. Worked out once per model
+const tokenFloorsMade = new WeakMap<HandModel, Record<string, number>>();
+export function tokenFloors(hands: HandModel = HANDS): Record<string, number> {
+  let floors = tokenFloorsMade.get(hands);
+  if (!floors) {
+    const ready = readyFor(hands);
+    floors = {};
+    for (const family of ["U", "D", "R", "L", "F", "B", "Uw", "Dw", "Rw", "Lw", "Fw", "Bw", "M", "E", "S"]) {
+      for (const suffix of ["", "2", "'"]) {
+        const turn = readTurn(family + suffix)!;
+        floors[family + suffix] = turnFloor(turn, hands, ready) - (hands.flow[turn.layer] ?? 0);
+      }
+    }
+    for (const axis of ROTATIONS) for (const suffix of ["", "2", "'"]) floors[axis + suffix] = speedFloor(axis + suffix, hands);
+    tokenFloorsMade.set(hands, floors);
+  }
+  return floors;
 }
 
 // A lower bound of what cheapestWriting can give for an answer (plain face turns) after its grip rotation: no writing of it is cheaper. With `angles`

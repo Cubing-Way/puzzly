@@ -41,16 +41,18 @@ pub(crate) struct GoalCheck<'a> {
 }
 
 // Options of a search or list request: answers shorter than maxDepth (twips style), a node budget, how many answers a list may give,
-// and for listing page by page: answers no shorter than minDepth, coming after the answer `after` (its move text) in the list's order
+// for listing page by page: answers no shorter than minDepth, coming after the answer `after` (its move text) in the list's order,
+// and for a step ranked by speed the bound its list prunes with (see bound.rs)
 pub(crate) struct SearchOptions {
     pub limit: u64,
     pub max_nodes: u64,
     pub max_answers: usize,
     pub min_depth: u64,
     pub after: Option<String>,
+    pub speed: Option<serde_json::Value>,
 }
 
-// Read a request's options (missing ones: no limit, no budget, every answer, from the shortest, from the first)
+// Read a request's options (missing ones: no limit, no budget, every answer, from the shortest, from the first, no speed bound)
 pub(crate) fn read_options(options_json: &str) -> Result<SearchOptions, String> {
     let options: serde_json::Value = serde_json::from_str(options_json).map_err(|e| e.to_string())?;
     Ok(SearchOptions {
@@ -59,6 +61,7 @@ pub(crate) fn read_options(options_json: &str) -> Result<SearchOptions, String> 
         max_answers: options["maxAnswers"].as_u64().unwrap_or(u64::MAX).clamp(1, usize::MAX as u64) as usize,
         min_depth: options["minDepth"].as_u64().unwrap_or(0),
         after: options["after"].as_str().map(str::to_owned),
+        speed: options.get("speed").filter(|speed| !speed.is_null()).cloned(),
     })
 }
 
@@ -110,6 +113,11 @@ pub(crate) fn deepen(tables: &[Slot], starts: &[(Units, u64)], whole: (Units, Un
     let Some(mut bound) = ida.start(starts) else {
         return (Err(NO_SOLUTION), 0, None);
     };
+    // A list ranked by speed leaves out the paths no answer can come in under its bar from
+    let speed = options.speed.as_ref().filter(|_| list).and_then(|speed| SpeedBound::read(speed, &check.full.turns));
+    if let Some(speed) = &speed {
+        ida.bound_by(speed);
+    }
     // A list page starts at its first depth (shorter answers were on earlier pages)
     bound = bound.max(min_depth.min(MAX_LENGTH as u64) as u8);
     // Deepen one move at a time until the first answer (or enough answers) turns up, the limit is reached, or no state was cut by the bound (nothing deeper exists)

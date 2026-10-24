@@ -8,7 +8,7 @@ mod model;
 // The search over hand positions, its floors, and an answer's cheapest writing
 mod fingering;
 // The ways an answer can be written with wide and slice turns
-mod writings;
+pub(crate) mod writings;
 
 use model::Model;
 

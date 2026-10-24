@@ -21,6 +21,8 @@ import { frameAfter, undoRotations, turnsBefore } from "../speed/writings";
 import { LOOK, hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount, inspectionLook } from "../speed/look";
 // Engine data shapes
 import type { Goal, StepOptions } from "../types";
+// The bar a list's speed bound prunes with
+import type { Limit } from "./bound";
 // One alternative × grip of a step
 import type { Combo, Answer } from "./combo";
 
@@ -232,12 +234,15 @@ export function moveOrders(moves: string): string[] {
 export type Sures = [number, { key: string; speed: number }[]][];
 
 // A step's scoring by speed: `add` scores each listed answer in turn (the step's own shortest first: it sets the bar), `rank` gives them fastest first,
-// `sures` the answers sure of a place so far (which set the bars), and `resume` goes on from another scoring's (a helper, from its scoring worker's)
+// `sures` the answers sure of a place so far (which set the bars), `resume` goes on from another scoring's (a helper, from its scoring worker's), and
+// `limit` the bar an answer of some combos has to come in under so far to make the first `places` of its size (all of them by default), with the grips a
+// clean answer was given in (a list's speed bound, see bound.ts)
 export interface Scorer {
   add(raw: Listed): void;
   rank(): Listed[];
   sures(): Sures;
   resume(sures: Sures): void;
+  limit(combos: Combo[], places?: number): Limit;
 }
 
 // Looks and writings worked out ahead: an answer's look by its combo and moves, a writing by its grip rotation and plain moves, with the limit it was
@@ -335,6 +340,11 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   };
   const lookHere = (held: Answer): number => {
     const { combo } = held;
+    const known = comboLook(combo);
+    return known.own + (known.groups.length ? nextLook(combo.held.applyAlg(joinMoves(held.moves, ending(held))), known.groups) : 0);
+  };
+  // A combo's own look (the same for each of its answers) and the next step's piece groups, worked out once
+  const comboLook = (combo: Combo): { own: number; groups: Goal[] } => {
     let known = comboLooks.get(combo);
     if (!known) {
       // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
@@ -346,7 +356,7 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
       known = { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
       comboLooks.set(combo, known);
     }
-    return known.own + (known.groups.length ? nextLook(combo.held.applyAlg(joinMoves(held.moves, ending(held))), known.groups) : 0);
+    return known;
   };
   // An answer's cheapest writing with wide and slice turns that costs `limit` or less, after its grip rotation or with the cube held another way at its
   // start, and with `ends` the cheapest ending held each of those ways (see writingSearch): worked out ahead by a helper under a limit that searches the
@@ -484,5 +494,17 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
       if (list.length === room) bars.set(size, list[room - 1].speed);
     }
   };
-  return { add, rank, sures: () => copy([...sures]), resume };
+  // The highest of the combos' bars for their first `places` (an answer listed for one is scored held as each: the slowest of that many sure answers of
+  // its size, so with all the places, its bar), every grip some clean answer was given in, and the least any answer of them pays for finding pieces
+  // (its combo's own look, and the next step's at its least: its pieces in plain sight)
+  const leastLook = (combo: Combo) => comboLook(combo).own + (comboLook(combo).groups.length ? lookCost(0) : 0);
+  const limit = (combos: Combo[], places = room): Limit => {
+    const first = Math.min(places, room);
+    const barIn = (combo: Combo) => {
+      const sure = sures.get(sizeOf({ combo, moves: "" })) ?? [];
+      return sure.length >= first ? sure[first - 1].speed : Infinity;
+    };
+    return { bar: Math.max(...combos.map(barIn)), clean: [...cleanHolds], look: looking ? Math.min(...combos.map(leastLook)) : 0 };
+  };
+  return { add, rank, sures: () => copy([...sures]), resume, limit };
 }

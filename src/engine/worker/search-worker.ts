@@ -9,6 +9,8 @@ import { HELPER_MB, MAX_HELPERS, TABLE_DATABASE } from "./limits";
 import { HelperPool, type HelperWorker, type ParallelGoal } from "./parallel";
 // Requests as the engine sends them
 import type { SearchRequest } from "./protocol";
+// A list's speed bound
+import type { SpeedBoundData } from "../step/bound";
 // Solvers and tables kept between searches
 import { entryFor, planLimit, tableKey, tableOf, watchSolvers, type Entry } from "./solvers";
 // Tables stored in this browser
@@ -54,13 +56,14 @@ async function measure(request: SearchRequest): Promise<{ bound: number | null; 
   return { bound: null, exact: false };
 }
 
-// Options a search or list takes (twips style, plus a node budget and list paging)
+// Options a search or list takes (twips style, plus a node budget, list paging and a list's speed bound)
 interface SearchOptions {
   maxDepth?: number;
   maxAnswers?: number;
   minDepth?: number;
   after?: string;
   maxNodes?: number;
+  speed?: SpeedBoundData;
 }
 
 // A split entry's goal as helpers rebuild it: the same plan inputs, and its sub-tables (entry.uses, in sub-table order) when they need copies
@@ -114,6 +117,7 @@ async function search(request: SearchRequest): Promise<string> {
     ...(request.maxAnswers === undefined ? {} : { maxAnswers: request.maxAnswers }),
     ...(request.minDepth === undefined ? {} : { minDepth: request.minDepth }),
     ...(request.after === undefined ? {} : { after: request.after }),
+    ...(request.speed === undefined ? {} : { speed: request.speed }),
   };
   // Only a split search counts nodes, so only it takes the request's budget
   const split = entry.solver instanceof SplitSearch ? entry.solver : null;

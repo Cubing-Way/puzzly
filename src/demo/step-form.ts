@@ -14,6 +14,7 @@ import {
   lookaheadInput,
   judgedInput,
   extraMovesInput,
+  pastCutBox,
   repeatBox,
   algsSelect,
   styleSelect,
@@ -67,6 +68,8 @@ export function stepFromForm(number: number): StepConfig | null {
       // How many of its answers the lookahead judges (64 = the most, saved as 0)
       candidates: wholeNumber(judgedInput.value) >= 64 ? 0 : Math.max(1, wholeNumber(judgedInput.value)),
       extraMoves: wholeNumber(extraMovesInput.value),
+      // By speed: go on past a list cut short, with only answers that could win
+      pastCut: pastCutBox.checked,
       // What its best answer is: the fewest moves, or the fastest to turn
       rank: chosenRank(),
       // Axes its answer may make wide turns, slice turns and rotations about, by speed
@@ -106,6 +109,7 @@ export function stepToForm(step: StepConfig): void {
   lookaheadInput.value = String(step.lookahead ?? 0);
   judgedInput.value = String(step.candidates || 64);
   extraMovesInput.value = String(step.extraMoves ?? 0);
+  pastCutBox.checked = Boolean(step.pastCut);
   showRank(step.rank ?? "moves");
   showAvoid(step.avoid ?? "");
   // Hand turns: slices and rotations left out follow the wide axes, as older method files mean
@@ -150,6 +154,7 @@ export function stepSummary(step: StepConfig): string {
     step.rank === "speed" ? handTurnsSummary(step) : "",
     step.lookahead ? `lookahead ${step.lookahead}${step.candidates ? ` over ${step.candidates} answers` : ""}` : "",
     step.extraMoves && (step.lookahead || step.rank === "speed" || step.avoid) ? `+${step.extraMoves} moves` : "",
+    step.pastCut && step.rank === "speed" ? "past the cap" : "",
     step.repeat ? "repeat until done" : "",
   ]
     .filter(Boolean)

@@ -6,13 +6,16 @@ import type { KPatternData } from "cubing/kpuzzle";
 import type { Places, ScoringOptions, Sures } from "../step/scoring";
 // What a writing search gives (with its bounds)
 import type { WritingSearch } from "../speed/fingering";
+// A list's speed bound, and the bar and clean grips it's made from
+import type { Limit, SpeedBoundData } from "../step/bound";
 // Table progress and goals, as the engine has them
 import type { Goal, TableProgress } from "../types";
 
 // One request to the worker: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts), or an object with that list
 // plus "solvableWith" moves and / or "orbitTables" (BLD steps: split tables also get whole-orbit tables up to that many states); the text is the cache key as it is;
 // "measure" asks how far the start is (exact distance, or a lower bound), "search" asks for the moves, "list" for every answer shorter than maxDepth (up to maxAnswers;
-// one page of a long list: answers from minDepth moves on that come after the answer `after`; with maxNodes it fails with NODE_LIMIT once it has searched that many nodes)
+// one page of a long list: answers from minDepth moves on that come after the answer `after`; with maxNodes it fails with NODE_LIMIT once it has searched that many nodes;
+// with `speed`, a list ranked by speed leaves out the answers that can't come in under the step's bar, see step/bound.ts)
 export interface SearchRequest {
   id: number;
   kind: "measure" | "search" | "list";
@@ -25,6 +28,7 @@ export interface SearchRequest {
   minDepth?: number;
   after?: string;
   maxNodes?: number;
+  speed?: SpeedBoundData;
 }
 
 // What a search or list that used up its node budget fails with
@@ -92,17 +96,20 @@ export interface ScoringBegin {
   combos: ComboData[];
 }
 
-// One message to the scoring worker, for one step's scoring (`id`): begin it, add answers as they're listed (scored in the order they come), or finish it
-// (the ranked answers come back)
+// One message to the scoring worker, for one step's scoring (`id`): begin it, add answers as they're listed (scored in the order they come), ask for the
+// bar some combos' answers have to come in under once every answer added is scored (`combos`: their places in the step's list; `places`: to make that
+// many first places, all of them when left out), or finish it (the ranked answers come back)
 export type ScoringRequest =
   | ScoringBegin
   | { id: number; kind: "add"; answers: ListedData[] }
+  | { id: number; kind: "limit"; combos: number[]; places?: number }
   | { id: number; kind: "finish" };
 
-// The scoring worker's answer to a finish: the ranked answers, or the error that stopped the scoring
+// The scoring worker's answer to a finish: the ranked answers, or the error that stopped the scoring; to a limit, the bar and the clean grips
 export interface ScoringReply {
   id: number;
   ranked?: RankedData[];
+  limit?: Limit;
   error?: string;
 }
 

@@ -47,6 +47,12 @@ pub(super) struct Ida<'a> {
     pub(super) prefix: Vec<usize>,
     // The path the search was about to search when the node budget ran out
     pub(super) stopped: Vec<usize>,
+    // A list ranked by speed: its bound, and at each depth the path's least cost in each frame, how its joining of the moves before stands and the
+    // grips it may still be clean in (see bound.rs)
+    pub(super) speed: Option<&'a SpeedBound>,
+    pub(super) costs: Vec<f64>,
+    pub(super) joins: Vec<Join>,
+    pub(super) holds: Vec<u64>,
 }
 
 impl<'a> Ida<'a> {
@@ -89,7 +95,31 @@ impl<'a> Ida<'a> {
             resuming: false,
             prefix: vec![],
             stopped: vec![],
+            speed: None,
+            costs: vec![],
+            joins: vec![],
+            holds: vec![],
         }
+    }
+
+    // Leave out the paths no answer can come in under a speed bound's bar from (a list ranked by speed)
+    pub(super) fn bound_by(&mut self, speed: &'a SpeedBound) {
+        let depths = MAX_LENGTH as usize + 1;
+        self.costs = vec![0.0; depths * FRAMES];
+        self.joins = vec![Join::default(); depths];
+        self.holds = vec![0; depths];
+        (self.joins[0], self.holds[0]) = speed.root(&mut self.costs[..FRAMES]);
+        self.speed = Some(speed);
+    }
+
+    // Whether a child of the path at `depth` is left out by the speed bound (its state is kept for the depth below), with `remaining` turns after it
+    fn speed_prunes(&mut self, speed: &SpeedBound, depth: usize, turn: usize, remaining: u8) -> bool {
+        let (done, later) = self.costs.split_at_mut((depth + 1) * FRAMES);
+        let before = &done[depth * FRAMES..];
+        let earlier = (depth > 0).then(|| (&done[(depth - 1) * FRAMES..depth * FRAMES], self.path[depth - 1], self.joins[depth].free));
+        let (prunes, join, holds) = speed.child(before, earlier, self.joins[depth], self.holds[depth], turn, remaining, &mut later[..FRAMES]);
+        (self.joins[depth + 1], self.holds[depth + 1]) = (join, holds);
+        prunes
     }
 
     // Set each table's start state and its exact distance; gives the largest distance (the first bound), or None when some table can't reach a target
@@ -213,6 +243,13 @@ impl<'a> Ida<'a> {
                     continue;
                 }
                 self.resuming = turn == self.resume[depth];
+            }
+            // Ranked by speed: no answer through this child can come in under the bar (a deeper bound might, so it counts as cut)
+            if let Some(speed) = self.speed {
+                if self.speed_prunes(speed, depth, turn, remaining - 1) {
+                    self.cut = true;
+                    continue;
+                }
             }
             for t in 0..count {
                 let skipped = self.bounds[here + t] + 1 < remaining;

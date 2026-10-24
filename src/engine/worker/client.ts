@@ -8,6 +8,8 @@ import { kpuzzle } from "../core/puzzle";
 import type { TableProgress } from "../types";
 // Messages to and from the worker
 import type { SearchReply, SearchWorker } from "./protocol";
+// A list's speed bound
+import type { SpeedBoundData } from "../step/bound";
 
 // How the app using the engine runs its search worker
 export interface SearchClientOptions {
@@ -31,6 +33,7 @@ export interface WorkerRequest {
   maxNodes?: number; // list only: give up (an error with NODE_LIMIT) once the search has visited this many nodes (a goal answered from one table never does)
   solvableWith?: string[]; // moves that may finish the goal later: the worker closes the targets under them (none = the targets as they are)
   orbitTables?: number; // untouched (BLD) steps: split tables also get one table per piece type holding all its pieces, up to this many states (0 / none = no such tables)
+  speed?: SpeedBoundData; // list only, ranked by speed: leave out the answers that can't come in under the step's bar (see step/bound.ts)
 }
 
 // Idle time before the worker is stopped, unless the app sets its own
@@ -129,6 +132,7 @@ export function askWorker(request: WorkerRequest, onProgress?: (progress: TableP
       minDepth: request.minDepth,
       after: request.after,
       maxNodes: request.maxNodes,
+      speed: request.speed,
     });
   });
 }

@@ -13,12 +13,15 @@ use crate::solvable::{close, read_orbit_tables, read_targets, table_targets};
 use crate::symmetry::{Rotation, Rotations};
 use crate::table::{near_values, DistanceTable, TableCore, UNSEEN};
 
-// The parts of a split search: how a pattern becomes a sub-table's, which pieces each sub-table keeps, the IDA* driver, and one IDA* run
+// The parts of a split search: how a pattern becomes a sub-table's, which pieces each sub-table keeps, the IDA* driver, one IDA* run, and the speed
+// bound a list prunes with
+mod bound;
 mod driver;
 mod ida;
 mod plan;
 mod relabel;
 
+use bound::*;
 pub(crate) use driver::*;
 use ida::*;
 use plan::*;
