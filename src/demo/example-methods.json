@@ -110,6 +110,7 @@
       { "name": "Top cross", "pieces": "UF:o UR:o UB:o UL:o", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
       { "name": "Top edges", "pieces": "UF UR UB UL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
       { "name": "Top corners in place", "pieces": "UFR:p UBR:p UBL:p UFL:p", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
+      { "name": "One top corner turned", "pieces": "UFR | UBR | UBL | UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 },
       { "name": "Top corners turned", "pieces": "UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0 }
     ]
   },

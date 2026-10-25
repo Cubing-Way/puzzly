@@ -116,6 +116,7 @@ Found while writing the methods:
 - Half-turn reduction is a plain step: all corners solved, the edges as three swap groups (`UF:s UB:s DF:s DB:s`, `UR:s2 …`, `FR:s3 …`), *solvable with* `U2 D2 R2 L2 F2 B2`, moves `U D R2 L2 F2 B2`: 96 end states, 10 moves in 0.8 s.
 - Centers take roles too: Roux's edge orientation step is `U:s D:s UF:o UR:o UB:o UL:o DF:o DB:o` with `M U` (the U and D centers on the U / D spots in either order).
 - Wide moves work in a step's moves (`Rw` in Roux's second block).
+- **All four top corners twisted** (6 of the 27 cases the beginner method's last step gets: H and Pi, everything else solved) has no answer within 15 moves (the two-phase solver's is 18), and the whole-cube search's bound there is 8, so ruling out 14 moves takes ~70 s and 15 ~9 min on 4 cores: the bench's seeded scramble 4 (an H) ran for over 15 min. Two or three twisted corners take 12–13 moves in 0.1–4 s. The example turns one top corner first (`UFR | UBR | UBL | UFL`, nothing to do when one already is), then the rest: 24–25 moves in 2–3 s.
 - Testing: a long search blocks the Node process (the worker runs in it), so a time limit has to come from outside (`timeout 240 node …`, one process per method), with a line printed when each step starts (`MethodOptions.onStart`, `writeSync`).
 
 ### Numbers for the hand-written line (well known, to confirm when built)
