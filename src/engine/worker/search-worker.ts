@@ -1,5 +1,6 @@
 // Search worker: answers the engine's step searches (see solvers.ts for how each goal is solved), one request at a time; long split searches are spread
-// over helper workers (parallel.ts). An app's worker script calls runSearchWorker once, passing the compiled Rust code and how to start helpers
+// over helper workers (parallel.ts), and so are a split goal's missing tables. An app's worker script calls runSearchWorker once, passing the compiled
+// Rust code and how to start helpers
 
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
 import { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
@@ -151,13 +152,14 @@ export function runSearchWorker(options: SearchWorkerOptions): void {
   // Helpers for long split searches: one per core the device reports beyond this worker's, up to the limit (none without a way to start them)
   const helpers = options.helper ? Math.max(0, Math.min((globalThis.navigator?.hardwareConcurrency ?? 1) - 1, options.maxHelpers ?? MAX_HELPERS)) : 0;
   pool = helpers > 0 ? new HelperPool(options.helper!, helpers, HELPER_MB) : null;
-  // Table work goes to the engine as progress; a freed split search frees the helpers' copy of it too
+  // Table work goes to the engine as progress; a freed split search frees the helpers' copy of it too; a goal's missing tables are built over the helpers
   watchSolvers({
     progress,
     freed: (split) => {
       const id = goalIds.get(split);
       if (id !== undefined) pool?.dropGoal(id);
     },
+    build: pool ? pool.build.bind(pool) : undefined,
   });
   // The stored-tables database (opened while the Rust code loads), then which tables it holds
   openTableStore(options.tableDatabase === undefined ? TABLE_DATABASE : options.tableDatabase);

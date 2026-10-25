@@ -1,11 +1,11 @@
 // Search helper worker (started by the search worker, see parallel.ts): holds copies of the sub-tables of goals searched in parallel,
-// plans each goal the same way the search worker did, and searches the chunks of IDA* iterations it is sent.
+// plans each goal the same way the search worker did, and searches the chunks of IDA* iterations it is sent; it also builds tables for the search worker.
 // An app's helper script calls runSearchHelper once, passing the compiled Rust code
 
 // wasm-bindgen glue for the Rust search crate (built by `npm run build-search`)
 import { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
 // Messages to and from the search worker's helper pool
-import type { HelperMessage, HelperReply } from "./parallel";
+import { HELPER_READY, type HelperMessage, type HelperReply } from "./parallel";
 // Loads the Rust code once per thread
 import { loadWasm } from "./wasm";
 
@@ -19,7 +19,8 @@ export interface SearchHelperOptions {
 const tables = new Map<string, DistanceTable>();
 const goals = new Map<number, SplitSearch>();
 
-// Handle one message: keep a table, plan a goal, free goals and tables, or search one chunk and send back its result (or the error)
+// Handle one message: keep a table, plan a goal, free goals and tables, search one chunk and send back its result, or build a table and send back
+// its bytes (or the error)
 function handle(scope: Worker, message: HelperMessage): void {
   if (message.kind === "table") {
     tables.get(message.key)?.free();
@@ -39,6 +40,18 @@ function handle(scope: Worker, message: HelperMessage): void {
       tables.get(key)?.free();
       tables.delete(key);
     }
+  } else if (message.kind === "build") {
+    // A table for the search worker: its bytes go back (moved, not copied), and this copy is freed (the search worker sends it again when a search needs it)
+    let bytes: Uint8Array;
+    try {
+      const table = new DistanceTable(message.kpuzzle, message.targets, message.moves, message.maxStates);
+      bytes = table.toBytes();
+      table.free();
+    } catch (error) {
+      scope.postMessage({ task: message.task, error: String(error) } satisfies HelperReply);
+      return;
+    }
+    scope.postMessage({ task: message.task, bytes } satisfies HelperReply, [bytes.buffer]);
   } else {
     // One chunk of an iteration: its result as JSON, or the error
     let reply: HelperReply;
@@ -58,8 +71,11 @@ export function runSearchHelper(options: SearchHelperOptions): void {
   // Worker-side global (tsconfig only has the page's DOM types)
   const scope = self as unknown as Worker;
   // Messages are handled one at a time, in order, once the Rust code is loaded; a table or goal that fails to load is left out
-  // (searching that goal then answers with an error, and the search worker finishes the search by itself)
-  let queue: Promise<void> = loadWasm(options.wasm).then(() => undefined);
+  // (searching that goal then answers with an error, and the search worker finishes the search by itself). The search worker hears when the load is
+  // over (it sends tasks from then on); every message is handled even when the Rust code didn't load, so each search or build answers (with an error)
+  let queue: Promise<void> = loadWasm(options.wasm)
+    .then(() => undefined, () => undefined)
+    .then(() => scope.postMessage({ task: HELPER_READY } satisfies HelperReply));
   scope.onmessage = ({ data }: MessageEvent<HelperMessage>) => {
     queue = queue.then(() => handle(scope, data)).catch(() => undefined);
   };

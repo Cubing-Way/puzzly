@@ -24,7 +24,7 @@ Start a new chat with: "Read PLAN.md, then do Part N." Do **one part per chat**,
 - [x] Part 8e — Method lower bounds: prune the method search with the goals of all later steps, not just the next one
 - [x] Part 8f — Table capacity: 2-bit tables, smarter planner, memory-based budget (one item per chat, each compared with the code before it)
 - [x] Part 8g — Symmetry: rotated sub-goals share one table (symmetry classes inside a table left for later, only if still needed)
-- [ ] Part 8h — Parallel search (one item per chat): searches over helper workers done; parallel table builds next, only if still needed
+- [x] Part 8h — Parallel search (one item per chat): searches and a goal's missing table builds over helper workers
 - [ ] Part 9 — Hand-written tables for specific goals (last resort)
 
 ## Goal of the project
@@ -444,6 +444,29 @@ Every step compiles to: **masked target patterns × grips × offsets (× alterna
   - Bench: `CORES=n` for `record.js` (sets `navigator.hardwareConcurrency`; the fake `Worker` starts real `worker_threads` for `search-helper.js`, `bench/node-helper.ts`) and `replay.js` (its own pool);
     helper threads keep Node alive only while a task waits. `bench/out/replay-before.js` is now the 8g code (before this item).
   - Browser pane (built page, scratch copy): XXXCross from `D F R2 B D2 F' L2 U' R' U B2 D U2` gave the bench's 13-move answer; a temporary log showed 3 helpers starting and the round spread from prefix 18.
+- Parallel table builds (Part 8h, second item): `parallel.ts`, `solvers.ts`, `search-helper.ts`, the search worker (now under `src/engine/worker/`), the page's status line; Rust and `TABLE_FORMAT` unchanged.
+  - `buildMissing` (solvers.ts, before `attachTables` attaches): when a split goal's plan has 2+ sub-tables neither kept nor stored, `HelperPool.build(tasks, { here, arrived })` builds them at once. Helpers take the biggest
+    left (`split.states(i)`), build with `new DistanceTable` and send `toBytes()` back (moved, their copy freed); the worker loads them with `fromBytes`, stores (same bytes) and keeps them. The worker builds from the smallest up
+    between helpers' replies (a long build here would leave a finished helper waiting for its next table) and never hands out the last one. Single-table goals and goals missing one sub-table build in the worker as before.
+  - Failures: a helper's error or bytes that don't load → built in the worker (so a table that can't be built throws the same error, and the goal falls back to its next plan as before); the first error ends the batch
+    (late helper replies ignored). A helper's crash stops them all (`close()` now fails each one's task: an iteration is searched in the worker, a table built there). Checked with fake helpers (scratch `pooltest.ts`).
+  - `HELPER_READY`: a helper replies with task -1 once it has loaded the Rust code (or failed to), and gets no task before that; meanwhile the worker builds (or, for a first spread search, takes the prefixes) itself.
+    So nothing waits on a helper that is still starting; the very first batch (the DR step's 2 small tables) is still 0.4 → 0.6–0.7 s with or without it, from three helpers compiling the Rust code on 2 cores.
+    `runSearchHelper` now handles every message even when the Rust code didn't load (each task answers with an error).
+    Searches: XXXCross replay at 4 cores (helpers started by its first spread; 4 alternating rounds) 1.38–1.55 s before, 1.38–1.43 s after, identical answers.
+  - Progress: every missing table's build starts at once, each finishes as it comes in (states 0 for the ones a failed batch left out); `tableTracker` (status.ts) counts builds in flight instead of clearing the note at the first finish.
+  - Measured on another PC than the notes above (i3-6006U, 2 cores / 4 threads, 3 MB L3, 16 GB; a game in the background used ~0.4 core, so runs vary 10–30%): only old / new back to back.
+    - Before (1 core): first pass vs warm, DR + finish 5.0 / 0.06 s, XXXCross 4.5 / 1.6 s, BLD flips 43.9 / 5.3 s; CFOP + OLL + PLL and pseudo-slotting are now mostly listing and speed scoring (first ≈ warm).
+    - First passes (`record.js` dr-finish, xxxcross, bld-flip; 4 cores, 3 alternating rounds): 4.5 / 4.6 / 4.2 → 2.5 / 2.5 / 3.2 s, 4.7 / 4.5 / 3.9 → 2.4 / 2.4 / 3.7 s, 38.8 / 34.2 / 34.6 → 32.4 / 33.2 / 34.2 s.
+      3 cores 5.7 → 3.1, 3.9 → 3.2, 33.5 → 32.7 s; 2 cores 4.1 → 3.4, 3.7 → 2.8, 36.7 → 35.2 s; 1 core the same code path. CFOP + OLL + PLL first pass 12.0–14.1 → 10.5–13.3 s, warm 5.6–8.1 → 5.9–6.0 s.
+    - Build timelines (scratch `buildlog.ts`, progress times): DR + finish's 5 finish tables (2.8–9.0M states) ~4.2 s one after another → ~2.4 s at 4 cores. BLD flip: 5 tables, 13.4 s one after another, of which the all-corners
+      orbit table (88M states) 9.0 s alone in a thread, ~10 s in a helper (10.4 s with the others building beside it), so BLD's batch ends at ~10.4 s on any number of cores; the flip's other ~20 s are searches
+      (already parallel; the warm pass skips them through `knownAnswers`).
+    - Identical moves in every run (2 full `record.js` runs at 4 cores, old and new, vs old at 1 core; 12 first-pass and 6 warm runs).
+  - Browser pane (built page, scratch copy, 2026-10-25): workers started from a worker are refused there now, classic or module (the script is never requested, `onerror` fires), so the helpers can't start in the pane:
+    XCross and XXCross still solved, "built 3 tables" (the pool marks itself broken and the worker builds everything). The parallel path itself is only checked in Node (`worker_threads`).
+  - A helper's wasm memory keeps the peak of the biggest table it built (wasm memory never shrinks), on top of the table copies it holds for searches.
+  - Bench: `bench/node-helper.ts` keeps a helper thread alive while a build waits too, and doesn't count `HELPER_READY` as a reply. `bench/out/before/` holds the bundles of the code before this item (`record.js`, `replay.js`, helpers), for comparisons.
 ---
 
 ## Part 1 — Groups + centers
@@ -862,6 +885,13 @@ Identical answers on the whole replay at 1, 2, 3 and 4 cores and in every method
 (XXXCross 0.86 → 0.54 s, PLL with keep 2.1 → 1.2 s, BLD flips 2.6 → 1.65 s and 14.3 → 8.8 s); method runs 55.9 → 45.8 s (warm pass 8.1 → 5.4 s). Small searches unchanged (they never leave the worker). Extra nodes 0–5%.
 Checked in the browser pane (built page): 3 helpers start on the first long XXXCross search, same answer. Not done: parallel lists (8d's DR listing), sending helpers the compiled wasm module (start-up ~0.3 s).
 Next item: parallel table builds, only if first runs still matter more than the rest.
+
+**Done (item 2, parallel table builds):** see "Parallel table builds (Part 8h, second item)" in Facts. First runs still needed it (this PC, 1 core: DR + finish 5.0 s first vs 0.06 s warm, XXXCross 4.5 vs 1.6 s, BLD flips 44 vs 5 s).
+A split goal's missing sub-tables are built at once: helpers take the biggest and send their bytes back, the worker builds the smallest meanwhile. Identical moves in every run; first passes at 4 cores (old / new alternating, 3 rounds):
+DR + finish 4.2–4.6 → 2.5–3.2 s, XXXCross 3.9–4.7 → 2.4–3.7 s, BLD flips 34–39 → 32–34 s (one 88M-state corner table, ~10 s on any number of cores, then ~20 s of searches), warm passes unchanged.
+Helpers now take tasks only once they've loaded the Rust code, so nothing waits on one that is still starting (their start-up still costs the very first batch ~0.2–0.3 s of CPU on 2 cores).
+Not checked with helpers in a browser: the browser pane now refuses workers started from a worker (classic or module: the script is never requested), so there the worker builds and searches alone (the fallback, checked on the built page).
+Not done: sending helpers the compiled wasm module, building the next requests' tables ahead (single-table goals and goals missing one table build alone).
 
 ## Part 9 — Hand-written tables (last resort)
 

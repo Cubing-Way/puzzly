@@ -3,7 +3,7 @@
 Start a new chat with: "Read plan.md, then do Part N." Do **one part per chat**, then tick it below and commit.
 
 This plan is Part 9 of `plan-engine.md` (hand-written tables) worked out for the example methods. Three other plans are still open:
-- `plan-engine.md`: the 3x3x3 engine and its search. Its *Facts* section is still the reference for how the search works; its 5d (table files) and 8h (parallel table builds) stay there.
+- `plan-engine.md`: the 3x3x3 engine and its search. Its *Facts* section is still the reference for how the search works; its 5d (table files) stays there.
 - `plan-puzzles.md`: more puzzles (12 parts, none started). To go on with it: "Read plan-puzzles.md, then do Part N."
 - `plan-speed.md`: faster solves for the lookahead and XCross presets by changing where and how the engine runs (5 parts, none started; measured 2026-10-20: scoring answers takes 60–66% of the time, the search 16–27%). To go on with it: "Read plan-speed.md, then do Part N."
 
@@ -270,4 +270,4 @@ The method search on Two-phase (example 15), same seeds as 8d: time to reach 20 
 - A whole-cube optimal solver ("Full cube" keeps cubing.js's two-phase).
 - Methods left out of the examples: M2 blindfolded (its parity is a slice turn, which parity pieces can't say), and the less common ones (PCMS, Belt, SSC, ECE, Tripod, the Francisco methods, APB, Nautilus, 8355): each is expressible, none adds a new kind of goal.
 - The repeated-step rule (see *Facts*): a round of 0 moves that still added a piece should go on to the next round.
-- plan-engine's 5d (table files) and 8h (parallel table builds).
+- plan-engine's 5d (table files).

@@ -36,14 +36,19 @@ export function plural(count: number, word: string, many = `${word}s`): string {
 // Follows the search worker's table work during one solve: a note for the live status while a table is built or loaded, and counts for the final status
 export function tableTracker() {
   let note = "";
+  // Tables being built or loaded right now (a goal's missing tables are built several at once on devices with helper workers)
+  let busy = 0;
   let built = 0;
   let loaded = 0;
   return {
     // Progress listener for solveStep / runMethod
     onProgress(progress: TableProgress): void {
-      if (!progress.finished) note = progress.action === "build" ? " · building tables…" : " · loading stored tables…";
-      else {
-        note = "";
+      if (!progress.finished) {
+        busy++;
+        note = progress.action === "build" ? " · building tables…" : " · loading stored tables…";
+      } else {
+        busy = Math.max(0, busy - 1);
+        if (!busy) note = "";
         if (progress.states && progress.action === "build") built++;
         if (progress.states && progress.action === "load") loaded++;
       }

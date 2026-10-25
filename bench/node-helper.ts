@@ -1,7 +1,7 @@
 // A search helper (src/engine/worker/search-helper.ts) in a Node worker_threads thread, looking like the browser Worker the helper pool expects (bench/out/helper.js),
 // and the scoring worker (src/engine/worker/scoring-worker.ts) and its helpers (scoring-helper.ts) in threads too (bench/out/scoring.js, scoring-helper.js)
 import { Worker as NodeWorker } from "node:worker_threads";
-import type { HelperWorker } from "../src/engine/worker/parallel";
+import { HELPER_READY, type HelperWorker } from "../src/engine/worker/parallel";
 import type { ScoringHelperWorker, ScoringWorker } from "../src/engine/worker/protocol";
 
 // Start one helper thread; it keeps the process alive only while a search waits on it, so a benchmark ends without closing its helpers
@@ -11,15 +11,16 @@ export function nodeHelper(): HelperWorker {
   const helper: HelperWorker = {
     onmessage: null,
     onerror: null,
-    // Each search chunk gets one reply
+    // Each search chunk and each table build gets one reply
     postMessage: (message, transfer) => {
-      if (message.kind === "iterate" && waiting++ === 0) worker.ref();
+      if ((message.kind === "iterate" || message.kind === "build") && waiting++ === 0) worker.ref();
       worker.postMessage(message, transfer as any);
     },
     terminate: () => void worker.terminate(),
   };
   worker.on("message", (data) => {
-    if (--waiting === 0) worker.unref();
+    // The helper saying it's ready answers no task
+    if (data.task !== HELPER_READY && --waiting === 0) worker.unref();
     helper.onmessage?.({ data });
   });
   worker.on("error", (error) => helper.onerror?.(error));

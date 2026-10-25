@@ -1,5 +1,6 @@
 // Parallel split searches: helper workers each hold a copy of a goal's sub-tables and search some of an IDA* iteration's first moves, so a long search uses
-// every core. Answers stay the same as one search's: an iteration visits paths in turn order, so its answer is the one under the first prefix that has one
+// every core. Answers stay the same as one search's: an iteration visits paths in turn order, so its answer is the one under the first prefix that has one.
+// The same helpers build a goal's missing sub-tables at once (each builds whole tables and sends back their bytes: a table can't be split without shared memory)
 
 // Types of the Rust search crate's glue (built by `npm run build-search`)
 import type { DistanceTable, SplitSearch } from "../../../search/pkg/puzzly_search.js";
@@ -42,17 +43,37 @@ export interface ParallelGoal {
   tables: () => { key: string; targets: string; table: DistanceTable }[];
 }
 
-// Messages a helper gets: a table's bytes, a goal to plan, goals and tables to free, or one task (an iteration through some prefixes) to search
+// One table for the helpers to build: what its build takes (a DistanceTable's constructor arguments), and its size (states), so the biggest go first
+export interface TableTask {
+  kpuzzle: string;
+  targets: string;
+  moves: string;
+  maxStates: number;
+  states: number;
+}
+
+// What a batch of builds does with each table (by index in the batch): build it on this thread (throws when it can't be built), or take the bytes a helper
+// built (a table a helper couldn't build, or whose bytes don't load, is built on this thread instead)
+export interface TableHandlers {
+  here(index: number): void;
+  arrived(index: number, bytes: Uint8Array): void;
+}
+
+// Messages a helper gets: a table's bytes, a goal to plan, goals and tables to free, one task (an iteration through some prefixes) to search, or a table to build
 export type HelperMessage =
   | { kind: "table"; key: string; kpuzzle: string; targets: string; moves: string; bytes: Uint8Array }
   | { kind: "goal"; goal: number; kpuzzle: string; targets: string; moves: string; limit: number; keys: string[] }
   | { kind: "drop"; goals: number[]; keys: string[] }
-  | { kind: "iterate"; task: number; goal: number; start: string; bound: number; prefixes: string; maxNodes: number };
+  | { kind: "iterate"; task: number; goal: number; start: string; bound: number; prefixes: string; maxNodes: number }
+  | { kind: "build"; task: number; kpuzzle: string; targets: string; moves: string; maxStates: number };
 
-// A helper's reply: a task's result as JSON, or the error it threw
+// A helper's reply: a search task's result as JSON, a built table's bytes, or the error it threw; or, once it has loaded the Rust code (or failed to),
+// task HELPER_READY: until then its tasks would only wait, so it gets none (this thread does them meanwhile)
+export const HELPER_READY = -1;
 export interface HelperReply {
   task: number;
   result?: string;
+  bytes?: Uint8Array;
   error?: string;
 }
 
@@ -64,10 +85,11 @@ export interface HelperWorker {
   terminate(): void;
 }
 
-// One helper, the task it is searching (one at a time) and what to do with its reply
+// One helper, whether it has loaded the Rust code, the task it is on (one at a time) and what to do with its reply
 interface Helper {
   worker: HelperWorker;
-  task: { id: number; done: (result: Iteration | null, error?: unknown) => void } | null;
+  ready: boolean;
+  task: { id: number; done: (reply: HelperReply) => void } | null;
 }
 
 // One iteration being spread: its prefixes, the next one to hand out, the first one with an answer so far (end: tasks from it on aren't needed),
@@ -87,6 +109,23 @@ interface Job {
   reject: (error: unknown) => void;
 }
 
+// Tables being built at once: the tasks, their order (biggest first), the next one for a helper (front) and for this thread (back, so it builds the smallest:
+// helpers that finish wait for this thread to hand out their next), the ones helpers couldn't build (redone here), how many aren't in yet, whether this
+// thread is building, and how it ends (the first table that can't be built ends it)
+interface Builds {
+  tasks: TableTask[];
+  order: number[];
+  front: number;
+  back: number;
+  redo: number[];
+  left: number;
+  working: boolean;
+  settled: boolean;
+  handlers: TableHandlers;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
 // Let messages from helpers in (their replies hand out the next tasks) before this thread searches again: setImmediate in Node, a message to itself in browsers
 // (setTimeout waits at least 4 ms once nested)
 const channel = typeof setImmediate === "function" ? null : new MessageChannel();
@@ -100,7 +139,8 @@ function yieldToMessages(): Promise<void> {
   });
 }
 
-// Helper workers started on the first long search, the goals and tables they all hold (the same ones in each), and the search nodes the last search used
+// Helper workers started on the first long search or batch of builds, the goals and tables they all hold (the same ones in each), and the search nodes
+// the last search used
 export class HelperPool {
   private helpers: Helper[] = [];
   // Goals the helpers hold, least recently used first, with their tables' keys; each table's memory in MB (a table no goal uses is freed)
@@ -108,10 +148,11 @@ export class HelperPool {
   private tables = new Map<string, number>();
   // Each goal's prefixes (move texts), worked out once
   private prefixes = new Map<number, string[]>();
-  // The iteration being spread (helpers that finish a task take their next one from it), and the last task number
+  // The iteration being spread or the tables being built (helpers that finish a task take their next one from it), and the last task number
   private job: Job | null = null;
+  private builds: Builds | null = null;
   private nextTask = 0;
-  // Set when a helper failed: searches run here alone from then on
+  // Set when a helper failed: searches and builds run here alone from then on
   private broken = false;
   // Search nodes the last search used, here and in the helpers
   nodes = 0;
@@ -161,6 +202,21 @@ export class HelperPool {
     throw NO_SOLUTION;
   }
 
+  // Build these tables at once, resolving once every one is in: helpers take the biggest first and send back their bytes, this thread builds from the smallest
+  // up between their replies. A table a helper couldn't build is built here, so one that can't be built at all throws here, as without helpers; the first error
+  // ends the batch (tables still being built in helpers are then left out)
+  build(tasks: TableTask[], handlers: TableHandlers): Promise<void> {
+    if (!this.broken && !this.helpers.length) this.start();
+    const order = tasks.map((_, index) => index).sort((a, b) => tasks[b].states - tasks[a].states);
+    return new Promise((resolve, reject) => {
+      if (!tasks.length) return resolve();
+      const builds: Builds = { tasks, order, front: 0, back: order.length - 1, redo: [], left: tasks.length, working: false, settled: false, handlers, resolve, reject };
+      this.builds = builds;
+      for (const helper of this.helpers) this.feed(helper);
+      void this.buildHere(builds);
+    });
+  }
+
   // Free a goal's copy in the helpers (its search here was freed), and the tables no other goal uses
   dropGoal(id: number): void {
     this.prefixes.delete(id);
@@ -168,12 +224,16 @@ export class HelperPool {
     this.post({ kind: "drop", goals: [id], keys: this.unused() });
   }
 
-  // Stop every helper (they hold copies of tables only, nothing else is lost)
+  // Stop every helper (they hold copies of tables only, nothing else is lost); the tasks they were on fail (an iteration is then searched here, a table built here)
   close(): void {
-    for (const helper of this.helpers) helper.worker.terminate();
+    const helpers = this.helpers;
     this.helpers = [];
     this.goals.clear();
     this.tables.clear();
+    for (const helper of helpers) {
+      helper.worker.terminate();
+      helper.task?.done({ task: helper.task.id, error: "Helper stopped" });
+    }
   }
 
   // One iteration through these prefixes here, with a node budget
@@ -240,24 +300,94 @@ export class HelperPool {
     }
   }
 
-  // Give an idle helper its next task from the iteration being spread
+  // Give an idle helper its next task: from the iteration being spread, else a table to build (never to a helper still loading, or one that was stopped)
   private feed(helper: Helper): void {
+    if (helper.task || !helper.ready || this.broken || !this.helpers.includes(helper)) return;
     const job = this.job;
-    if (helper.task || !job) return;
-    const index = this.take(job);
-    if (index === null) return;
+    const index = job ? this.take(job) : null;
+    if (!job || index === null) {
+      if (this.builds) this.feedBuild(helper, this.builds);
+      return;
+    }
     const id = this.nextTask++;
     helper.task = {
       id,
-      done: (result, error) => {
+      done: (reply) => {
         helper.task = null;
-        if (result) this.record(job, index, result);
-        else this.fail(job, error);
-        // Then the next task, from whichever iteration is being spread by now
+        if (reply.error === undefined) this.record(job, index, JSON.parse(reply.result!));
+        else this.fail(job, reply.error);
+        // Then the next task, from whatever is being spread or built by now
         this.feed(helper);
       },
     };
     helper.worker.postMessage({ kind: "iterate", task: id, goal: job.goal.id, start: job.start, bound: job.bound, prefixes: JSON.stringify([job.list[index]]), maxNodes: Math.max(0, job.budget - job.total.nodes) });
+  }
+
+  // Give an idle helper the biggest table left to build (never the last one: this thread builds from the smallest up and takes it)
+  private feedBuild(helper: Helper, builds: Builds): void {
+    if (builds.settled || builds.front >= builds.back) return;
+    const index = builds.order[builds.front++];
+    const id = this.nextTask++;
+    helper.task = {
+      id,
+      done: (reply) => {
+        helper.task = null;
+        this.arrived(builds, index, reply.bytes ?? null);
+        // Then the next task, from whatever is being spread or built by now
+        this.feed(helper);
+      },
+    };
+    const { kpuzzle, targets, moves, maxStates } = builds.tasks[index];
+    helper.worker.postMessage({ kind: "build", task: id, kpuzzle, targets, moves, maxStates });
+  }
+
+  // This thread's share of a batch: the smallest table left (or one a helper couldn't build), one at a time, letting helpers' replies in between
+  private async buildHere(builds: Builds): Promise<void> {
+    if (builds.working) return;
+    builds.working = true;
+    for (;;) {
+      await yieldToMessages();
+      const index = builds.settled ? undefined : (builds.redo.shift() ?? (builds.front <= builds.back ? builds.order[builds.back--] : undefined));
+      if (index === undefined) break;
+      try {
+        builds.handlers.here(index);
+      } catch (error) {
+        this.settleBuilds(builds, error);
+        break;
+      }
+      this.builtOne(builds);
+    }
+    builds.working = false;
+  }
+
+  // A helper is done with a table: take its bytes, or build it here when it couldn't build it or its bytes don't load
+  private arrived(builds: Builds, index: number, bytes: Uint8Array | null): void {
+    if (builds.settled) return;
+    if (bytes) {
+      try {
+        builds.handlers.arrived(index, bytes);
+        this.builtOne(builds);
+        return;
+      } catch {
+        // Built here instead
+      }
+    }
+    builds.redo.push(index);
+    void this.buildHere(builds);
+  }
+
+  // One more table of a batch is in: it ends once all are
+  private builtOne(builds: Builds): void {
+    if (--builds.left === 0) this.settleBuilds(builds);
+  }
+
+  // End a batch: every table is in, or one couldn't be built (error)
+  private settleBuilds(builds: Builds, error?: unknown): void {
+    if (builds.settled) return;
+    builds.settled = true;
+    if (this.builds === builds) this.builds = null;
+    if (error === undefined) builds.resolve();
+    else builds.reject(error);
   }
 
   // Whether prefixes are left to hand out: some before the first answer so far, with budget left
@@ -344,21 +474,22 @@ export class HelperPool {
     this.post({ kind: "goal", goal: goal.id, kpuzzle: goal.kpuzzle, targets: goal.targets, moves: goal.moves, limit: goal.limit, keys: tables.map(({ key }) => key) });
   }
 
-  // Start the helpers; a helper's error fails the task it was on (the search then finishes here)
+  // Start the helpers; a helper's error stops them all (the search then finishes here, the tables they were building are built here)
   private start(): void {
     for (let index = 0; index < this.count; index++) {
-      const helper: Helper = { worker: this.spawn(), task: null };
+      const helper: Helper = { worker: this.spawn(), ready: false, task: null };
       helper.worker.onmessage = ({ data }) => {
         const task = helper.task;
-        if (!task || task.id !== data.task) return;
-        if (data.error !== undefined) task.done(null, data.error);
-        else task.done(JSON.parse(data.result!));
+        if (data.task === HELPER_READY) {
+          helper.ready = true;
+          this.feed(helper);
+        } else if (task && task.id === data.task) task.done(data);
       };
-      // A helper that failed can't be trusted with more tasks: searches run here alone from then on
+      // A helper that failed can't be trusted with more tasks: searches and builds run here alone from then on
       helper.worker.onerror = (event) => {
         this.broken = true;
-        helper.task?.done(null, event);
         if (this.job) this.fail(this.job, event);
+        this.close();
       };
       this.helpers.push(helper);
     }

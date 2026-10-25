@@ -5,6 +5,8 @@
 import { DistanceTable, Searcher, SplitSearch } from "../../../search/pkg/puzzly_search.js";
 // Table sizes and memory budgets
 import { MAX_CACHE_MB, MAX_TABLE_STATES, PLAN_STATES, SEARCHER_MB, STORE_MIN_STATES } from "./limits";
+// Tables built at once over helper workers
+import type { TableHandlers, TableTask } from "./parallel";
 // Requests as the engine sends them
 import type { SearchRequest } from "./protocol";
 // Tables stored in this browser
@@ -24,10 +26,12 @@ export interface Entry {
 }
 
 // Who hears about the solvers: table builds and loads as they start and finish (states: 0 = it couldn't be built or loaded),
-// and split searches about to be freed (whoever holds copies of them frees those too)
+// and split searches about to be freed (whoever holds copies of them frees those too); and who builds several tables at once (helper workers,
+// see HelperPool.build; none = one after another here)
 interface SolverListeners {
   progress: (action: "build" | "load", finished: boolean, states?: number) => void;
   freed: (split: SplitSearch) => void;
+  build?: (tasks: TableTask[], handlers: TableHandlers) => Promise<void>;
 }
 
 // Kept solvers and tables by moves + targets, least recently used first (a Map keeps insertion order)
@@ -124,8 +128,46 @@ function buildTable(request: SearchRequest, key: string, targets: string, maxSta
     throw error;
   }
   listeners.progress("build", true, table.states());
-  if (table.states() >= STORE_MIN_STATES) void storeTable(key, table.toBytes());
+  storeBuilt(key, table);
   return table;
+}
+
+// Store a table just built in this browser when it's big (bytes: its bytes when they're at hand already, from a helper that built it)
+function storeBuilt(key: string, table: DistanceTable, bytes?: Uint8Array): void {
+  if (table.states() >= STORE_MIN_STATES) void storeTable(key, bytes ?? table.toBytes());
+}
+
+// Build a split search's missing sub-tables (neither kept nor stored) all at once and keep them, when helpers can share the work and more than one is
+// missing (attachTables then finds them kept); a table that can't be built throws, as it would one by one. Each counts as being built from the start
+async function buildMissing(request: SearchRequest, subs: { targets: string; states: number; maxStates: number }[]): Promise<void> {
+  const build = listeners.build;
+  const missing = subs.filter(({ targets }) => {
+    const key = tableKey(request, targets);
+    return !(solvers.get(key)?.solver instanceof DistanceTable) && !isStored(key);
+  });
+  if (!build || missing.length < 2) return;
+  const moves = JSON.stringify(request.moves);
+  const tasks = missing.map(({ targets, states, maxStates }) => ({ kpuzzle: request.kpuzzle, targets, moves, maxStates, states }));
+  // A table that's in: its build finishes, it's stored and kept (replacing whatever else was under its key, as tableFor does)
+  const done = new Set<number>();
+  const finish = (index: number, table: DistanceTable, bytes?: Uint8Array) => {
+    const key = tableKey(request, tasks[index].targets);
+    done.add(index);
+    listeners.progress("build", true, table.states());
+    storeBuilt(key, table, bytes);
+    drop(key);
+    keep(key, { solver: table, mb: table.bytes() / 2 ** 20 });
+  };
+  tasks.forEach(() => listeners.progress("build", false));
+  try {
+    await build(tasks, {
+      here: (index) => finish(index, new DistanceTable(request.kpuzzle, tasks[index].targets, moves, tasks[index].maxStates)),
+      arrived: (index, bytes) => finish(index, DistanceTable.fromBytes(request.kpuzzle, tasks[index].targets, moves, bytes), bytes),
+    });
+  } finally {
+    // The ones a failed batch left out finish without a table
+    for (const index of tasks.keys()) if (!done.has(index)) listeners.progress("build", true);
+  }
 }
 
 // The table for these targets (built with up to maxStates states): kept, stored in this browser, or built now; returns its cache key
@@ -139,12 +181,14 @@ async function tableFor(request: SearchRequest, targets: string, maxStates = MAX
   return key;
 }
 
-// Give a split search its sub-tables, from the cache, this browser's store, or built now; returns their cache keys
-// (each may be as big as planned: a BLD goal's whole-orbit table, e.g. all 8 corners, is past the usual limit)
+// Give a split search its sub-tables, from the cache, this browser's store, or built now (the missing ones at once, over the helpers); returns their
+// cache keys (each may be as big as planned: a BLD goal's whole-orbit table, e.g. all 8 corners, is past the usual limit)
 async function attachTables(split: SplitSearch, request: SearchRequest): Promise<string[]> {
+  const subs = Array.from({ length: split.tables() }, (_, index) => ({ targets: split.targets(index), states: split.states(index), maxStates: Math.max(MAX_TABLE_STATES, split.states(index)) }));
+  await buildMissing(request, subs);
   const uses: string[] = [];
-  for (let index = 0; index < split.tables(); index++) {
-    const key = await tableFor(request, split.targets(index), Math.max(MAX_TABLE_STATES, split.states(index)));
+  for (const [index, { targets, maxStates }] of subs.entries()) {
+    const key = await tableFor(request, targets, maxStates);
     split.attach(index, tableOf(key));
     uses.push(key);
   }

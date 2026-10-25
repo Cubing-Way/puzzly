@@ -2,7 +2,7 @@
 
 Start a new chat with: "Read plan-puzzles.md, then do Part N." Do **one part per chat**, then tick it below and commit.
 
-The earlier roadmap (the 3x3x3 engine and its search, Parts 1–9) is now `plan-engine.md`, unchanged. Three of its items are still open (5d table files, 8h parallel table builds, 9 hand-written tables).
+The earlier roadmap (the 3x3x3 engine and its search, Parts 1–9) is now `plan-engine.md`, unchanged. Two of its items are still open (5d table files, 9 hand-written tables).
 To go on with it: "Read plan-engine.md, then do Part N." Its *Facts* section is still the reference for how the search works.
 Its Part 9 (hand-written tables) is planned in detail in `plan.md` now (tables for specific goals), written on 2026-10-10 after this plan.
 
