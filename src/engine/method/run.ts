@@ -7,7 +7,7 @@ import { algSet } from "../algs/sets";
 // Piece names and grips
 import { gripRotations } from "../core/cube";
 // Move text helpers
-import { countMoves, joinMoves, joinSteps, joinStep, NO_STEPS, invertMoves, movesAfter, type JoinedSteps } from "../core/moves";
+import { countMoves, joinMoves, joinSteps, joinStep, NO_STEPS, invertMoves, lookedFrom, movesAfter, withoutEndRotations, type JoinedSteps } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Roles, goal text and goal masks
@@ -157,7 +157,9 @@ export function stepLook(scramble: string, method: Method, index: number, from: 
   // A solve's first step is planned in inspection: it only pays for what it plans beyond its smallest alternative (an XCross's pair)
   if (!from.trim()) return flip + inspectionLook(heldPattern(scramble, from), step.pieces, result.alternative, result.rotation);
   const adds = newPieces(piecesAfter(before, result), rotateGoal(before, result.rotation));
-  return flip + (pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, from), rotateGoal(adds, invertMoves(result.rotation)))) : 0);
+  // Found on the cube as the hands hold it (a grip rotation made as one with the rotations before it: see lookedFrom)
+  const looked = lookedFrom(from, result.rotation);
+  return flip + (pieceCount(adds) ? lookCost(hiddenShare(heldPattern(scramble, looked.done), rotateGoal(adds, invertMoves(looked.rotation)))) : 0);
 }
 
 // One step's pick at some point of a run: its answer, and with lookahead what the lookahead found
@@ -189,8 +191,10 @@ export async function runMethodRows(scramble: string, method: Method, options: M
   let previous: JoinedSteps = NO_STEPS;
   // The step after step `index` (see nextStep)
   const nextOf = (index: number): StepConfig | undefined => nextStep(method, index);
+  // A method's last step: the solve is over at its last turn (see StepOptions.last)
+  const lastOf = (index: number): Pick<StepOptions, "last"> => (nextOf(index) ? {} : { last: true });
   // What finding a step's pieces costs before its first turn (see stepLook)
-  const lookFor = (index: number, from: string, before: Goal, result: StepResult): number => stepLook(scramble, method, index, from, before, result);
+  const lookFor =(index: number, from: string, before: Goal, result: StepResult): number => stepLook(scramble, method, index, from, before, result);
   // Key of a point of the run: a step, from where the moves so far leave the cube, with the earlier pieces and the earlier steps' moves as the hands make them
   const pointKey = (index: number, from: string, before: Goal, previous: JoinedSteps): string => `${index}\n${from}\n${goalToText(before)}\n${previous.moves}\n${previous.starts.join(",")}`;
   // Each step's own answer (its shortest, or by speed its fastest) from a given state, solved once per run (lookahead visits many states, and the run itself may reach one of them again);
@@ -205,7 +209,7 @@ export async function runMethodRows(scramble: string, method: Method, options: M
       const step = method.steps[index];
       // Held back when later steps need the rest of its alternatives: only the done ones, as held
       const held = heldBack(method.steps, index, before);
-      answer = solveStep(scramble, held?.pieces ?? step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index), previous), ...(held ? { rotations: held.rotations } : {}), rank: step.rank, extraMoves, avoid: avoided(step), ...handTurns(step) });
+      answer = solveStep(scramble, held?.pieces ?? step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index), previous), ...(held ? { rotations: held.rotations } : {}), ...lastOf(index), rank: step.rank, extraMoves, avoid: avoided(step), ...handTurns(step) });
       ownAnswers.set(key, answer);
     }
     return answer;
@@ -297,7 +301,7 @@ export async function runMethodRows(scramble: string, method: Method, options: M
     const key = pointKey(index, from, before, previous);
     let list = listed.get(key);
     if (!list) {
-      list = stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index), previous), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), ...handTurns(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
+      list = stepCandidates(scramble, step.pieces, { ...methodStepOptions(step, from, before, options.onProgress, nextOf(index), previous), ...lastOf(index), extraMoves: step.extraMoves ?? 0, rank: step.rank, avoid: avoided(step), ...handTurns(step), ...(step.candidates ? { maxCandidates: step.candidates } : {}) });
       listed.set(key, list);
     }
     const candidates = [...(await list)];
@@ -350,8 +354,12 @@ export async function runMethodRows(scramble: string, method: Method, options: M
       });
       return { totals, looked };
     };
-    // The lowest total wins; on a tie the earlier candidate (the step's own best answer comes first)
-    const lowestOf = (totals: number[]): number => totals.indexOf(Math.min(...totals));
+    // The lowest total wins; on a tie the earlier candidate (the step's own best answer comes first), also when the sums only differ by how they round
+    // (a rotation the next step undoes adds 3 and takes 3 back off)
+    const lowestOf = (totals: number[]): number => {
+      const lowest = Math.min(...totals);
+      return totals.findIndex((total) => total <= lowest + 1e-9);
+    };
     const { totals, looked } = await judge(ahead);
     let winner = lowestOf(totals);
     // Picks played to the end of the solve, and the lookahead whose pick won that way when it's a shorter one
@@ -501,16 +509,54 @@ function emptied(row: MethodStepResult): MethodStepResult {
   return empty;
 }
 
+// A row done with no moves as the cube was held before a grip turn that went on to a later row: its goal named in that grip, as the step's alternative
+// it then is (Pair 1's DBR BR after y2 is DFL FL before it)
+function heldBefore(method: Method, row: MethodStepResult, turn: string): MethodStepResult {
+  const back = invertMoves(turn);
+  const rename = (text: string): string => goalToText(rotateGoal(goalFromText(text), back));
+  const alternatives = splitAlternatives(method.steps[row.step].pieces);
+  const own = alternatives[row.alternative];
+  const renamed = own === undefined ? -1 : alternatives.findIndex((text) => goalToText(goalFromText(text)) === rename(own));
+  const held: MethodStepResult = { ...row, solution: new Alg(""), rotation: "", pieces: rename(row.pieces), settled: rename(row.settled), ...(renamed >= 0 ? { alternative: renamed } : {}) };
+  delete held.wide;
+  return held;
+}
+
+// Rows that only turn the cube (a pair an XCross did, taken held another way), before the next row that does something when that row starts by turning
+// the cube too, made as one with it (y2, then y2 U' R' U R … is U' R' U R …): the hands never hold the cube between them (see lookedFrom), so the turn
+// goes to that row, written as one with its own, and the rows it passes are done as held before it. Gives the rows changed
+function moveLoneTurns(method: Method, out: MethodStepResult[]): number[] {
+  const changed: number[] = [];
+  const bld = (row: MethodStepResult): boolean => Boolean(method.steps[row.step].untouched || method.steps[row.step].buffer);
+  for (const [at, row] of out.entries()) {
+    const turn = row.solution.toString().trim();
+    if (!turn || countMoves(turn) || bld(row)) continue;
+    const later = out.findIndex((other, index) => index > at && other.solution.toString().trim() !== "");
+    const next = out[later];
+    if (later < 0 || bld(next) || !next.rotation || joinSteps(turn, next.rotation) === joinMoves(turn, next.rotation)) continue;
+    const solution = joinSteps(turn, next.solution.toString());
+    const moved: MethodStepResult = { ...next, solution: new Alg(solution), rotation: joinSteps(turn, next.rotation) };
+    // A wide writing only where the hands turn differently from the face turns
+    if (next.wide !== undefined) moved.wide = joinSteps(turn, next.wide);
+    if (moved.wide === solution) delete moved.wide;
+    out[later] = moved;
+    for (let index = at; index < later; index++) out[index] = heldBefore(method, out[index], turn);
+    for (let index = at; index <= later; index++) changed.push(index);
+  }
+  return changed;
+}
+
 // A method run's rows with steps that cancel written as one, the way an XCross leaves its pair done: where a step's first turns cancel into the answer
 // before it, that answer takes its moves (joined) and its goal, and the step is done with no moves (Pair 4 U' R U R' then OLL R U R' U R U2 R' is
 // Pair 4 U' R U2 R' U R U2 R', OLL done). After such a join, an alg step left with only the turn that lines its case up (a PLL skip's AUF) goes with it
-// too, as it does after an answer that did later steps by itself (the steps between them were done with no moves). Every row then starts where the one
-// before it ends, and the rows that changed are checked again on their goals
+// too, as it does after an answer that did later steps by itself (the steps between them were done with no moves). A row that only turns the cube
+// goes first to the next row that does something, when they turn it as one (see moveLoneTurns). Every row then starts where the one before it ends,
+// and the rows that changed are checked again on their goals
 export function joinCancelled(scramble: string, method: Method, rows: MethodStepResult[]): MethodStepResult[] {
   const out = rows.map((row) => ({ ...row }));
-  // The last row with moves (a later one may join it), and the rows changed so far
+  // The last row with moves (a later one may join it), and the rows changed so far (a lone grip turn moved on first)
   let into = -1;
-  const changed = new Set<number>();
+  const changed = new Set<number>(moveLoneTurns(method, out));
   for (const [at, row] of out.entries()) {
     const moves = row.solution.toString();
     // Nothing turned: nothing to join (a grip turn alone can't be joined past)
@@ -529,6 +575,18 @@ export function joinCancelled(scramble: string, method: Method, rows: MethodStep
     }
     // Otherwise this answer is the one a later step may join
     into = at;
+  }
+  // The solve is over at the last row that turns something: its hands make no rotation after its last turn (a PLL skip after an OLL alg that ends
+  // with one; a last step leaves them off itself, see StepOptions.last). The cube is the same, so nothing is checked again
+  let end = out.length - 1;
+  while (end >= 0 && !countMoves(out[end].solution.toString())) end--;
+  if (end >= 0 && out[end].wide !== undefined) {
+    const made = withoutEndRotations(out[end].wide!);
+    if (made !== out[end].wide) {
+      out[end] = { ...out[end], wide: made };
+      // A wide writing only where the hands turn differently from the face turns
+      if (made === out[end].solution.toString()) delete out[end].wide;
+    }
   }
   if (!changed.size) return out;
   // Each row starts where the one before it now ends (the same cube; rows between a joined answer and the step it took start later)

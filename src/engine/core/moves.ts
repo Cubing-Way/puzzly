@@ -103,6 +103,12 @@ function turnsEnd(out: string[]): number {
   return end;
 }
 
+// Moves without the rotations they end with: what the hands make when the solve is over at their last turn (x' R U' R' D … D' x is made without the x)
+export function withoutEndRotations(moves: string): string {
+  const tokens = moves.split(/\s+/).filter(Boolean);
+  return tokens.slice(0, turnsEnd(tokens)).join(" ");
+}
+
 // The last of some moves' turns (up to `end`) on a layer, past turns on other layers about its axis (they can be made in any order); -1 = none
 function meetAt(out: string[], end: number, layer: string): number {
   const axis = AXES[layer[0].toUpperCase()];
@@ -161,6 +167,19 @@ function joinOnto(out: string[], moves: string[]): number {
   }
   out.push(...moves.slice(at));
   return kept;
+}
+
+// Where a step's pieces are looked for: on the cube as the moves so far leave it, before the step's grip `rotation`. When that rotation is made as one
+// with rotations the moves so far end with (a step that only turned the cube y2, then y2 is nothing; y then y is y2), the hands never hold the cube
+// between them, so it's the cube before those, with them and the grip rotation as one rotation (else a y2 the next step undoes would show a back pair
+// in plain sight for free)
+export function lookedFrom(done: string, rotation: string): { done: string; rotation: string } {
+  const tokens = done.split(/\s+/).filter(Boolean);
+  const end = turnsEnd(tokens);
+  if (!rotation.trim() || end === tokens.length) return { done, rotation };
+  const trailing = tokens.slice(end).join(" ");
+  const joined = joinSteps(trailing, rotation);
+  return joined === joinMoves(trailing, rotation) ? { done, rotation } : { done: tokens.slice(0, end).join(" "), rotation: joined };
 }
 
 // Steps' moves joined into one sequence, each step's first moves joined with the moves before it (see joinOnto)

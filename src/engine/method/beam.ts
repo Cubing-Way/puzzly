@@ -84,6 +84,8 @@ export async function beamSearchMethod(scramble: string, method: Method, options
     const step: StepConfig = { ...steps[index], rank: "speed" };
     const base: CandidateOptions = {
       ...methodStepOptions(step, partial.done, partial.earlier, options.onProgress, nextStep(method, index), partial.previous),
+      // A method's last step: the solve is over at its last turn (see StepOptions.last)
+      ...(nextStep(method, index) ? {} : { last: true }),
       rank: "speed",
       // Extra moves it compares: all of them on the first step (one partial solve to extend), one at most after it, as a lookahead judges (with so many
       // partial solves a rough cost is enough; the seed's own steps compared all of theirs)

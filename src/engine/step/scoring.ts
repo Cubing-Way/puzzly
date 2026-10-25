@@ -2,7 +2,7 @@
 // against a bar that rises as answers come in, then ranked. The same code runs on the page or in a scoring worker (see worker/scoring-worker.ts)
 
 // Move text helpers
-import { joinMoves, invertMoves, cancelsInto, shortRotations } from "../core/moves";
+import { joinMoves, invertMoves, cancelsInto, lookedFrom, shortRotations, withoutEndRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -44,13 +44,13 @@ export interface Listed {
 // The options a step's scoring reads (plain data, so a scoring worker can be sent them)
 export type ScoringOptions = Pick<
   StepOptions,
-  "done" | "look" | "untouched" | "buffer" | "earlier" | "keep" | "next" | "previous" | "previousStarts" | "wideAxes" | "sliceAxes" | "rotationAxes" | "avoid" | "solvableWith" | "undoOffset"
+  "done" | "look" | "untouched" | "buffer" | "earlier" | "keep" | "next" | "previous" | "previousStarts" | "last" | "wideAxes" | "sliceAxes" | "rotationAxes" | "avoid" | "solvableWith" | "undoOffset"
 >;
 
 // The scoring options of a step's options (left-out ones stay out)
 export function scoringOptions(options: StepOptions): ScoringOptions {
-  const { done, look, untouched, buffer, earlier, keep, next, previous, previousStarts, wideAxes, sliceAxes, rotationAxes, avoid, solvableWith, undoOffset } = options;
-  const picked: ScoringOptions = { done, look, untouched, buffer, earlier, keep, next, previous, previousStarts, wideAxes, sliceAxes, rotationAxes, avoid, solvableWith, undoOffset };
+  const { done, look, untouched, buffer, earlier, keep, next, previous, previousStarts, last, wideAxes, sliceAxes, rotationAxes, avoid, solvableWith, undoOffset } = options;
+  const picked: ScoringOptions = { done, look, untouched, buffer, earlier, keep, next, previous, previousStarts, last, wideAxes, sliceAxes, rotationAxes, avoid, solvableWith, undoOffset };
   for (const name of Object.keys(picked) as (keyof ScoringOptions)[]) if (picked[name] === undefined) delete picked[name];
   return picked;
 }
@@ -350,9 +350,10 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
       // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
       const before = rotateGoal(options.earlier ?? options.keep ?? {}, combo.rotation);
       const adds = newPieces(combo.goal, before);
-      // A solve's first step pays for planning an XCross's pair in inspection (nothing for a cross); a later step for finding its pieces
-      const start = heldPattern(scramble, options.done ?? "");
-      const own = fresh ? inspectionLook(start, pieces, combo.alternative, combo.rotation) : !pieceCount(adds) ? 0 : lookCost(hiddenShare(start, rotateGoal(adds, invertMoves(combo.rotation))));
+      // A solve's first step pays for planning an XCross's pair in inspection (nothing for a cross); a later step for finding its pieces, on the cube as
+      // the hands hold it (a grip rotation made as one with the rotations before it: see lookedFrom)
+      const looked = lookedFrom(options.done ?? "", combo.rotation);
+      const own = fresh ? inspectionLook(heldPattern(scramble, options.done ?? ""), pieces, combo.alternative, combo.rotation) : !pieceCount(adds) ? 0 : lookCost(hiddenShare(heldPattern(scramble, looked.done), rotateGoal(adds, invertMoves(looked.rotation))));
       known = { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
       comboLooks.set(combo, known);
     }
@@ -384,11 +385,13 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
     return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts) };
   };
   // Moves as the hands make them, with what finding pieces adds (`look`), scored unless their floor is above the bar of the answer's size (a tie with
-  // the bar is still scored: the order of the answers decides it); where they cancel into the moves before the step, what's left of them less the saving
+  // the bar is still scored: the order of the answers decides it); where they cancel into the moves before the step, what's left of them less the saving.
+  // On a method's last step the rotations after the last turn aren't made (the solve is over), so they cost nothing
   const score = (text: string, answer: Answer, look: number): { speed: number; clean: boolean } | null => {
     const clean = noteClean(text);
-    const joined = cut(text);
-    const own = joined ? joined.rest : text;
+    const made = options.last ? withoutEndRotations(text) : text;
+    const joined = cut(made);
+    const own = joined ? joined.rest : made;
     const saving = joined ? joined.saving : 0;
     return speedFloor(own, undefined, fresh) - saving + look > barOf(answer) + 1e-6 ? null : { speed: speedCost(own, undefined, fresh) - saving + look, clean };
   };

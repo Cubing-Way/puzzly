@@ -5,7 +5,7 @@ import { Alg } from "cubing/alg";
 // Full 3x3x3 solver
 import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 // Move text helpers
-import { FACE_MOVES, countMoves, joinMoves, shortRotations } from "../core/moves";
+import { FACE_MOVES, countMoves, joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Goal text
@@ -325,9 +325,14 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
     const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };
     // An answer with a wide turn is the plain one's result with its own solution, in both writings (one that starts with the cube held another way
-    // starts with its own rotations instead of the grip rotation), a rotation it starts with joined to the grip rotation the short way (z y then z is x y2)
+    // starts with its own rotations instead of the grip rotation), a rotation it starts with joined to the grip rotation the short way (z y then z is x y2);
+    // on a method's last step without the rotations after its last turn, as it was scored (the solve is over)
     const { rotation } = entry.answer.combo;
-    return entry.wide ? { ...result, solution: new Alg(shortRotations(joinMoves(rotation, entry.wide.plain))), wide: shortRotations(joinMoves(entry.wide.start ?? rotation, entry.wide.wide)) } : result;
+    if (!entry.wide) return result;
+    const solution = shortRotations(joinMoves(rotation, entry.wide.plain));
+    const written = shortRotations(joinMoves(entry.wide.start ?? rotation, entry.wide.wide));
+    const wide = options.last ? withoutEndRotations(written) : written;
+    return wide === solution ? { ...result, solution: new Alg(solution) } : { ...result, solution: new Alg(solution), wide };
   });
 }
 

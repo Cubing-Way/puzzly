@@ -9,7 +9,7 @@ import { algSet, type AlgSet } from "../algs/sets";
 // Algs as plain face turns
 import { toFaces } from "../core/faces";
 // Move text helpers
-import { countMoves, joinMoves } from "../core/moves";
+import { countMoves, joinMoves, withoutEndRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern, kpuzzle } from "../core/puzzle";
 // Roles, goal text and goal masks
@@ -152,7 +152,9 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
         for (const last of ["", ...set.adjust]) {
           const offset = reached(last ? after.applyAlg(last) : after);
           if (offset === undefined) continue;
-          const [hands, solution] = [joinMoves(before, alg.hands, last), joinMoves(before, alg.faces, last)];
+          // As the hands make it (a method's last step: without the rotations after its last turn, the solve is over), and as the face turns it makes
+          const made = joinMoves(before, alg.hands, last);
+          const [hands, solution] = [options.last ? withoutEndRotations(made) : made, joinMoves(before, alg.faces, last)];
           found.push({
             result: { solution: new Alg(solution), ...(hands === solution ? {} : { wide: hands }), rotation: "", offset, pieces: text, settled: text, alternative, searches: 0, alg: alg.name },
             cost: bySpeed ? speedCostAfter(hands, previous, undefined, fresh, previousStarts) : countMoves(solution),

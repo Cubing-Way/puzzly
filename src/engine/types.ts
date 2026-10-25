@@ -94,6 +94,9 @@ export interface StepOptions {
   previous?: string;
   // Where each earlier step starts among `previous` (see joinStep), so the counts that belong to one step start over there when they're scored (default: none)
   previousStarts?: number[];
+  // Nothing comes after the step (a method's last step): the solve is over at its last turn, so rotations the hands would make after it are left off,
+  // in its score and its writing (an E perm's closing x) (default: false)
+  last?: boolean;
   // Hears when the search worker builds or loads a table (first-time builds can take seconds), e.g. to show "Building tables…"
   onProgress?: (progress: TableProgress) => void;
 }
