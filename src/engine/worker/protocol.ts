@@ -10,6 +10,11 @@ import type { WritingSearch } from "../speed/fingering";
 import type { Limit, SpeedBoundData } from "../step/bound";
 // Table progress and goals, as the engine has them
 import type { Goal, TableProgress } from "../types";
+// The engine calls a batch engine runs
+import type { solveStep, stepCandidates } from "../step/step";
+import type { runMethod } from "../method/run";
+import type { searchMethod } from "../method/search";
+import type { beamSearchMethod } from "../method/beam";
 
 // One request to the worker: puzzle and start as JSON, targets as a JSON list (one pattern per offset the goal counts up to, any one counts), or an object with that list
 // plus "solvableWith" moves and / or "orbitTables" (BLD steps: split tables also get whole-orbit tables up to that many states); the text is the cache key as it is;
@@ -139,5 +144,47 @@ export interface ScoringHelperWorker {
   postMessage(message: ScoringHelperMessage): void;
   onmessage: ((event: { data: ScoringHelperReply }) => void) | null;
   onerror: ((event: unknown) => void) | null;
+  terminate(): void;
+}
+
+// The engine calls a batch engine runs (see engine-worker.ts), by name
+export interface BatchCalls {
+  solveStep: typeof solveStep;
+  stepCandidates: typeof stepCandidates;
+  runMethod: typeof runMethod;
+  searchMethod: typeof searchMethod;
+  beamSearchMethod: typeof beamSearchMethod;
+}
+
+// One call of a batch job: the engine function's name and its arguments, as the page would pass them (callbacks in its options are left out: they can't
+// go to another thread)
+export type BatchCall = { [Name in keyof BatchCalls]: { call: Name; args: Parameters<BatchCalls[Name]> } }[keyof BatchCalls];
+
+// What a batch call gives: what that engine function gives (a StepResult, a list of them, a MethodResult…)
+export type BatchResult = Awaited<ReturnType<BatchCalls[keyof BatchCalls]>>;
+
+// One job for a batch engine: its calls, run one after another
+export interface EngineRequest {
+  id: number;
+  calls: BatchCall[];
+}
+
+// A batch engine's answer to one call of a job (`index`: its place in the job): what it gave, with each Alg as its text under ALG_TEXT (Algs can't
+// be sent as they are), or the error it threw
+export interface EngineReply {
+  id: number;
+  index: number;
+  value?: unknown;
+  error?: string;
+}
+
+// Key an Alg's text is sent under in a batch engine's answers
+export const ALG_TEXT = "$alg";
+
+// The part of a Worker the engine uses for a batch engine (a browser Worker, or a Node worker_threads one wrapped to look like it)
+export interface EngineWorker {
+  postMessage(message: EngineRequest): void;
+  onmessage: ((event: { data: EngineReply }) => void) | null;
+  onerror: ((event: { message?: string }) => void) | null;
   terminate(): void;
 }

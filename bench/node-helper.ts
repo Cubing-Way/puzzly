@@ -1,8 +1,9 @@
 // A search helper (src/engine/worker/search-helper.ts) in a Node worker_threads thread, looking like the browser Worker the helper pool expects (bench/out/helper.js),
-// and the scoring worker (src/engine/worker/scoring-worker.ts) and its helpers (scoring-helper.ts) in threads too (bench/out/scoring.js, scoring-helper.js)
+// the scoring worker (src/engine/worker/scoring-worker.ts) and its helpers (scoring-helper.ts) in threads too (bench/out/scoring.js, scoring-helper.js), and
+// batch engines (src/engine/worker/engine-worker.ts) in threads of their own (bench/out/engine.js)
 import { Worker as NodeWorker } from "node:worker_threads";
 import { HELPER_READY, type HelperWorker } from "../src/engine/worker/parallel";
-import type { ScoringHelperWorker, ScoringWorker } from "../src/engine/worker/protocol";
+import type { EngineWorker, ScoringHelperWorker, ScoringWorker } from "../src/engine/worker/protocol";
 
 // Start one helper thread; it keeps the process alive only while a search waits on it, so a benchmark ends without closing its helpers
 export function nodeHelper(): HelperWorker {
@@ -72,4 +73,28 @@ export function nodeScoringHelper(): ScoringHelperWorker {
   worker.on("error", (error) => helper.onerror?.(error));
   worker.unref();
   return helper;
+}
+
+// Start one batch engine in a thread (bench/out/engine.js, next to the bundle); it keeps the process alive only while a job's calls wait on it
+export function nodeEngineWorker(): EngineWorker {
+  const worker = new NodeWorker(new URL("./engine.js", import.meta.url));
+  let waiting = 0;
+  const engine: EngineWorker = {
+    onmessage: null,
+    onerror: null,
+    // Each call of a job gets one reply
+    postMessage: (message) => {
+      if (waiting === 0 && message.calls.length) worker.ref();
+      waiting += message.calls.length;
+      worker.postMessage(message);
+    },
+    terminate: () => void worker.terminate(),
+  };
+  worker.on("message", (data) => {
+    if (--waiting === 0) worker.unref();
+    engine.onmessage?.({ data });
+  });
+  worker.on("error", (error) => engine.onerror?.(error));
+  worker.unref();
+  return engine;
 }

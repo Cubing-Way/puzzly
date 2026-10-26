@@ -6,10 +6,10 @@
 import { DistanceTable, SplitSearch, type InitInput } from "../../../search/pkg/puzzly_search.js";
 // Table sizes and memory budgets
 import { HELPER_MB, MAX_HELPERS, TABLE_DATABASE } from "./limits";
-// Helper workers that search parts of long split searches
-import { HelperPool, type HelperWorker, type ParallelGoal } from "./parallel";
-// Requests as the engine sends them
-import type { SearchRequest } from "./protocol";
+// Helper workers that search parts of long split searches, and a turn for queued messages
+import { HelperPool, yieldToMessages, type HelperWorker, type ParallelGoal } from "./parallel";
+// Requests as the engine sends them, answers as it gets them, and the engine's side of a worker
+import type { SearchReply, SearchRequest, SearchWorker } from "./protocol";
 // A list's speed bound
 import type { SpeedBoundData } from "../step/bound";
 // Solvers and tables kept between searches
@@ -31,8 +31,15 @@ export interface SearchWorkerOptions {
   tableDatabase?: string | null;
 }
 
-// Worker-side global, set when the worker starts (tsconfig only has the page's DOM types)
-let scope: Worker;
+// Where the search worker hears requests and posts its answers: its worker's global scope, or a port the engine talks to in the same thread
+// (see sameThreadSearchWorker)
+interface SearchPort {
+  postMessage(message: SearchReply): void;
+  onmessage: ((event: { data: SearchRequest }) => void) | null;
+}
+
+// That port, set when the worker starts
+let scope: SearchPort;
 // Request being answered, so table progress can name it
 let current = -1;
 // Helper workers for long split searches, started on the first one (null without a way to start them, or when the device reports a single core)
@@ -146,9 +153,10 @@ async function answer(request: SearchRequest): Promise<void> {
   }
 }
 
-// Start answering the engine's requests in this worker: load the Rust code, open the stored tables, set up the helpers; call it once from the worker's script
-export function runSearchWorker(options: SearchWorkerOptions): void {
-  scope = self as unknown as Worker;
+// Start answering the engine's requests in this worker (or on `port`): load the Rust code, open the stored tables, set up the helpers; call it once from
+// the worker's script (tsconfig only has the page's DOM types, hence the cast)
+export function runSearchWorker(options: SearchWorkerOptions, port: SearchPort = self as unknown as SearchPort): void {
+  scope = port;
   // Helpers for long split searches: one per core the device reports beyond this worker's, up to the limit (none without a way to start them)
   const helpers = options.helper ? Math.max(0, Math.min((globalThis.navigator?.hardwareConcurrency ?? 1) - 1, options.maxHelpers ?? MAX_HELPERS)) : 0;
   pool = helpers > 0 ? new HelperPool(options.helper!, helpers, HELPER_MB) : null;
@@ -166,7 +174,21 @@ export function runSearchWorker(options: SearchWorkerOptions): void {
   ready = loadWasm(options.wasm).then(listStored);
   // Requests run one at a time, in order (loading a stored table waits, and the next request mustn't start meanwhile)
   let queue = Promise.resolve();
-  scope.onmessage = ({ data }: MessageEvent<SearchRequest>) => {
+  scope.onmessage = ({ data }) => {
     queue = queue.then(() => answer(data));
   };
+}
+
+// A search worker in the engine's own thread, for a batch engine (see engine-worker.ts), which is a worker already: requests and answers go through
+// queued tasks, as between threads. Its tables stay in this thread's memory until the thread ends (terminate does nothing); call it once per thread
+export function sameThreadSearchWorker(options: SearchWorkerOptions): SearchWorker {
+  const engine: SearchWorker = {
+    postMessage: (data) => void yieldToMessages().then(() => port.onmessage?.({ data })),
+    onmessage: null,
+    onerror: null,
+    terminate() {},
+  };
+  const port: SearchPort = { postMessage: (data) => void yieldToMessages().then(() => engine.onmessage?.({ data })), onmessage: null };
+  runSearchWorker(options, port);
+  return engine;
 }

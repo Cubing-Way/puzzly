@@ -6,7 +6,10 @@ export { loadEngine, type EngineOptions } from "./setup";
 // Data shapes: goals, step options and results, methods and their runs
 export type { Role, Goal, GoalPiece, Rank, StepOptions, NextStep, TableProgress, StepResult, StepConfig, Method, MethodStepResult, MethodResult, MethodOptions } from "./types";
 // The parts of a Worker the engine needs from the app
-export type { SearchWorker, ScoringWorker } from "./worker/protocol";
+export type { SearchWorker, ScoringWorker, EngineWorker } from "./worker/protocol";
+// Batch mode: jobs of engine calls (say, the steps of one solve's review) spread over several whole engines, each in a worker of its own
+export { runBatch, stopEngines, type BatchSettled } from "./worker/batch-client";
+export type { BatchCall, BatchResult } from "./worker/protocol";
 // Piece names and grips
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text

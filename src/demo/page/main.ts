@@ -5,10 +5,12 @@ import wasm from "../../../search/pkg/puzzly_search_bg.wasm";
 // Page start
 import { startPage } from "../app";
 
-// search-worker.js and scoring-worker.js are built next to the page (see search-worker.ts and scoring-worker.ts), so the paths are page-relative; answers
-// are scored in the scoring worker, and what the page itself scores with the Rust speed model
+// search-worker.js, scoring-worker.js and engine-worker.js are built next to the page (see search-worker.ts, scoring-worker.ts and engine-worker.ts), so the
+// paths are page-relative; answers are scored in the scoring worker, and what the page itself scores with the Rust speed model; runBatch's engines
+// start from engine-worker.js
 startPage({
   searchWorker: () => new Worker("search-worker.js", { type: "module" }),
   scoringWorker: () => new Worker("scoring-worker.js", { type: "module" }),
+  engineWorker: () => new Worker("engine-worker.js", { type: "module" }),
   wasm,
 });

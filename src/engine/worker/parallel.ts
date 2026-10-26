@@ -127,11 +127,11 @@ interface Builds {
 }
 
 // Let messages from helpers in (their replies hand out the next tasks) before this thread searches again: setImmediate in Node, a message to itself in browsers
-// (setTimeout waits at least 4 ms once nested)
+// (setTimeout waits at least 4 ms once nested). A search worker in the engine's own thread passes its messages this way too (see sameThreadSearchWorker)
 const channel = typeof setImmediate === "function" ? null : new MessageChannel();
 const yielded: (() => void)[] = [];
 if (channel) channel.port1.onmessage = () => yielded.shift()?.();
-function yieldToMessages(): Promise<void> {
+export function yieldToMessages(): Promise<void> {
   return new Promise((resolve) => {
     if (!channel) return setImmediate(resolve);
     yielded.push(resolve);
