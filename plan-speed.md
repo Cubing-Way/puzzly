@@ -16,7 +16,7 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
   - [x] 2. One call per list of answers: done with Part 1 item 1, the scoring worker gets each list in one message (calls into Rust stay one per answer: batching them would save under 0.5%, see *Facts*)
   - [x] 3. Run in Part 1's scoring worker (2026-10-20)
 - [ ] Part 3 — Pair answers prepared in advance
-  - [x] 1. The pair file for CFOP level 2's pair step, going on past the cap (2026-10-26)
+  - [x] 1. The pair file for CFOP level 2's pair step, going on past the cap (2026-10-26); level 3's too (also levels 4 and 5, CFCE and ZBLL's pairs, once level 5 dropped its rotations in F2L)
   - [ ] 2. The engine answers a matching request from it
   - [ ] 3–4. What depends on the rest of the cube worked out at the time; other options searched as today
 - [ ] Part 4 — A server (optional)
@@ -153,6 +153,24 @@ Rules for every part:
 - Not in the lookup yet: looks (at least the 42 ms between the two searches, since today's also skips going past the cap; worked out at the time for the answers that can still make the 16), cancels into the moves before, and the lookahead's judging runs (pair steps comparing one extra move: the file's answers cut shorter). The 28 steps' own calls were 9.5 s today (1.2 s of the ~6 s each solve took here), 36 ms looked up.
 - Still to measure (item 2): the same solves as the searched step. Kept apart for it: a real step's lists share one node budget and one bar over every free slot, and its bound past the cap moves with looks and cancels. So where a searched step's list was cut, the file may hold answers it never reached, and the lookup may pick better ones. Nothing compared yet.
 
+**Level 3's file** (`node bench/out/pairs.js 0/2 2`, `1/2 2`; 2026-10-26). Its pair step lists 4 extra moves instead of 3, the rest as level 2's. The same step, option for option, is the pair step of levels 3 and 4, CFCE's four and ZBLL's `Pair 1`–`3`, so this one file serves all of them.
+
+- The run: two shards at once, 79 min (4,723 and 4,678 s; CPU 159 min in all), 2.1× level 2's. 8,125,840 answers, 477 MB (~230 KB a case).
+
+| Slots filled | Cases | Time a case | Answers a case | Shortest | Best speed |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 383 | 3.74 s | 4,574 | 6.10 | 8.44 |
+| 1 | 879 | 4.67 s | 4,332 | 6.11 | 8.29 |
+| 2 | 645 | 4.76 s | 3,527 | 6.20 | 8.11 |
+| 3 | 149 | 5.37 s | 1,953 | 6.66 | 7.88 |
+
+- Unlike level 2's, a case takes longer the more slots are filled (level 2: 2.65 → 1.51 s), and its answers drop less (level 2: 4,125 → 910). Slowest 9–12 s: the corner twisted in its own slot with the edge home and every other slot filled (12.2 s), and other cases with two or three slots filled.
+- Against level 2's file, case by case: the same first answer's speed in 1,909 of 2,056. 66 got faster (by 1.13 on average, at most 5.40; 23 of them with an answer longer than level 2 lists). 81 got slower (by 1.64 on average, at most 6.10), every one through avoid F B: level 2's pick turns F or B, and with one move more the same hold has a clean answer, so it drops to the lower tier. On average 8.20 → 8.23. So within a pair step alone, the fourth extra move takes as much as it gives. Solves with it weren't compared here.
+
+**Level 5 needs no file of its own** (2026-10-26). Its pair step was level 3's with cube rotations on x and z allowed inside an answer (`rotationAxes`: one face turn made as the opposite wide turn with a rotation to make up for it, or an x tilt), ranked for turning only (`style: "efficiency"`, so no looks at all; the file has none anyway). The first 10 cases (no other slot filled) took 30–42 s each and listed 47,500–62,300 answers (level 3: ~4,700), about 85% of them with a cube rotation besides the grip's leading y. The best 3 were level 3's in the 4 cases looked at, but an answer with an x or z made the top 16 in 5 of the first 8 cases (from 5th place). At ~4 MB a case and ~70 bytes an answer, the whole file was heading for ~10 h on two shards and ~6–8 GB.
+- So level 5 was changed instead: x and z rotations in F2L make answers no solver would make. Its cross and pairs now make no rotation in the middle of an answer, as levels 1–4 (wide and slice turns that cancel out stay); its last-layer steps keep x and z. Its cross and pairs are now level 4's in the efficiency style, so its pair steps are level 3's file's, and the build was stopped (133 cases done, deleted).
+- Level 5 before and after, `node bench/out/rookie.js 1 3` (seeds 1–3, no rookie mistakes either way): 38.4, 27.3, 32.6 s → 22.3, 18.0, 19.8 s a solve (32.8 → 20.0 s, −39%); speed 52.55, 56.60, 52.80 → 57.35, 50.60, 52.80 (54.0 → 53.6); 45, 46, 43 → 49, 48, 43 moves. Seed 1's three-pair XCross was written with single wide turns (`z y2 U2 Rw2 U' Fw U' F2 Rw U2 Lw D' F'`, then a 7-move last pair); the one it takes now (`x2 R U' R' U' B Rw2 D U' R U2 F' R`) leaves a 10-move last pair. Seed 2 made its last two pairs in one 14-move answer with an x tilt and single wide turns (`x' Rw R' U' R U' Lw' U' Lw U2 M' U' Lw L2`); now it makes them one at a time (`R' U' R`, then `L U M U' Lw' U2 Lw U Lw'`).
+
 ### The same tables on every device (2026-10-22)
 
 - Found with a user's color-neutral CFOP method: Cross with 14 alternatives (cross to quad XCross), all 24 grips, offsets D D2 D', moves with M E S, lookahead 6 over 64 candidates, 4 extra moves, wide / slice / rotation axes x y z; then pairs, OLL and PLL. It took 900 s on the page the first time, 74 s once the tables were stored, and gave another solve on another computer.
@@ -197,7 +215,7 @@ Rules for every part:
 **Why:** a pair step's answer depends only on where its corner and edge are and which slots are still free: a few thousand cases per slot. Solved once ahead of time, the step becomes a lookup, like OLL and PLL from their alg sets (a few hundredths of a second today). Same idea as `plan.md` Parts 2–3 (case tables), for pairs.
 
 **Do:**
-1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3). **Done 2026-10-26** for level 2 with `pastCut` (see *Facts*, Part 3 item 1).
+1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3). **Done 2026-10-26** for level 2 with `pastCut`, then level 3's (see *Facts*, Part 3 item 1).
 2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs.
 3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time.
 4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today.

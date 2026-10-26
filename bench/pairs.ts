@@ -128,9 +128,14 @@ const dir = new URL("./pairs/", import.meta.url);
 mkdirSync(dir, { recursive: true });
 const name = method.name.replace(/\s*\(.*$/, "").replace(/\W+/g, "-").toLowerCase();
 const out = new URL(`./${name}-${step.name.replace(/\W+/g, "-").toLowerCase()}${pastCut ? "" : "-nocut"}-${shard}of${shards}.jsonl`, dir);
+const header = JSON.stringify({ case: "options", method: method.name, step: step.name, pieces: step.pieces, options: { ...optionsFor(cases[0]).options, keep: undefined } });
 const done = new Set<string>();
-if (existsSync(out)) for (const line of readFileSync(out, "utf8").split("\n").filter(Boolean)) done.add(JSON.parse(line).case);
-else appendFileSync(out, JSON.stringify({ case: "options", method: method.name, step: step.name, pieces: step.pieces, options: { ...optionsFor(cases[0]).options, keep: undefined } }) + "\n");
+if (existsSync(out)) {
+  // A run goes on only in a file made with the same options (a method changed since would mix two kinds of answers)
+  const lines = readFileSync(out, "utf8").split("\n").filter(Boolean);
+  if (lines[0] !== header) throw new Error(`${out.pathname} was made with other options: move it away to start again.`);
+  for (const line of lines) done.add(JSON.parse(line).case);
+} else appendFileSync(out, header + "\n");
 
 const mine = cases.filter((_, at) => at % shards === shard);
 console.log(`${method.name}, ${step.name}: ${cases.length} cases, shard ${shard}/${shards} has ${mine.length}, ${mine.filter((one) => done.has(caseKey(one))).length} done → ${out.pathname}`);
