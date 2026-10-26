@@ -1,6 +1,6 @@
 // Batch benchmark: reviews of seeded CFOP solves, each one solveStep per step of CFOP level 1 from where the solve stood (7 calls), first on one engine
-// (its search worker with helpers, as on the page) one call after another, then through runBatch on several engines in threads (bench/out/engine.js);
-// each twice (the first pass builds the tables), with every answer checked to be the same
+// (its search worker with helpers, as on the page) one call after another, then through runBatch on several engines in threads (bench/out/engine.js),
+// each review's calls on one engine and then spread over them; each twice (the first pass builds the tables), with every answer checked to be the same
 // Usage: node bench/out/batch.js [solves, default 8] [engines, default 4]
 import { random, scramble, inProcessWorker } from "./setup";
 import { nodeEngineWorker, nodeHelper, nodeScoringWorker } from "./node-helper";
@@ -37,33 +37,39 @@ for (let i = 0; i < Number(solveCount); i++) {
 }
 const callCount = reviews.flat().length;
 
-// Time one way of answering every review, and give each call's moves (or its error)
-async function timed(name: string, answer: () => Promise<string[]>): Promise<string[]> {
+// Time one way of answering every review: the whole batch, and when the first review was done; gives each call's moves (or its error)
+async function timed(name: string, answer: (reviewDone: (review: number) => void) => Promise<string[]>): Promise<string[]> {
   const started = performance.now();
-  const moves = await answer();
+  let first = Infinity;
+  const moves = await answer(() => (first = Math.min(first, performance.now() - started)));
   const s = (performance.now() - started) / 1000;
-  console.log(`${name}: ${s.toFixed(1)} s, ${(s / reviews.length).toFixed(2)} s a review (${reviews.length} reviews, ${callCount} calls)`);
+  console.log(`${name}: ${s.toFixed(1)} s, ${(s / reviews.length).toFixed(2)} s a review, the first review done after ${(first / 1000).toFixed(1)} s`);
   return moves;
 }
 
 // One engine: every call one after another
-const oneEngine = async () => {
+const oneEngine = async (reviewDone: (review: number) => void) => {
   const moves: string[] = [];
-  for (const { args } of reviews.flat()) {
-    const [s, pieces, options] = args as Parameters<typeof solveStep>;
-    moves.push(await solveStep(s, pieces, options).then((result) => result.solution.toString(), (error) => `ERROR ${error.message}`));
+  for (const [review, calls] of reviews.entries()) {
+    for (const { args } of calls) {
+      const [s, pieces, options] = args as Parameters<typeof solveStep>;
+      moves.push(await solveStep(s, pieces, options).then((result) => result.solution.toString(), (error) => `ERROR ${error.message}`));
+    }
+    reviewDone(review);
   }
   return moves;
 };
-// Batch: each review one job, on whichever engine is free
-const batch = async () =>
-  (await runBatch(reviews)).flat().map((settled) => (settled.status === "fulfilled" ? (settled.value as StepResult).solution.toString() : `ERROR ${settled.reason.message}`));
+// Batch: each review one job, on whichever engine is free (its calls one after another there, or spread over the engines too)
+const batch = (spreadCalls: boolean) => async (reviewDone: (review: number) => void) =>
+  (await runBatch(reviews, { onJob: reviewDone, spreadCalls })).flat().map((settled) => (settled.status === "fulfilled" ? (settled.value as StepResult).solution.toString() : `ERROR ${settled.reason.message}`));
 
+console.log(`${reviews.length} reviews, ${callCount} calls`);
 for (let pass = 1; pass <= 2; pass++) {
   const one = await timed(`pass ${pass} one engine`, oneEngine);
-  const many = await timed(`pass ${pass} batch, ${engineCount} engines`, batch);
-  const same = one.filter((moves, index) => moves === many[index]).length;
-  const errors = [...one, ...many].filter((moves) => moves.startsWith("ERROR")).length;
-  console.log(`pass ${pass}: same answers ${same} of ${callCount}${errors ? `, ${errors} errors` : ""}`);
+  const whole = await timed(`pass ${pass} batch, ${engineCount} engines`, batch(false));
+  const spread = await timed(`pass ${pass} batch, ${engineCount} engines, calls spread`, batch(true));
+  const same = (other: string[]) => one.filter((moves, index) => moves === other[index]).length;
+  const errors = [...one, ...whole, ...spread].filter((moves) => moves.startsWith("ERROR")).length;
+  console.log(`pass ${pass}: same answers ${same(whole)} and ${same(spread)} of ${callCount}${errors ? `, ${errors} errors` : ""}`);
 }
 process.exit(0);

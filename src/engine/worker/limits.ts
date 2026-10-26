@@ -30,6 +30,6 @@ export const STORE_MIN_STATES = 100_000;
 // IndexedDB database the tables are stored in, unless the app names its own
 export const TABLE_DATABASE = "puzzly-tables";
 // Most batch engines (see batch-client.ts), unless the app sets its own: one per thread the device reports, up to this many. Each is a whole engine
-// with its own tables (~280 MB on reviews of CFOP solves). bench/batch.ts on 2 cores / 4 threads, 8 reviews of 7 CFOP step calls, tables built:
-// one engine with its helpers 2.77 s a review, 2 engines 1.98 s, 4 engines 1.65 s
-export const MAX_ENGINES = 4;
+// with its own tables (~280 MB on reviews of CFOP solves, so 8 take ~2.2 GB). bench/batch.ts on 2 cores / 4 threads, 8 reviews of 7 CFOP step
+// calls, tables built: one engine with its helpers 2.77 s a review, 2 engines 1.98 s, 4 engines 1.65 s; more cores should gain more (not measured)
+export const MAX_ENGINES = 8;
