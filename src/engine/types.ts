@@ -125,6 +125,7 @@ export interface StepResult {
   // (a rotation's cost is in the score, so rotating, staying and having to turn the faces are ranked together); 1 = it turns some, or turns L against an
   // open R layer (see HandModel.open), although an answer held the same way doesn't
   tier?: number;
+  speed?: number; // a searched step ranked by speed: the answer's score as it was ranked (its turns as the hands make them, finding pieces and what cancelling into the moves before saves included)
   alg?: string; // a step answered from an alg set: the case it recognised (e.g. "OLL 33", "T perm")
   rotation: string; // grip that won ("" = as held)
   offset: string; // offset the goal was reached up to ("" = none); undo it later with invertMoves(offset)

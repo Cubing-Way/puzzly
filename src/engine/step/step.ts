@@ -323,7 +323,7 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   else if (bySize) ranked = shareOut(ranked, most, (entry) => entry.answer.combo.fresh);
   return ranked.slice(0, most).map((entry) => {
     const plain = stepResult(entry.answer, searches + lists, options.solvableWith, undo);
-    const result = entry.tier === undefined ? plain : { ...plain, tier: entry.tier };
+    const result = { ...plain, ...(entry.tier === undefined ? {} : { tier: entry.tier }), ...(bySpeed ? { speed: entry.speed } : {}) };
     // An answer with a wide turn is the plain one's result with its own solution, in both writings (one that starts with the cube held another way
     // starts with its own rotations instead of the grip rotation), a rotation it starts with joined to the grip rotation the short way (z y then z is x y2);
     // on a method's last step without the rotations after its last turn, as it was scored (the solve is over)

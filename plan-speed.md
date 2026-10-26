@@ -16,6 +16,9 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
   - [x] 2. One call per list of answers: done with Part 1 item 1, the scoring worker gets each list in one message (calls into Rust stay one per answer: batching them would save under 0.5%, see *Facts*)
   - [x] 3. Run in Part 1's scoring worker (2026-10-20)
 - [ ] Part 3 — Pair answers prepared in advance
+  - [x] 1. The pair file for CFOP level 2's pair step, going on past the cap (2026-10-26)
+  - [ ] 2. The engine answers a matching request from it
+  - [ ] 3–4. What depends on the rest of the cube worked out at the time; other options searched as today
 - [ ] Part 4 — A server (optional)
 - [ ] Part 5 — Several scrambles at once (optional, for later)
 
@@ -119,6 +122,37 @@ Rules for every part:
 - So "overnight" was too much: ~1–2.5 h for one set of step options. Each set is a file of its own: levels 3–4 (4 extra moves: more answers, not measured), level 1 (no wide or slice turns), level 5 (rotations on x z), pseudo-slotting (offsets).
 - The file's size matters more than the time: every answer is ~8.9M (at a rough 30 bytes each, a few hundred MB as text; ~65 MB for one slot). Only the 16 fastest by turning cost aren't enough for the same solves, since looks and cancels re-rank answers at the time; a bar with a margin over the 16th (as much as looks and cancels can change) sits in between.
 
+### Part 3 item 1 — the pair file (2026-10-26, `main` at b088cd9)
+
+- `bench/pairs.ts` (`bench/out/pairs.js [shard] [method] [step]`): one slot's 2,056 cases (the front-right pair; 383, 293 × 3, 215 × 3 and 149 with 0–3 other slots filled), each a cube with the cross and those slots solved and the pair's corner and edge where the case puts them (the other pieces anywhere: the goal hides them). Each runs CFOP level 2's `Pair 1` (its moves, grips, 3 extra moves, avoid F B, wide and slice turns on x z, read from the example method) with `pastCut` on and every listed answer scored (no bar), no looks and no cancels into the moves before. `done` is a U turn after the scramble undone, so the grip rotation counts as on any later step.
+- Only the target slot is asked for: the step's four alternatives with every other slot named as done before (`earlier`) but not kept, so each alternative keeps only the grip with the target at the front right. That is exactly how the step sees one free slot: searched in its first alternative's grip, scored in the three others as twins. The same case in another slot is listed in the same grip, so the same turn order and the same cuts.
+- Results get their score: `StepResult.speed` (by speed: the answer's score as it was ranked), so the file has each answer's turning cost. The Node scoring thread (`bench/node-helper.ts`) now waits for a `limit`'s reply as for a `finish`; before, a list going on past its cap could leave Node free to exit.
+- Output: `bench/out/pairs/cfop-level-2-pair-1-{0,1}of2.jsonl` (gitignored), a line of options then a line per case: where the pieces are, the scramble, time, shortest, and every answer as `[solution, wide writing or null, speed, tier]`, fastest first. Tiers are the case's own (with other slots' answers at the time, a hold may get a clean answer from another slot), so the lookup works them out again from the writing (`turnsFaces`, `strained`).
+- The run: two shards at once (every other case each) on 2 cores / 4 threads, 37 min (2,187 and 2,217 s; CPU 76 min in all); one shard alone ran ~2.3 s a case in a 21-case pilot, so ~80 min. 5,986,632 answers, 347 MB (~170 KB a case).
+
+| Slots filled | Cases | Time a case | Answers a case | Shortest | Best speed |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 383 | 2.65 s | 4,125 | 6.10 | 8.45 |
+| 1 | 879 | 2.29 s | 3,324 | 6.11 | 8.25 |
+| 2 | 645 | 1.78 s | 2,091 | 6.20 | 8.07 |
+| 3 | 149 | 1.51 s | 910 | 6.66 | 7.89 |
+
+- Slowest cases 6–8 s: each shard's first case (7.2 and 8.1 s, the Rust code loaded and the first tables built), one at 7.6 s wall but 5.0 s CPU (the PC busy), and the corner twisted in its own slot with the edge home and every other slot filled (6.0–6.2 s, shortest 9 moves). Every case got answers, and the first 16 and every 64th answer after them were checked to reach the goal. The pilot and the run gave the first case the same answer count (4,784) and the same best answer (7.80).
+- Against the same step without going on past the cap (`PAST_CUT=0`), on every 8th case (257, two processes at once): 124 of them (48%) listed more answers past the cap (2,563 → 2,950 a case; 42 of 48 with no other slot filled, 2 of 18 with three), but only 3 picks changed. One got faster: the corner twisted in its slot with the edge home, 12.90 → 10.70 (`R U' M' U' Rw' U2 Rw U Rw'` for a 10-move `R U Rw U2 R2 U' R U' Rw' R'`). Two got slower, 9.40 → 12.45 and 10.50 → 11.50, through avoid F B: past the cap the step found a clean answer held as is (13.4 and 16.6), so the faster ones held that way, which turn F, dropped to the lower tier and the pick went to a `y` grip with no clean answer. On average the pick went 8.32 → 8.33 and the top 16 10.68 → 10.67; a case took 2.21 → 2.16 s (every answer is scored either way, so the few extra lists cost little next to it).
+- So on level 2's pair step (3 extra moves) going on past the cap hardly changes the answers, and where it does, the tier rule can make the pick slower. The answers it was made for (the triple sexy at 4 extra moves, the anti-sexy at 5) are levels 3–4's.
+- Searched pair steps against the file, with a lookup prototype (`bench/out/pair-lookup.ts`, gitignored): the 28 pair steps of 8 seeded CFOP level 2 solves (`random(77)`), each searched and looked up. The lookup finds each free slot's case in the grip that has it at the front right, names its answers for the step's grips (the grip rotation's cost swapped: a rotation leaves the hands at home, so the rest costs the same), keeps those up to the step's shortest + 3, works the tiers out over every slot, ranks and gives the first 16. A case's answers are made ready when the file is read (length, clean or not: the grip rotation changes neither).
+
+| Pair step (28, 16 answers given) | Time a step |
+| --- | --- |
+| Searched as level 2 runs it (looks, not past the cap) | 339 ms (CPU 358 ms) |
+| Searched with the file's options (no looks, no cancels, past the cap) | 297 ms (CPU 313 ms) |
+| Looked up in the file (same options) | 1.3 ms (the first few 4–9 ms, warming up) |
+
+- Answers, against the search with the file's options: the same pick in 27 of 28 (the other two answers tie at 7.20 and come in the other order), the same 16 answers in order in 24, the same 16 speeds in 27; every looked-up speed is the model's own on the answer as named in the step's grip. The one that differs (solve 6, Pair 2): the file has a clean answer held as is that the step's shared node budget never reached, so three answers held so that turn F or B (9.25, 9.45, 9.80) drop to the lower tier and the lookup's 16 go on with slower clean ones; same pick.
+- Load: parsing a case 1.4 ms, making it ready 20 ms (store that in the file instead); the 63 cases these steps needed read in 2.5 s from the 347 MB of text, so the page needs a compact file.
+- Not in the lookup yet: looks (at least the 42 ms between the two searches, since today's also skips going past the cap; worked out at the time for the answers that can still make the 16), cancels into the moves before, and the lookahead's judging runs (pair steps comparing one extra move: the file's answers cut shorter). The 28 steps' own calls were 9.5 s today (1.2 s of the ~6 s each solve took here), 36 ms looked up.
+- Still to measure (item 2): the same solves as the searched step. Kept apart for it: a real step's lists share one node budget and one bar over every free slot, and its bound past the cap moves with looks and cancels. So where a searched step's list was cut, the file may hold answers it never reached, and the lookup may pick better ones. Nothing compared yet.
+
 ### The same tables on every device (2026-10-22)
 
 - Found with a user's color-neutral CFOP method: Cross with 14 alternatives (cross to quad XCross), all 24 grips, offsets D D2 D', moves with M E S, lookahead 6 over 64 candidates, 4 extra moves, wide / slice / rotation axes x y z; then pairs, OLL and PLL. It took 900 s on the page the first time, 74 s once the tables were stored, and gave another solve on another computer.
@@ -163,7 +197,7 @@ Rules for every part:
 **Why:** a pair step's answer depends only on where its corner and edge are and which slots are still free: a few thousand cases per slot. Solved once ahead of time, the step becomes a lookup, like OLL and PLL from their alg sets (a few hundredths of a second today). Same idea as `plan.md` Parts 2–3 (case tables), for pairs.
 
 **Do:**
-1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3).
+1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3). **Done 2026-10-26** for level 2 with `pastCut` (see *Facts*, Part 3 item 1).
 2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs.
 3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time.
 4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today.

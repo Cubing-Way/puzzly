@@ -36,9 +36,9 @@ export function nodeScoringWorker(): ScoringWorker {
   const scoring: ScoringWorker = {
     onmessage: null,
     onerror: null,
-    // Only a finish gets a reply
+    // Only a finish or a limit (a list going on past its cap) gets a reply
     postMessage: (message) => {
-      if (message.kind === "finish" && waiting++ === 0) worker.ref();
+      if ((message.kind === "finish" || message.kind === "limit") && waiting++ === 0) worker.ref();
       worker.postMessage(message);
     },
     terminate: () => void worker.terminate(),
