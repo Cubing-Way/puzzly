@@ -12,6 +12,7 @@
 // Usage: node bench/out/pairs.js [shard, e.g. 0/2, default 0/1] [method index in example-methods.json, default 1 = CFOP level 2] [step name, default Pair 1]
 import { inProcessWorker } from "./setup";
 import { nodeHelper, nodeScoringWorker } from "./node-helper";
+import { SLOTS, CROSS } from "./pair-cases";
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
 import { runSearchWorker } from "../src/engine/worker/search-worker.ts";
 import { loadEngine, readMethod, stepCandidates, goalFromText, reachesGoal, joinMoves, countMoves } from "../src/engine/index.ts";
@@ -32,15 +33,8 @@ const step = method.steps.find((each) => each.name === stepName);
 if (!step) throw new Error(`no step "${stepName}" in ${method.name}`);
 const pastCut = process.env.PAST_CUT !== "0";
 
-// Slots: name, corner and edge numbers (cubing.js order), as goal text; the target is the first
-const SLOTS = [
-  { name: "FR", corner: 4, edge: 8, text: "DFR FR" },
-  { name: "FL", corner: 5, edge: 9, text: "DFL FL" },
-  { name: "BL", corner: 6, edge: 11, text: "DBL BL" },
-  { name: "BR", corner: 7, edge: 10, text: "DBR BR" },
-];
+// Slots and the cross, the target slot first
 const [TARGET, ...OTHERS] = SLOTS;
-const CROSS = { edges: [4, 5, 6, 7], text: "DF DR DB DL" };
 const TOP = [0, 1, 2, 3];
 const kpuzzle = await cube3x3x3.kpuzzle();
 

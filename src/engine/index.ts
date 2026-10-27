@@ -22,6 +22,9 @@ export { LOOK, lookCost, hiddenShare, nextGroups, nextLook, pieceCount, flipLook
 // Alg sets: the cases a step can be answered from without a search (the last layer's), and an alg as the face turns it makes
 export { ALG_SETS, algSet, type AlgSet, type AlgCase } from "./algs/sets";
 export { algCandidates } from "./step/alg-step";
+// Answer files: a step's answers for every case worked out ahead of time, which steps asked with the options a file was made for are answered from
+export { loadAnswerFile, clearAnswerFiles } from "./step/file-step";
+export { readAnswerFile, answerFileWriter, type AnswerFile, type AnswerFileHeader, type AnswerFileOptions, type PreparedAnswer } from "./step/answer-file";
 export { toFaces } from "./core/faces";
 // Checked moves and scrambles
 export { parseMoves, randomScramble } from "./core/puzzle";

@@ -72,9 +72,12 @@ export function newPieces(after: Goal, before: Goal): Goal {
   return fresh;
 }
 
+// Where each piece sits on a held cube: a pattern, or only its pieces per orbit (all that finding pieces reads)
+export type Spots = { patternData: Record<string, { pieces: number[] }> };
+
 // How much of some pieces is out of sight on a held cube (0 = all in plain sight, 1 = none): where each piece sits (to find it) and, for a piece with a spot
 // of its own, that spot (to see where it goes), averaged
-export function hiddenShare(pattern: KPattern, pieces: Goal, look: LookModel = LOOK): number {
+export function hiddenShare(pattern: Spots, pieces: Goal, look: LookModel = LOOK): number {
   let hidden = 0;
   let parts = 0;
   for (const [orbit, roles] of Object.entries(pieces)) {
@@ -150,7 +153,7 @@ export function nextGroups(next: NextStep, kept: Goal): Goal[] {
 
 // What finding the next step's pieces costs after an answer, on the cube as it leaves it: the easiest of the piece sets the next step could take (the
 // solver picks the one in sight), with every one counting `later` (pieces the steps after it will need, so a back slot done first leaves the front ones open)
-export function nextLook(pattern: KPattern, groups: Goal[], look: LookModel = LOOK): number {
+export function nextLook(pattern: Spots, groups: Goal[], look: LookModel = LOOK): number {
   if (!groups.length) return 0;
   const shares = groups.map((group) => hiddenShare(pattern, group, look));
   const easiest = Math.min(...shares);

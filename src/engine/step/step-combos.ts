@@ -40,6 +40,13 @@ import { gripGoals } from "./grip-goals";
 export async function stepCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
   // Steps that keep every other piece untouched (BLD steps) have their own goals
   if (options.untouched || options.buffer) return untouchedCombos(scramble, pieces, options);
+  const { candidates, lastError } = plannedCombos(scramble, pieces, options);
+  return measureCombos(candidates, options, lastError);
+}
+
+// A step's combos before the worker measures them (not for steps that keep every other piece untouched): every alternative × grip worth searching, with
+// its targets, its twins and its easy-looking order, worked out on the page alone, plus the error to throw if none of them finds anything
+export function plannedCombos(scramble: string, pieces: string, options: StepOptions): { candidates: Combo[]; lastError: unknown } {
   const keep = options.keep;
   const generatorMoves = options.generatorMoves ?? FACE_MOVES;
   // Moves that may finish the goal later ([] = none)
@@ -125,7 +132,7 @@ export async function stepCombos(scramble: string, pieces: string, options: Step
     }
     candidates.push({ ...combo, offsets: combo.offsets.filter((_, index) => reachable[index]), targets: combo.targets.filter((_, index) => reachable[index]) });
   }
-  return measureCombos(candidates, options, lastError);
+  return { candidates, lastError };
 }
 
 // Ask the worker how far each combo is (it builds or loads the tables first): exact from one table, a lower bound from split tables,

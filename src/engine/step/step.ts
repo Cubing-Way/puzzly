@@ -22,6 +22,8 @@ import { NODE_LIMIT } from "../worker/protocol";
 import { scoringSession } from "../worker/scoring-client";
 // Steps answered from an alg set
 import { algCandidates } from "./alg-step";
+// Steps answered from an answer file
+import { fileCandidates } from "./file-step";
 // The speed bound a list ranked by speed prunes with
 import { speedBound } from "./bound";
 // One alternative × grip of a step
@@ -169,6 +171,10 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   // A step with an alg set lists the algs that fit, best first (see algCandidates); only a cube that fits none is searched
   const known = options.algs ? algCandidates(scramble, pieces, { ...options, maxCandidates: options.maxCandidates ?? MAX_CANDIDATES }) : [];
   if (known.length) return known;
+  // A step asked with the options a loaded answer file was made for takes its answers from the file (see file-step.ts); a cube that isn't one of the
+  // file's cases is searched
+  const filed = fileCandidates(scramble, pieces, options, Math.max(1, options.maxCandidates ?? MAX_CANDIDATES));
+  if (filed) return filed;
   const { queue, lastError } = await stepCombos(scramble, pieces, options);
   const { answer, searches } = await searchCombos(queue, options, lastError);
   const shortest = countMoves(answer.moves);

@@ -64,6 +64,8 @@ export interface Places {
 
 // The offset an answer reaches: the one of the target the cube matches after it, or with solvable-with moves the one those moves reach (a lone target needs no check)
 export function reachedOffset({ combo, moves }: Answer, solvableWith: string[] = []): string {
+  // One offset (most steps: none): it's that one, nothing to check
+  if (combo.offsets.length === 1) return combo.offsets[0];
   const end = maskPattern(combo.held.applyAlg(moves), combo.goal);
   const reached = !solvableWith.length
     ? combo.targets.findIndex((target) => end.isIdentical(target))
@@ -104,6 +106,40 @@ export function turnsFaces(moves: string, faces: string[]): boolean {
   return faces.length > 0 && moves.split(" ").some((move) => faces.includes(move[0]));
 }
 
+// How moves as the hands make them hold the cube: the rotations they start with (the grip rotation, written short)
+export function holdOf(text: string): string {
+  return /^((?:[xyz]\S* ?)*)/.exec(text)![1].trim();
+}
+
+// What finding pieces costs an answer of a combo before and after it (see makeScorer): its own pieces before its first turn (the same for each of its
+// answers; on a solve's first step, planned in inspection, only what it plans beyond its smallest alternative) and the next step's piece groups, named in
+// the combo's grip, which are found after its last turn
+export function comboLook(scramble: string, pieces: string, options: ScoringOptions, combo: Combo): { own: number; groups: Goal[] } {
+  // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
+  const before = rotateGoal(options.earlier ?? options.keep ?? {}, combo.rotation);
+  const adds = newPieces(combo.goal, before);
+  // A solve's first step pays for planning an XCross's pair in inspection (nothing for a cross); a later step for finding its pieces, on the cube as
+  // the hands hold it (a grip rotation made as one with the rotations before it: see lookedFrom)
+  const looked = lookedFrom(options.done ?? "", combo.rotation);
+  const own = !options.done?.trim()
+    ? inspectionLook(heldPattern(scramble, options.done ?? ""), pieces, combo.alternative, combo.rotation)
+    : !pieceCount(adds)
+      ? 0
+      : lookCost(hiddenShare(heldPattern(scramble, looked.done), rotateGoal(adds, invertMoves(looked.rotation))));
+  return { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
+}
+
+// Where moves as the hands make them cancel into the moves made before the step (options.previous): what's left of them, and what those moves no longer
+// turn (null: nothing cancels)
+export function cancelCut(options: ScoringOptions): (text: string) => { rest: string; saving: number } | null {
+  const previous = options.previous ?? "";
+  const joinPrevious = previous ? cancelsInto(previous) : null;
+  return (text) => {
+    const joined = joinPrevious && joinPrevious(text);
+    return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts) };
+  };
+}
+
 // With faces to avoid, every answer's tier (see StepResult.tier). By moves: none of the faces is 0, turning some where no answer held the same way
 // does without is 1, turning some although one held the same way doesn't is 2. By speed only that last kind comes later (tier 1): a rotation's cost is
 // in the score, so an answer on other faces after a rotation, one without a rotation and one that has to turn the faces are ranked together.
@@ -115,10 +151,9 @@ export function setTiers(entries: Listed[], avoid: string[], bySpeed: boolean, e
   // Whether an answer turns a face to avoid (or is strained), and the rotations it starts with (how the cube is held for it)
   // An answer that turns L against an open R layer (or the reverse) is no clean answer either: it only wins where the ranking says so
   const dirty = (entry: Listed) => (entry.avoided ??= turnsFaces(handsText(entry), avoid) || strained(handsText(entry)));
-  const holdOf = (entry: Listed) => /^((?:[xyz]\S* ?)*)/.exec(handsText(entry))![1].trim();
-  const cleanHolds = holds ?? new Set(entries.filter((entry) => !dirty(entry)).map(holdOf));
+  const cleanHolds = holds ?? new Set(entries.filter((entry) => !dirty(entry)).map((entry) => holdOf(handsText(entry))));
   for (const entry of entries) {
-    const beaten = dirty(entry) && cleanHolds.has(holdOf(entry));
+    const beaten = dirty(entry) && cleanHolds.has(holdOf(handsText(entry)));
     entry.tier = bySpeed ? (beaten ? 1 : 0) : dirty(entry) ? (beaten ? 2 : 1) : 0;
   }
 }
@@ -340,23 +375,13 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   };
   const lookHere = (held: Answer): number => {
     const { combo } = held;
-    const known = comboLook(combo);
+    const known = knownLook(combo);
     return known.own + (known.groups.length ? nextLook(combo.held.applyAlg(joinMoves(held.moves, ending(held))), known.groups) : 0);
   };
   // A combo's own look (the same for each of its answers) and the next step's piece groups, worked out once
-  const comboLook = (combo: Combo): { own: number; groups: Goal[] } => {
+  const knownLook = (combo: Combo): { own: number; groups: Goal[] } => {
     let known = comboLooks.get(combo);
-    if (!known) {
-      // Pieces done before, named in this combo's grip, and the ones it adds, found on the cube as held before its rotation
-      const before = rotateGoal(options.earlier ?? options.keep ?? {}, combo.rotation);
-      const adds = newPieces(combo.goal, before);
-      // A solve's first step pays for planning an XCross's pair in inspection (nothing for a cross); a later step for finding its pieces, on the cube as
-      // the hands hold it (a grip rotation made as one with the rotations before it: see lookedFrom)
-      const looked = lookedFrom(options.done ?? "", combo.rotation);
-      const own = fresh ? inspectionLook(heldPattern(scramble, options.done ?? ""), pieces, combo.alternative, combo.rotation) : !pieceCount(adds) ? 0 : lookCost(hiddenShare(heldPattern(scramble, looked.done), rotateGoal(adds, invertMoves(looked.rotation))));
-      known = { own, groups: options.next ? nextGroups(options.next, mergeGoals(before, combo.goal)) : [] };
-      comboLooks.set(combo, known);
-    }
+    if (!known) comboLooks.set(combo, (known = comboLook(scramble, pieces, options, combo)));
     return known;
   };
   // An answer's cheapest writing with wide and slice turns that costs `limit` or less, after its grip rotation or with the cube held another way at its
@@ -373,17 +398,11 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   // Whether moves as the hands make them are clean (none of the faces to avoid, no turn against an open layer); a clean one's hold is noted
   const noteClean = (text: string): boolean => {
     const clean = !avoid.length || (!turnsFaces(text, avoid) && !strained(text));
-    if (clean && avoid.length) cleanHolds.add(/^((?:[xyz]\S* ?)*)/.exec(text)![1].trim());
+    if (clean && avoid.length) cleanHolds.add(holdOf(text));
     return clean;
   };
-  // The moves made before the step as the hands make them, which an answer's first turns may cancel into (none on a solve's first step)
-  const previous = options.previous ?? "";
-  // Where moves cancel into the ones before the step: what's left of them, and what those moves no longer turn (null: nothing cancels)
-  const joinPrevious = previous ? cancelsInto(previous) : null;
-  const cut = (text: string): { rest: string; saving: number } | null => {
-    const joined = joinPrevious && joinPrevious(text);
-    return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts) };
-  };
+  // Where moves cancel into the ones made before the step (none on a solve's first step): what's left of them, and what those moves no longer turn
+  const cut = cancelCut(options);
   // Moves as the hands make them, with what finding pieces adds (`look`), scored unless their floor is above the bar of the answer's size (a tie with
   // the bar is still scored: the order of the answers decides it); where they cancel into the moves before the step, what's left of them less the saving.
   // On a method's last step the rotations after the last turn aren't made (the solve is over), so they cost nothing
@@ -500,7 +519,7 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   // The highest of the combos' bars for their first `places` (an answer listed for one is scored held as each: the slowest of that many sure answers of
   // its size, so with all the places, its bar), every grip some clean answer was given in, and the least any answer of them pays for finding pieces
   // (its combo's own look, and the next step's at its least: its pieces in plain sight)
-  const leastLook = (combo: Combo) => comboLook(combo).own + (comboLook(combo).groups.length ? lookCost(0) : 0);
+  const leastLook = (combo: Combo) => knownLook(combo).own + (knownLook(combo).groups.length ? lookCost(0) : 0);
   const limit = (combos: Combo[], places = room): Limit => {
     const first = Math.min(places, room);
     const barIn = (combo: Combo) => {

@@ -15,10 +15,10 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
   - [x] 1. The model ported to the `search/` crate (2026-10-20)
   - [x] 2. One call per list of answers: done with Part 1 item 1, the scoring worker gets each list in one message (calls into Rust stay one per answer: batching them would save under 0.5%, see *Facts*)
   - [x] 3. Run in Part 1's scoring worker (2026-10-20)
-- [ ] Part 3 — Pair answers prepared in advance
+- [x] Part 3 — Pair answers prepared in advance
   - [x] 1. The pair file for CFOP level 2's pair step, going on past the cap (2026-10-26); level 3's too (also levels 4 and 5, CFCE and ZBLL's pairs, once level 5 dropped its rotations in F2L)
-  - [ ] 2. The engine answers a matching request from it
-  - [ ] 3–4. What depends on the rest of the cube worked out at the time; other options searched as today
+  - [x] 2. The engine answers a matching request from it (2026-10-27)
+  - [x] 3–4. What depends on the rest of the cube worked out at the time; other options searched as today (2026-10-27, with item 2: a method's pair step always has looks and moves before it, so no real request could be answered without them)
 - [ ] Part 4 — A server (optional)
 - [ ] Part 5 — Several scrambles at once (optional, for later)
 
@@ -151,7 +151,7 @@ Rules for every part:
 - Answers, against the search with the file's options: the same pick in 27 of 28 (the other two answers tie at 7.20 and come in the other order), the same 16 answers in order in 24, the same 16 speeds in 27; every looked-up speed is the model's own on the answer as named in the step's grip. The one that differs (solve 6, Pair 2): the file has a clean answer held as is that the step's shared node budget never reached, so three answers held so that turn F or B (9.25, 9.45, 9.80) drop to the lower tier and the lookup's 16 go on with slower clean ones; same pick.
 - Load: parsing a case 1.4 ms, making it ready 20 ms (store that in the file instead); the 63 cases these steps needed read in 2.5 s from the 347 MB of text, so the page needs a compact file.
 - Not in the lookup yet: looks (at least the 42 ms between the two searches, since today's also skips going past the cap; worked out at the time for the answers that can still make the 16), cancels into the moves before, and the lookahead's judging runs (pair steps comparing one extra move: the file's answers cut shorter). The 28 steps' own calls were 9.5 s today (1.2 s of the ~6 s each solve took here), 36 ms looked up.
-- Still to measure (item 2): the same solves as the searched step. Kept apart for it: a real step's lists share one node budget and one bar over every free slot, and its bound past the cap moves with looks and cancels. So where a searched step's list was cut, the file may hold answers it never reached, and the lookup may pick better ones. Nothing compared yet.
+- Still to measure (item 2, measured below in *Part 3 items 2–4*): the same solves as the searched step. Kept apart for it: a real step's lists share one node budget and one bar over every free slot, and its bound past the cap moves with looks and cancels. So where a searched step's list was cut, the file may hold answers it never reached, and the lookup may pick better ones. Nothing compared yet.
 
 **Level 3's file** (`node bench/out/pairs.js 0/2 2`, `1/2 2`; 2026-10-26). Its pair step lists 4 extra moves instead of 3, the rest as level 2's. The same step, option for option, is the pair step of levels 3 and 4, CFCE's four and ZBLL's `Pair 1`–`3`, so this one file serves all of them.
 
@@ -170,6 +170,38 @@ Rules for every part:
 **Level 5 needs no file of its own** (2026-10-26). Its pair step was level 3's with cube rotations on x and z allowed inside an answer (`rotationAxes`: one face turn made as the opposite wide turn with a rotation to make up for it, or an x tilt), ranked for turning only (`style: "efficiency"`, so no looks at all; the file has none anyway). The first 10 cases (no other slot filled) took 30–42 s each and listed 47,500–62,300 answers (level 3: ~4,700), about 85% of them with a cube rotation besides the grip's leading y. The best 3 were level 3's in the 4 cases looked at, but an answer with an x or z made the top 16 in 5 of the first 8 cases (from 5th place). At ~4 MB a case and ~70 bytes an answer, the whole file was heading for ~10 h on two shards and ~6–8 GB.
 - So level 5 was changed instead: x and z rotations in F2L make answers no solver would make. Its cross and pairs now make no rotation in the middle of an answer, as levels 1–4 (wide and slice turns that cancel out stay); its last-layer steps keep x and z. Its cross and pairs are now level 4's in the efficiency style, so its pair steps are level 3's file's, and the build was stopped (133 cases done, deleted).
 - Level 5 before and after, `node bench/out/rookie.js 1 3` (seeds 1–3, no rookie mistakes either way): 38.4, 27.3, 32.6 s → 22.3, 18.0, 19.8 s a solve (32.8 → 20.0 s, −39%); speed 52.55, 56.60, 52.80 → 57.35, 50.60, 52.80 (54.0 → 53.6); 45, 46, 43 → 49, 48, 43 moves. Seed 1's three-pair XCross was written with single wide turns (`z y2 U2 Rw2 U' Fw U' F2 Rw U2 Lw D' F'`, then a 7-move last pair); the one it takes now (`x2 R U' R' U' B Rw2 D U' R U2 F' R`) leaves a 10-move last pair. Seed 2 made its last two pairs in one 14-move answer with an x tilt and single wide turns (`x' Rw R' U' R U' Lw' U' Lw U2 M' U' Lw L2`); now it makes them one at a time (`R' U' R`, then `L U M U' Lw' U2 Lw U Lw'`).
+
+### Part 3 items 2–4 — the engine answers from the file (2026-10-27, `main` at 532016a)
+
+- `bench/answer-file.ts` (`node bench/out/answer-file.js [pair file]`) makes the engine's file from `bench/pairs.ts`'s shards: per case its key, the worker's measured distance of its combo (it orders a step's combos) and the search's shortest answer (both worked out there, as the step finds them), then each answer as 8 bytes and its tokens: its hold, flags (clean as ordered, in some order, its writing), face turns and writing tokens, both costs to hundredths (for bounds only). Level 2's: 2,056 cases, 5,986,632 answers, 137 MB, 7 min; level 3's: 8,125,840 answers, 188 MB, 10.5 min. Every case's shortest answer and every answer's plain cost matched the `.jsonl`.
+- `src/engine/step/answer-file.ts` (the format), `src/engine/step/file-step.ts` (`loadAnswerFile`, `fileCandidates`): `stepCandidates` asks the loaded files after the alg sets. A file stands for a step with the same goal, moves, grips, offsets, faces to avoid and hand-turn axes and no more extra moves (of several, the one made with the fewest); never for a solve's first or last step, BLD, undo-offset or first-found steps, places per alternative (the beam search) or a file whose answers rotate the cube in their middle. `pastCut` doesn't matter: the file went on past the cap, so it holds at least what the step lists. A case is known by what the search sees, the combo's goal and its held cube with the goal's hidden pieces masked, so the engine still never knows a step by name. `plannedCombos` (the page-side half of `stepCombos`) builds the combos without the worker, so a solve whose pair steps all come from the file builds no pair table.
+- The answers are ranked as the step's scoring ranks them: the combos in the worker's measured order (from the file), the step's shortest answer first, each answer in each twin grip (its rotation's cost swapped), its look, cancels into the moves before (another order of a first run about one axis may win then, and its writing is searched), the flip, its writing, tiers over every free slot, duplicates by how they leave the cube. Only answers whose lower bound (the file's costs, the least look, floors after a cancel) can still make the list are scored, with the very functions the scorer uses.
+- Checked before relying on it: a writing search's cost is `speedCost` of its text to the bit, and is the file's (1,497 writings); in another grip it costs the same, and 8 of 5,988 come out as another writing of equal cost (the answers given are written again, ~0.2 ms each).
+- Found on the way, each needed for the same answers:
+  - Ties go to the answer listed first, and the search lists in a fixed order: the step's moves in order (`U U2 U' R …`), depth first, of two commuting turns the lower first. So among one combo's answers of one length, the lexicographic order of the answer named in its combo's grip. With the file's own order instead, a list of 16 had its 15th and 16th (both 20.30) the other way round.
+  - A free slot already filled (after a lookahead candidate that made two pairs) isn't a case: the step's answer is empty, so it lists nothing else, and it's answered with no search (before that, such steps were searched and built their tables, 1.6 s once in a solve).
+  - A grip whose only clean answers are writings is a clean grip only when the step's writing search found one under its bar then (the `most` fastest clean answers listed before it). The writing search gives up by floors, so a writing a little over the bar may still be found (19.49 under a bar of 19.37). Such grips (rare: a judging run's few answers, or a grip where every face-turn answer turns F or B) are replayed that way, searching those writings under that bar. Without it, 2 of 140 judged cubes differed; with a replay that didn't search, 1 list of 16.
+- Checked with `bench/answer-check.ts` on seeded solves (`random(77)`): each pair step asked as the method asks it (its list of 16 with all its extra moves, a judging run with one answer and one extra move) and every cube its lookahead judges (after each of the 16 candidates, the next step's judging run), searched as today, searched past the cap, and from the file:
+
+| 3 solves | Lists of 16 | Judging runs | Cubes a lookahead judges |
+| --- | --- | --- | --- |
+| Level 2: the same answers in order, speeds and tiers | 12 of 12 | 12 of 12 | 137 of 140 |
+| Level 2: time a step, searched → file | 503 → 66 ms | 21 → 13 ms | 23 → 6 ms |
+| Level 3: the same answers | 12 of 12 (as past the cap; 11 as today, one changes past the cap) | 12 of 12 | 143 of 144 |
+| Level 3: time a step | 1,250 → 124 ms | 27 → 15 ms | 27 → 8 ms |
+
+- The 4 that differ are all one kind: two answers that leave the cube the same way (`L R' F2 R L' F2` and `U2 L' R U2 R' L`), of which the step keeps one. The pair file kept the one that was faster with no moves before it; after the step's moves the other cancels into them and wins (11.77 against 13.57). The file would need those duplicates too (a pair file run that writes them).
+- Whole solves, `bench/out/pair-solves.ts` (gitignored), 3 seeded scrambles, without and with both files, back to back: the same 12 solutions on levels 2–5.
+
+| 3 solves | Searched | From the files | Pair steps | The cross / XCross step |
+| --- | --- | --- | --- | --- |
+| Level 2 | 27.4, 23.5 s (CPU 30.6, 29.0 s) | 14.0, 13.9 s (CPU 19.0, 18.8 s) | 13.7 → 2.9 s | 13.6 → 11.1 s |
+| Level 3 | 37.0, 30.8 s (CPU 50.7, 47.2 s) | 24.9, 26.4 s (CPU 41.2, 42.1 s) | 11.7 → 2.3 s | 25.1 → 22.5 s |
+| Level 4 | 49.4 s (CPU 70.5 s) | 27.3 s (CPU 44.5 s) | (in the XCross's lookahead) | 49.4 → 27.3 s |
+| Level 5 | 54.2 s (CPU 76.5 s) | 27.8 s (CPU 43.7 s) | (in the XCross's lookahead) | 54.2 → 27.8 s |
+
+- So level 2 ~1.8× (the estimate was ~2.5×), level 3 ~1.3× (~1.5×), levels 4 and 5 ~1.9×: what's left is mostly the cross / XCross step's own list and scoring, which stays searched, and OLL judging in Pair 4's lookahead. A level 2 solve's lookups are ~1 s (4 lists, ~65 judging runs).
+- The engine and the Node bench load the files; the test bench page doesn't (137 and 188 MB). A page file would need only the answers that can make a step's list (a margin for looks and cancels), or one case fetched at a time.
 
 ### The same tables on every device (2026-10-22)
 
@@ -216,9 +248,9 @@ Rules for every part:
 
 **Do:**
 1. A tool that solves every pair case with the same listing and scoring as the step (its answers up to its extra moves, each with its turning cost), run once and written to a file: ~1–2.5 h on this PC for level 2's options, 20–35 min when only one slot's cases are built (the others are the same cases from another front). The file holds ~130k answers with only each case's 16 fastest, ~8.9M with every answer (a few hundred MB as text); the 16 fastest alone won't give the same solves, since looks and cancels re-rank answers at the time (see *Facts*, Part 3). **Done 2026-10-26** for level 2 with `pastCut`, then level 3's (see *Facts*, Part 3 item 1).
-2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs.
-3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time.
-4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today.
+2. The engine loads the file like an alg set and answers a matching request from it: the step's own run and the lookahead's judging runs. **Done 2026-10-27** (see *Facts*, Part 3 items 2–4).
+3. What depends on the rest of the cube (finding the pieces, cancels into the moves before) is still worked out at the time. **Done 2026-10-27**, with item 2.
+4. A step with other options than the file was made for (moves, hand-turn axes, extra moves) is searched as today. **Done 2026-10-27**, with item 2.
 
 **Test:** the same solves as the searched steps; times on levels 2 and 3.
 
