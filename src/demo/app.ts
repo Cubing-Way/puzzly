@@ -1,7 +1,7 @@
 // Test bench page for the cube engine: pick a start position and a goal, solve, check, replay. This wires the form and starts the page
 
 // Cube engine
-import { joinMoves, invertMoves, type EngineOptions, loadEngine } from "../engine";
+import { joinMoves, invertMoves, type EngineOptions, loadEngine, loadAnswerFile } from "../engine";
 // Piece chips and presets
 import { buildChips } from "./chips";
 // Page elements
@@ -168,13 +168,37 @@ function wireForm(): void {
   keepBox.addEventListener("change", () => syncViewer());
 }
 
+// Answer files shipped next to the page (answers/answers.json lists them, gzipped; bench/answer-cut.ts makes them from the full ones): fetched once the
+// engine is loaded, each loaded into it as it comes, so the steps it stands for are answered from it from then on instead of searched (a step asked
+// before that is searched, with the same answers). The page doesn't wait for them; without them it searches
+async function loadAnswers(): Promise<void> {
+  try {
+    const listing = await fetch("answers/answers.json");
+    if (!listing.ok) return;
+    const names: string[] = await listing.json();
+    await Promise.all(
+      names.map(async (name) => {
+        const response = await fetch(`answers/${name}`);
+        if (!response.ok) return;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        // Gzipped as made, unless the server unpacked it on the way
+        const gzipped = bytes[0] === 0x1f && bytes[1] === 0x8b;
+        loadAnswerFile(gzipped ? await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer() : bytes);
+      }),
+    );
+  } catch (error) {
+    console.warn("Answer files not loaded, steps are searched:", error);
+  }
+}
+
 // Start the page: wire its events, load the engine (`engine`: how the page starts its search and scoring workers, and the Rust code for the speed
-// model), build the chips, show the default goal and the first example method, get a first scramble
+// model) and then its answer files, build the chips, show the default goal and the first example method, get a first scramble
 export async function startPage(engine: EngineOptions): Promise<void> {
   wireForm();
   wireMethodEditor();
   wireMethodRun();
   await loadEngine(engine);
+  void loadAnswers();
   buildChips();
   piecesInput.value = presetSelect.value;
   showExamples();

@@ -130,13 +130,13 @@ export function comboLook(scramble: string, pieces: string, options: ScoringOpti
 }
 
 // Where moves as the hands make them cancel into the moves made before the step (options.previous): what's left of them, and what those moves no longer
-// turn (null: nothing cancels)
-export function cancelCut(options: ScoringOptions): (text: string) => { rest: string; saving: number } | null {
+// turn (null: nothing cancels), and whether a move after them could cancel too (see cancelsInto)
+export function cancelCut(options: ScoringOptions): (text: string) => { rest: string; saving: number; open: boolean } | null {
   const previous = options.previous ?? "";
   const joinPrevious = previous ? cancelsInto(previous) : null;
   return (text) => {
     const joined = joinPrevious && joinPrevious(text);
-    return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts) };
+    return joined && { rest: joined.rest, saving: cancelSaving(previous, joined.kept, undefined, options.previousStarts), open: joined.open };
   };
 }
 

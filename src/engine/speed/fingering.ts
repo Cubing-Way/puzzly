@@ -743,8 +743,7 @@ export function speedFloor(moves: string, hands: HandModel = HANDS, fresh = fals
     const turn = readTurn(token);
     if (turn && ROTATIONS.includes(turn.layer)) {
       // A rotation: free before a solve's first turn, otherwise a tilt at best (x) or a rotation (a half turn costs more)
-      const rotation = turn.quarters === 2 ? hands.rotation.half : hands.rotation.quarter;
-      if (!(fresh && !started)) total += turn.layer === "x" ? Math.min(rotation, hands.tilt * (turn.quarters === 2 ? 2 : 1)) : rotation;
+      if (!(fresh && !started)) total += rotationFloor(turn, hands);
       // It starts the layers turned again and the open layers over, as evaluate does (or the floor could be above the cost)
       turned.clear();
       apart = apartAfter(turn, apart);
@@ -762,6 +761,63 @@ export function speedFloor(moves: string, hands: HandModel = HANDS, fresh = fals
     last = turn;
   }
   return total;
+}
+
+// What speedFloor counts for a rotation after a turn: a tilt at best (x) or a rotation (a half turn costs more)
+function rotationFloor(turn: Turn, hands: HandModel): number {
+  const rotation = turn.quarters === 2 ? hands.rotation.half : hands.rotation.quarter;
+  return turn.layer === "x" ? Math.min(rotation, hands.tilt * (turn.quarters === 2 ? 2 : 1)) : rotation;
+}
+
+// The least speedCost can count for some moves after any others (not a solve's first ones; in TypeScript): the same search as evaluate's, from any
+// hand position, the first turn's rhythm at its least after any last turn, each turn's open layer at its least however R and L were apart, and layers
+// turned before left out (they only add). So speedCost(before + moves) ≥ (before's cost to any hand position, at least its speedFloor) + this. A cut
+// answer file keeps it per answer left out (see answer-file.ts), to bound a cancel into the moves before. With a `bar`: when the turns' floors with the
+// same terms already come over it, those (a lower bound too), without the search
+export function leastCostAfter(moves: string, hands: HandModel = HANDS, bar = Infinity): number {
+  const ready = readyFor(hands);
+  const { classes } = ready;
+  const turns = moves.split(/\s+/).filter(Boolean).map(readTurn);
+  // A last turn counts only by whether its layer flows and whether it's slow (see flowAfter, leaveAfter): one of each kind, or none
+  const kinds: (Turn | null)[] = [null];
+  const seen = new Set<string>();
+  for (const layer of [...Object.keys(hands.flow), ...Object.keys(hands.leave)]) {
+    const kind = `${layer in hands.flow}/${layer in hands.leave}`;
+    if (!seen.has(kind)) kinds.push({ layer, wide: false, quarters: 1 });
+    seen.add(kind);
+  }
+  // Each turn's terms: what it pays for its layer turned again and for leaving the rhythm, for an open opposite layer, and what keeping the rhythm saves it
+  const turned = new Set<string>();
+  // How R and L are apart, each way they may have been before (bits as for openCost)
+  const aparts = [0, 1, 2, 3];
+  let floor = 0;
+  const terms = turns.map((turn, index) => {
+    let again = 0;
+    if (turn && ROTATIONS.includes(turn.layer)) turned.clear();
+    else if (turn) {
+      again = turned.has(turn.layer) ? (hands.again[turn.layer] ?? 0) : 0;
+      turned.add(turn.layer);
+    }
+    const lasts = index ? [turns[index - 1]] : kinds;
+    const paid = again + Math.min(...lasts.map((last) => leaveAfter(hands, last, turn)));
+    const flow = Math.max(...lasts.map((last) => flowAfter(hands, last, turn)));
+    const open = Math.min(...aparts.map((apart) => openCost(hands, turn, apart)));
+    for (let way = 0; way < 4; way++) aparts[way] = apartAfter(turn, aparts[way]);
+    // Its floor with these terms (see speedFloor): no search makes it cost less
+    floor += !turn ? hands.other : ROTATIONS.includes(turn.layer) ? rotationFloor(turn, hands) : turnFloor(turn, hands, ready) + paid + open - flow;
+    return { paid, open, flow };
+  });
+  if (floor > bar) return floor;
+  let costs = new Array<number>(STATES * classes).fill(0);
+  for (const [index, turn] of turns.entries()) {
+    const next = new Array<number>(costs.length).fill(Infinity);
+    advance(hands, ready, turn, costs, false, false, terms[index].paid, terms[index].open, terms[index].flow, (to, total) => {
+      if (total < next[to]) next[to] = total;
+    });
+    costs = next;
+  }
+  // The hands brought back home at the end, as evaluate does
+  return Math.min(...costs.map((cost, end) => cost + hands.lastRegrip * HANDS_MOVED[Math.floor(end / classes) * STATES + HOME_STATE]));
 }
 
 // The least any quarter turn and any half turn of an answer can cost in any writing: a face turn at its cheapest and in rhythm, or half a slice turn

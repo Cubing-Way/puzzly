@@ -125,13 +125,18 @@ function meetAt(out: string[], end: number, layer: string): number {
 // written the short way (see shortRun: x' then y x is z'). A turn, named as the cube was held before the
 // rotations they end with, is made as one with their last turn on its layer, past turns about its axis (those can be made in any order): R then R' is
 // nothing, U then U is U2, R then y F' is y, R L then R' is L. Whatever a cancelled pair brings together is joined in turn (… U R' then R U' … loses
-// all four); a turn that stays ends the joining, and turns inside the step stay as they are
-function joinOnto(out: string[], moves: string[]): number {
+// all four); a turn that stays ends the joining, and turns inside the step stay as they are. `joining.open` tells whether the joining never ended (every
+// move was made as one with the moves before, so a move after them could be too)
+function joinOnto(out: string[], moves: string[], joining?: { open: boolean }): number {
   let kept = out.length;
   let at = 0;
+  if (joining) joining.open = true;
   for (; at < moves.length; at++) {
     const next = TURN.exec(moves[at]);
-    if (!next) break;
+    if (!next) {
+      if (joining) joining.open = false;
+      break;
+    }
     const quarters = quartersOf(next);
     // A rotation: as one with a rotation about its axis right before it, otherwise after the moves before; then the rotations they end with the short way
     if (ROTATIONS.includes(next[1])) {
@@ -154,13 +159,17 @@ function joinOnto(out: string[], moves: string[]): number {
     const end = turnsEnd(out);
     const layer = layerBefore(next[1], out.slice(end));
     const meet = layer === null ? -1 : meetAt(out, end, layer);
-    if (meet < 0) break;
+    if (meet < 0) {
+      if (joining) joining.open = false;
+      break;
+    }
     const met = TURN.exec(out[meet])!;
     // Both turns as one: nothing left (the moves around them meet), or one turn that ends the joining
     const both = (quartersOf(met) + quarters) % 4;
     out.splice(meet, 1, ...(both ? [met[1] + SUFFIXES[both]] : []));
     kept = Math.min(kept, meet);
     if (both) {
+      if (joining) joining.open = false;
       at++;
       break;
     }
@@ -216,8 +225,8 @@ export function cancelInto(before: string, moves: string): { kept: string; rest:
 }
 
 // cancelInto for many steps' moves after the same moves (a step scoring thousands of answers): those are read once, and moves whose start can't join
-// them are told so at once, without copying them
-export function cancelsInto(before: string): (moves: string) => { kept: string; rest: string } | null {
+// them are told so at once, without copying them. `open`: every one of the moves was made as one with the moves before (see joinOnto)
+export function cancelsInto(before: string): (moves: string) => { kept: string; rest: string; open: boolean } | null {
   const out = before.split(/\s+/).filter(Boolean);
   const end = turnsEnd(out);
   const trailing = out.slice(end);
@@ -234,8 +243,9 @@ export function cancelsInto(before: string): (moves: string) => { kept: string; 
       if (!layer || meetAt(out, end, layer) < 0) return null;
     }
     const joined = [...out];
-    const kept = joinOnto(joined, tokens);
-    return kept === out.length ? null : { kept: joined.slice(0, kept).join(" "), rest: joined.slice(kept).join(" ") };
+    const joining = { open: true };
+    const kept = joinOnto(joined, tokens, joining);
+    return kept === out.length ? null : { kept: joined.slice(0, kept).join(" "), rest: joined.slice(kept).join(" "), open: joining.open };
   };
 }
 

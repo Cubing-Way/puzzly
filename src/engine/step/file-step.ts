@@ -3,7 +3,9 @@
 // depends on the rest of the cube worked out at the time: finding pieces before and after the answer, cancels into the moves before, which grips have a
 // clean answer over every free slot (the faces to avoid), ties in the order the search lists answers. Only the answers that could still make the
 // step's list are scored, the others are left out by a lower bound from the file's costs, and those that are get the very costs and writings the
-// step's own scoring gives them. A step one of whose combos is at its goal already is done with no moves, also without a search
+// step's own scoring gives them. A step one of whose combos is at its goal already is done with no moves, also without a search. A cut file (a
+// few MB, for a page) holds only some answers per case and says what the rest leave: a step it answers must be one none of those could have changed,
+// else it's searched
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
@@ -38,6 +40,15 @@ import { stepResult } from "./step";
 
 // The answer files loaded so far
 const files: AnswerFile[] = [];
+
+// Steps a cut file couldn't answer so far, by why (see fileCandidates' end), for the bench: its list wasn't full, something left out could come before
+// its last answer (by cost, sure to turn a face to avoid, by a cancel), under a bar a grip's writing was checked with, or be a clean writing a grip is
+// clean by
+export const cutMisses: Record<string, number> = {};
+const miss = (why: string): null => {
+  cutMisses[why] = (cutMisses[why] ?? 0) + 1;
+  return null;
+};
 
 // Load an answer file (its bytes, as bench/answer-file.ts writes them, or a file read already, see readAnswerFile): steps asked with the options it was
 // made for are answered from it from now on
@@ -118,6 +129,10 @@ const AXIS_OF: Record<string, string> = { R: "x", L: "x", M: "x", U: "y", D: "y"
 
 // What a lower bound from the file's costs leaves room for: they're kept to hundredths
 const SLACK = 0.01;
+
+// Whether the hands make what comes after some moves from home: there are none, or they end with a rotation about y or z (both hands let go; an x may be
+// a tilt, see fingering.ts)
+const fromHome = (moves: string): boolean => !moves || /(^|\s)[yz][2']?$/.test(moves);
 
 // An answer scored as the step scores it: as which combo (one of a case's twin grips) and in what order of its face turns, its length, its combo's place
 // in the step's queue (-1: the step's shortest answer, which the step scores first) and that combo's grip, which twin it is, how many new pieces it adds,
@@ -240,6 +255,11 @@ export function fileCandidates(scramble: string, pieces: string, options: StepOp
   const cleanHolds = new Set<string>();
   if (avoid.length) {
     for (const { answers, helds, twinOf } of items) {
+      // A cut file says which holds have one, left out or not
+      if (answers.dropped) {
+        for (const [hold, { anyClean }] of answers.dropped.entries()) if (twinOf[hold] >= 0 && anyClean <= longest) cleanHolds.add(helds[twinOf[hold]].rotation);
+        continue;
+      }
       for (let index = 0; index < answers.count; index++) {
         const twin = twinOf[answers.hold[index]];
         if (answers.turns[index] <= longest && twin >= 0 && answers.flags[index] & FLAG_ANY_CLEAN) cleanHolds.add(helds[twin].rotation);
@@ -430,6 +450,11 @@ export function fileCandidates(scramble: string, pieces: string, options: StepOp
     const [x, y] = [listedOf(a), listedOf(b)];
     return x < y || (x === y && a.twin < b.twin);
   };
+  // For a cut file's check (see below): the grips clean before this, the length of the writing each other grip is clean by, and each writing checked
+  // with the bar it was checked under
+  const cleanBefore = new Set(cleanHolds);
+  const cleanBy = new Map<string, number>();
+  const checked: { turns: number; bar: number }[] = [];
   // A grip whose only clean answers are writings is a clean grip only when the step's writing search found one of those writings, under the bar the
   // step had then (see makeScorer's add): the slowest of the `most` fastest clean answers scored before it, each leaving the cube its own way
   // (no bar while there are fewer). The search gives up on a writing by the floors of its turns, so one a little over the bar may still be found:
@@ -474,8 +499,10 @@ export function fileCandidates(scramble: string, pieces: string, options: StepOp
         const plain = writing.wide!.plain;
         const limit = Math.min(bar, writing.searched!.plain) + writing.searched!.less;
         const found = bar === Infinity || (writingFloor(plain, undefined, false, rotation, true, writtenAxes) <= limit + 1e-6 && writingSearch(plain, { wide: wideAxes, slice: sliceAxes }, undefined, false, rotation, limit, true).found !== null);
+        checked.push({ turns: writing.length, bar });
         if (found) {
           cleanHolds.add(hold);
+          cleanBy.set(hold, writing.length);
           break;
         }
       }
@@ -508,6 +535,81 @@ export function fileCandidates(scramble: string, pieces: string, options: StepOp
     const into = best.findIndex((other) => compare(ranked, other) < 0);
     best.splice(into < 0 ? best.length : into, 0, ranked);
     best.length = Math.min(best.length, most);
+  }
+  // A cut file left answers out (see DroppedHold in answer-file.ts): each must rank after the last one given by its bound, as if it were listed (so
+  // the list must be full), and none may change which grips are clean: be one a grip could be clean by, or come in under the bar a writing was checked
+  // with. Otherwise the step is searched
+  if (file.header.cut) {
+    const last = best.length >= most ? best[most - 1] : null;
+    // Each text's cancel into the moves before, worked out once (the same turns come up for many first turns and holds)
+    const cuts = new Map<string, ReturnType<typeof cut>>();
+    const cutOnce = (text: string) => {
+      if (!cuts.has(text)) cuts.set(text, cut(text));
+      return cuts.get(text)!;
+    };
+    const after = (tier: number, bound: number): boolean => !!last && (tier > (last.tier ?? 0) || (tier === (last.tier ?? 0) && bound > last.speed + 1e-9));
+    const underBar = (turns: number, bound: number): boolean => checked.some((writing) => turns <= writing.turns && bound <= writing.bar + 1e-9);
+    for (const item of items) {
+      const { answers, helds, twinOf, looks, shift } = item;
+      for (const [hold, dropped] of (answers.dropped ?? []).entries()) {
+        const twin = twinOf[hold];
+        if (twin < 0 || !dropped.lengths.some(({ turns }) => turns <= longest)) continue;
+        if (!last) return miss("short");
+        const { rotation } = helds[twin];
+        const least = looks[twin].least;
+        // Those of each length: those that may be clean, and those sure not to be (in a clean grip they come after every clean one)
+        for (const length of dropped.lengths) {
+          if (length.turns > longest) continue;
+          const bound = Math.min(length.plain, length.written + flip) + shift[hold] - SLACK + least;
+          if (!after(0, bound)) return miss("cost");
+          if (underBar(length.turns, bound)) return miss("bar");
+          if (!after(cleanHolds.has(rotation) ? 1 : 0, Math.min(length.dirtyPlain, length.dirtyWritten + flip) + shift[hold] - SLACK + least)) return miss("dirty");
+        }
+        // Those whose first turn may cancel into the moves before: the floor of what's left of those moves and the turn, less what they no longer
+        // turn, then the least the rest of the answer costs after any moves (see leastCostAfter), or its own cost where the hands start it from home
+        // (what's left is nothing, or ends with a rotation about y or z). Where its next turns cancel too, each longer run of turns that join (only
+        // turns that meet one of the moves before's last turns join, so there are few; a second turn only as those answers have it) with the least
+        // those answers cost after two turns, and any answer left out after more
+        if (previous) {
+          const leftOf = (joined: { rest: string; saving: number }) => speedFloor(joined.rest, undefined, false) - joined.saving;
+          const joinedAfter = (text: string, joined: { rest: string }, token: string) => {
+            const longer = cutOnce(joinMoves(text, token))!;
+            return longer.rest === joinMoves(joined.rest, token) ? null : longer;
+          };
+          // After `turns` turns (the next one joining too), the least (after two, the first turn's own: `two`, from any hand position and from home)
+          const deeper = (text: string, joined: { rest: string; open: boolean }, turns: number, two: number[], seconds: number[], deepest = Infinity): number => {
+            // A turn that stayed ended the joining: nothing after it joins
+            if (!joined.open || (turns > 2 && turns - 3 >= dropped.deeper.length)) return Infinity;
+            let lowest = Infinity;
+            for (const token of turns === 2 ? seconds.map((second) => tokens[second]) : tokens) {
+              const longer = joinedAfter(text, joined, token);
+              if (!longer) continue;
+              const home = fromHome(longer.rest);
+              const rest = turns === 2 ? two[home ? 1 : 0] : (home ? dropped.deeperHome : dropped.deeper)[turns - 3];
+              lowest = Math.min(lowest, leftOf(longer) + rest, turns < deepest ? deeper(joinMoves(text, token), longer, turns + 1, two, seconds, deepest) : Infinity);
+            }
+            return lowest;
+          };
+          for (const first of dropped.firsts) {
+            if (!joins(item, twin, first.token)) continue;
+            const text = joinMoves(rotation, tokens[first.token]);
+            const joined = cutOnce(text)!;
+            const plainBound = Math.min(first.plain, first.written + flip) + shift[hold] - SLACK + least;
+            const firstTurn = leftOf(joined) + (fromHome(joined.rest) ? first.afterHome : first.after);
+            const chained = deeper(text, joined, 2, [first.afterTwo, first.afterTwoHome], first.second);
+            // Costs are kept to hundredths: SLACK covers the rounding (a writing's flip is left out: it only adds)
+            const bound = Math.min(plainBound, Math.min(firstTurn, chained) - SLACK + least);
+            if (!after(0, plainBound)) return miss("cancel-class cost");
+            if (!after(0, firstTurn - SLACK + least)) return miss("cancel 1 turn");
+            if (!after(0, bound)) return miss(after(0, Math.min(plainBound, Math.min(firstTurn, deeper(text, joined, 2, [first.afterTwo, first.afterTwoHome], first.second, 2)) - SLACK + least)) ? "cancel 3+ turns" : "cancel 2 turns");
+            if (underBar(0, bound)) return miss("bar");
+          }
+        }
+        // A grip that isn't clean by a turn order: none left out may be a clean writing listed before the one it's clean by
+        const by = cleanBy.get(rotation);
+        if (dropped.writingClean <= longest && !cleanBefore.has(rotation) && !(by !== undefined && dropped.writingClean > by)) return miss("writing");
+      }
+    }
   }
   // The answers given that are written as the file writes them held another way, written as the step writes them (the same cost: only a tie may come
   // out another way, and then its tier may change)
