@@ -22,7 +22,10 @@ This plan is about **where and how** the engine runs, so the slow presets (CFOP 
   - [x] 5. Cut files for the test bench page (2026-10-27): CFOP level 2's 4.3 MB and level 3's 4.8 MB gzipped (1.8% and 1.4% of the answers, and what the rest leave); a step is answered from one only when nothing it left out could have made its list, else searched, so its answers are always the full file's; no faster yet (it answers about a quarter of the lists), so the page ships none
   - [ ] 6. For later: the full files downloaded once and kept (a desktop app, or the page with a one-time download into the browser's storage), see Part 3 item 6
   - [ ] 7. For later: the first step (cross or XCross) prepared in advance too, after measuring where its time goes and how many cases it has, see Part 3 item 7
-- [ ] Part 4 — A server (optional)
+- [x] Part 4 — A server (optional): on AWS Lambda (2026-10-27), see the README's *Solve server*
+  - [x] 1. The engine on a server, with the full pair answer files and its tables kept while the container lives: the same solves, CFOP level 2 2× and level 3 2.4× faster than this PC
+  - [ ] 2. The test bench page asking it when an address is set (apps call `remoteEngine` themselves for now)
+  - [x] 3. No queue needed: Lambda starts another container for a request that comes while one is busy (up to 10 in this account)
 - [ ] Part 5 — Several scrambles at once (optional, for later)
 
 **Order:** 1 → 2: Part 1 moves the scoring into workers, Part 2 then makes it Rust inside those workers. Part 3 doesn't depend on the others. Part 4 only if a faster machine is wanted. Part 5 is optional and for later: it only helps runs of many scrambles (benchmarks), not a single solve.
@@ -311,6 +314,7 @@ Rules for every part:
 - A modern PC, or a paid server with dedicated cores: ~3×, more with Part 1.
 - Other free hosts (Render, Fly, Hugging Face Spaces…) share weak CPUs: no faster than this PC.
 - Serverless functions (Cloudflare Workers, Vercel) don't fit: time limits, and the tables are lost between calls.
+- **Done on AWS Lambda (2026-10-27):** it fits after all. A request may run up to 15 minutes, and a container keeps its tables between requests until it's dropped after some idle time. The full answer files come with the code (155 MB gzipped; a container starts in 2.2 s). At 3,008 MB arm64 (about 1.7 cores, the most this account allows), CFOP level 2's 3 seeded solves took 10.1 s against 20.3 s here, and level 3's 17.5 s against 42.1 s, the same solutions. The account's US$0.10 a month limits it to roughly 200–360 solves a month: each call reserves its whole 120 s before it runs, so one stopped at the limit is still counted (2026-10-28; see the README's *Solve server*). cubisz sends its plain method runs there since 2026-10-28, its "Computer fastest" ones (minutes a run) staying in the page.
 
 **Test:** the same solves as in the page; time per solve.
 

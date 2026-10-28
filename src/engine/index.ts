@@ -9,7 +9,9 @@ export type { Role, Goal, GoalPiece, Rank, StepOptions, NextStep, TableProgress,
 export type { SearchWorker, ScoringWorker, EngineWorker } from "./worker/protocol";
 // Batch mode: jobs of engine calls (say, the steps of one solve's review) spread over several whole engines, each in a worker of its own
 export { runBatch, stopEngines, type BatchSettled, type BatchRunOptions } from "./worker/batch-client";
-export type { BatchCall, BatchResult } from "./worker/protocol";
+export type { BatchCall, BatchCalls, BatchResult } from "./worker/protocol";
+// Solve server: the same calls answered by the engine on a server (server/handler.ts), so the page builds no tables and loads no answer files
+export { remoteEngine, RemoteEngineError } from "./remote/client";
 // Piece names and grips
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text

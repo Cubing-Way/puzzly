@@ -8,3 +8,5 @@ node_modules.7z
 search/target/
 # Benchmark bundles, recorded requests and cached tables (recreated by npm run bench-build and the bench scripts)
 bench/out/
+# Solve server bundle, gzipped answer files and zip (recreated by npm run server-build)
+server/out/

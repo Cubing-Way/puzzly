@@ -6,7 +6,9 @@
     "build-search": "wasm-pack build search --target web --release",
     "bench-build": "node bench/build.mjs",
     "clean": "rm -rf ./dist",
-    "upgrade-cubing": "npm install --save cubing@latest"
+    "upgrade-cubing": "npm install --save cubing@latest",
+    "server-build": "node server/build.mjs",
+    "server-deploy": "node server/build.mjs && node server/deploy.mjs"
   },
   "dependencies": {
     "cubing": "^0.63.8"
