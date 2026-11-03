@@ -16,6 +16,8 @@ export interface Trick {
   push?: boolean; // the finger pushes the layer (it pulls otherwise)
   reach?: boolean; // the finger first leaves its place to get to the turn: a finger regrip, added to the cost
   cost: number; // the turn itself, without finger regrips
+  left?: number; // what the left hand's mirror image costs, when it isn't the same (a trick that suits the right hand better)
+  name?: string; // what a fingering calls it, when its fingers don't say it (a trick of the whole hand)
 }
 
 // The whole model: the right hand's tricks at each wrist position (the left hand's are their mirror image), and what everything else costs
@@ -32,6 +34,7 @@ export interface HandModel {
   firstRegrip: number; // one hand's regrip before the first turn of a solve (done during inspection); a second hand regripping there pays `regrip`, and so does any regrip before a later step's first turn (the hands come straight from the step before)
   lastRegrip: number; // after the last turn, each hand that isn't at home (it has to come back before the next moves)
   fingerRegrip: number; // one finger goes somewhere else while the hand keeps its grip: to reach a turn (a `reach` trick, or any wide turn), or back to where the next move needs it
+  tired: number; // added to a finger trick when a finger it uses made the move before the one before it, with one other move between and no regrip of that hand since (U' R' U' with one finger): the finger hasn't recovered. Pushes and tricks with the thumb in them neither pay it nor cause it: a push is the opposite motion of a flick, and with the thumb in it the wrist or the holding finger does the work
   awkward: number; // added to every move made from, or ending in, a grip with both hands away from home (both thumbs on top, or both on the bottom): L' with the right thumb still on top
   open: Record<string, number>; // added to a turn of R or L made while the opposite one is a quarter turn off (the L' of R U L'): the hand on that layer can't hold the rest still, whatever was turned in between and however it grips; less for R, the stronger wrist. A move that already pays for an awkward or a twisted grip pays only the bigger of the two (the same strain)
   twisted: number; // added instead to every move made from, or ending in, a grip with the wrists turned opposite ways (after R L or R' L': one thumb on top, the other on the bottom)
@@ -40,9 +43,9 @@ export interface HandModel {
   other: number; // a move no trick makes (E2, S2, notation the model can't read)
 }
 
-// A trick's name in a fingering: its fingers, and whether it's a push
-export function trickName(trick: Pick<Trick, "fingers" | "push">): string {
-  return trick.fingers.join(" + ") + (trick.push ? " push" : "");
+// A trick's name in a fingering: its own, or its fingers and whether it's a push
+export function trickName(trick: Pick<Trick, "fingers" | "push" | "name">): string {
+  return trick.name ?? trick.fingers.join(" + ") + (trick.push ? " push" : "");
 }
 
 // Costs by kind of trick, so one number tunes them all: a flick (a finger pulls the layer it lies on), a double flick (with the finger beside it, a half turn)
@@ -55,6 +58,12 @@ const THUMB = 1.5;
 // Added to a flick (or double flick) of the layer the hand's own thumb lies on, F with the thumb on the front and U with it on top: the thumb holds that
 // layer and has to let go, so it's no plain flick and costs more than a push (at home the other hand's index finger pushes the same turn instead)
 const AGAINST_THUMB = 0.5;
+// A flick by the middle finger of the layer the index finger lies on: a little slower than the index finger's own, and what a tired index finger alternates with (the second U' of U' R' U')
+const MIDDLE = FLICK + 0.2;
+// A whole hand pull (R' U): with the thumb on the bottom the wrist swings the whole hand, whose fingers lie over the top, and drags U round, no finger leaving its place first; less than the other hand's push of U (1.8 with its reach), and as much as U against the thumb, so R' U R costs what R U R' does
+const PULL = 1.5;
+// The left hand's pull (L U'), which suits it less: more than the right index finger's push of the same U' (1.8 with its reach), so it's only taken when that finger isn't free
+const PULL_LEFT = 1.9;
 
 // A cost to two decimals (sums of tenths drift otherwise)
 function tenths(cost: number): number {
@@ -83,16 +92,24 @@ function layer(finger: Finger, beside: Finger, flick: string, extra = 0, pushes 
 // Pushes don't follow: a finger can only push a layer it reaches from behind (U and D at home, and U for the index finger with the thumb on top), or F'
 // at home, where the index finger reaches over the top.
 // Tricks a finger has to leave its place for are reaches (a finger regrip each): F at home with the index finger or the thumb, every slice turn, every push.
-// Every wide turn takes a finger regrip too (see fingering.ts), so only wrist turns and plain flicks (and double flicks) turn without one
+// Every wide turn takes a finger regrip too (see fingering.ts), so only wrist turns, plain flicks (and double flicks) and the whole hand pull turn without one
 export const HANDS: HandModel = {
   tricks: {
-    // Thumb on the bottom (after R'): the fingers lie over the top, index on F, middle beside the S slice, ring on B, and each pulls its layer down the right side
-    down: [...layer("index", "middle", "F"), ...tricks(["middle"], { S: FLICK }, true), ...layer("ring", "pinky", "B'")],
+    // Thumb on the bottom (after R'): the fingers lie over the top, index on F, middle beside the S slice, ring on B, and each pulls its layer down the right side; the whole hand also drags U round
+    down: [
+      ...layer("index", "middle", "F"),
+      ...tricks(["middle"], { F: MIDDLE }),
+      ...tricks(["middle"], { S: FLICK }, true),
+      ...layer("ring", "pinky", "B'"),
+      // The ring finger is left holding the cube, so the wrist can turn right after it (R' U R), and the thumb in it means no wide turn: a whole hand can't take a second layer along
+      { turn: "U", fingers: ["thumb", "index", "middle"], name: "whole hand pull", cost: PULL, left: PULL_LEFT },
+    ],
     // Thumb on the front: the fingers lie on the back, index on U, middle beside the E slice, ring on D, and each pulls its layer round to the right;
     // the index finger also reaches over the top to F, where it pushes F' or pulls F against its own thumb (slower), the thumb pushes F up, and the
     // middle slice is turned from behind (or by the thumb)
     home: [
       ...layer("index", "middle", "U", 0, true),
+      ...tricks(["middle"], { U: MIDDLE }),
       ...tricks(["index"], { F: FLICK + AGAINST_THUMB, M: FLICK }, true),
       { turn: "F'", fingers: ["index"], push: true, reach: true, cost: PUSH },
       ...tricks(["middle"], { "E'": FLICK + 0.1 }, true),
@@ -106,6 +123,7 @@ export const HANDS: HandModel = {
     // with a longer reach D
     up: [
       ...layer("index", "middle", "B"),
+      ...tricks(["middle"], { B: MIDDLE }),
       ...layer("index", "middle", "U", 0, true, AGAINST_THUMB),
       ...tricks(["index"], { "D'": FLICK }, true),
       ...tricks(["middle"], { "S'": FLICK + 0.2 }, true),
@@ -123,6 +141,7 @@ export const HANDS: HandModel = {
   firstRegrip: 0.5,
   lastRegrip: 1,
   fingerRegrip: 0.6,
+  tired: 0.3,
   awkward: 0.7,
   open: { L: 0.8, R: 0.3 },
   twisted: 1.2,

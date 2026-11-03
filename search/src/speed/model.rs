@@ -14,6 +14,11 @@ pub(crate) const HOME_STATE: usize = HOME * WRISTS + HOME;
 // Fingers as bits, so sets of them can be compared
 const FINGERS: [&str; 5] = ["thumb", "index", "middle", "ring", "pinky"];
 const THUMB: u32 = 1;
+const PINKY: u32 = 16;
+// A mark next to a trick's fingers that it's a push: a push and a flick by one finger are different motions of it, so they tire it differently
+const PUSHED: u32 = 32;
+// Tricks with one of these in them neither pay for tired fingers nor tire them
+pub(crate) const RESTING: u32 = THUMB | PUSHED;
 // The fingers that hold the cube from behind while the others turn (middle and ring)
 pub(crate) const BACK: u32 = 4 | 8;
 
@@ -115,6 +120,7 @@ pub(crate) struct Model {
     pub first_regrip: f64,
     pub last_regrip: f64,
     pub finger_regrip: f64,
+    pub tired: f64,
     pub awkward: f64,
     pub open_l: f64,
     pub open_r: f64,
@@ -129,6 +135,14 @@ pub(crate) struct Model {
     // Per class: the hand whose fingers it leaves out of place (none for class 0) and which fingers
     pub class_side: Vec<usize>,
     pub class_out: Vec<u32>,
+    // The tires a state can have (whose fingers made the move before its class's, so they're tired for the next one: 0 = nobody's, then one per hand and set of flicking fingers), and the states per wrist state (a state = (wrists * classes + class) * tires + tire)
+    pub tires: usize,
+    pub width: usize,
+    // Per class: the tire it leaves once another move has been made (a trick with the thumb in it leaves none)
+    pub class_tire: Vec<usize>,
+    // Per tire: its hand's number (none for tire 0) and its fingers
+    pub tire_side: Vec<usize>,
+    pub tire_fingers: Vec<u32>,
     // Per pair of wrist states (from * STATES + to): how many hands regrip, how many of them to home, and which ones (bit 1 = right, 2 = left)
     pub hands_moved: [usize; STATES * STATES],
     home_regrips: [usize; STATES * STATES],
@@ -174,6 +188,11 @@ fn bits_of(fingers: &Value) -> u32 {
     fingers.as_array().map_or(0, |list| list.iter().filter_map(|finger| FINGERS.iter().position(|&name| finger.as_str() == Some(name))).fold(0, |bits, place| bits | 1 << place))
 }
 
+// A trick's set: its fingers as bits, with the mark when it's a push
+fn set_of(trick: &Value) -> u32 {
+    bits_of(&trick["fingers"]) | if trick["push"].as_bool().unwrap_or(false) { PUSHED } else { 0 }
+}
+
 // A turn as the other hand makes it (its left-right mirror image): the other way round, except half turns and the middle slice, which mirror onto themselves
 fn mirror(turn: &str) -> String {
     if turn.starts_with('M') || turn.ends_with('2') {
@@ -202,11 +221,31 @@ impl Model {
         // Every set of fingers the tricks use, in the order they first come up
         let mut sets: Vec<u32> = Vec::new();
         for trick in listed.iter().flat_map(|list| list.iter()) {
-            let bits = bits_of(&trick["fingers"]);
+            let bits = set_of(trick);
             if !sets.contains(&bits) {
                 sets.push(bits);
             }
         }
+        // The sets of flicking fingers that can tire, in the order they first come up (the pinky only ever turns along with the ring finger, so it says nothing more)
+        let mut tiring: Vec<u32> = Vec::new();
+        for set in sets.iter().filter(|&&set| set & RESTING == 0) {
+            if !tiring.contains(&(set & !PINKY)) {
+                tiring.push(set & !PINKY);
+            }
+        }
+        let classes = 1 + 2 * sets.len();
+        let tires = 1 + 2 * tiring.len();
+        // Each class's tire: its hand's place, and its set's place among the flicking ones
+        let class_tire: Vec<usize> = (0..classes)
+            .map(|class| {
+                let set = if class == 0 { THUMB } else { sets[(class - 1) % sets.len()] };
+                if set & RESTING != 0 {
+                    0
+                } else {
+                    1 + (class - 1) / sets.len() * tiring.len() + tiring.iter().position(|&each| each == set & !PINKY).unwrap_or(0)
+                }
+            })
+            .collect();
         let finger_regrip = number(hands, "fingerRegrip");
         // Each hand's reach per wrist position: turn → its tricks, cheapest first counting a reach's finger regrip (the left hand's are the listed ones mirrored)
         let reach: Vec<Vec<HashMap<String, Vec<Reached>>>> = [false, true]
@@ -219,7 +258,9 @@ impl Model {
                         for trick in list.iter() {
                             let turn = trick["turn"].as_str().unwrap_or_default();
                             let turn = if mirrored { mirror(turn) } else { turn.to_owned() };
-                            let reached = Reached { cost: trick["cost"].as_f64().unwrap_or(0.0), fingers: bits_of(&trick["fingers"]), reach: trick["reach"].as_bool().unwrap_or(false) };
+                            // The left hand pays its own cost for a trick that suits the right hand better
+                            let cost = if mirrored { trick["left"].as_f64() } else { None }.or(trick["cost"].as_f64()).unwrap_or(0.0);
+                            let reached = Reached { cost, fingers: set_of(trick), reach: trick["reach"].as_bool().unwrap_or(false) };
                             made.entry(turn).or_default().push(reached);
                         }
                         let whole = |trick: &Reached| trick.cost + if trick.reach { finger_regrip } else { 0.0 };
@@ -246,6 +287,7 @@ impl Model {
             first_regrip: number(hands, "firstRegrip"),
             last_regrip: number(hands, "lastRegrip"),
             finger_regrip,
+            tired: number(hands, "tired"),
             awkward: number(hands, "awkward"),
             open_l: number(open, "L"),
             open_r: number(open, "R"),
@@ -254,9 +296,14 @@ impl Model {
             rotation_half: number(rotation, "half"),
             tilt: number(hands, "tilt"),
             other: number(hands, "other"),
-            classes: 1 + 2 * sets.len(),
-            class_side: (0..1 + 2 * sets.len()).map(|class| if class == 0 { usize::MAX } else { (class - 1) / sets.len() }).collect(),
-            class_out: (0..1 + 2 * sets.len()).map(|class| if class == 0 { 0 } else { sets[(class - 1) % sets.len()] }).collect(),
+            classes,
+            class_side: (0..classes).map(|class| if class == 0 { usize::MAX } else { (class - 1) / sets.len() }).collect(),
+            class_out: (0..classes).map(|class| if class == 0 { 0 } else { sets[(class - 1) % sets.len()] & !PUSHED }).collect(),
+            tires,
+            width: classes * tires,
+            class_tire,
+            tire_side: (0..tires).map(|tire| if tire == 0 { usize::MAX } else { (tire - 1) / tiring.len() }).collect(),
+            tire_fingers: (0..tires).map(|tire| if tire == 0 { 0 } else { tiring[(tire - 1) % tiring.len()] }).collect(),
             sets,
             hands_moved: [0; STATES * STATES],
             home_regrips: [0; STATES * STATES],

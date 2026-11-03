@@ -1,7 +1,7 @@
 // Speed model, the evaluator: the cheapest way for two hands to make a move sequence (finger tricks, wrist turns, finger regrips and hand regrips), and who makes each move
 
 // The hand map, its wrist positions and its fingers
-import { type HandModel, type Wrist, type Finger, HANDS, WRISTS, trickName } from "./hands";
+import { type HandModel, type Trick, type Wrist, type Finger, HANDS, WRISTS, trickName } from "./hands";
 // The ways an answer can be written with wide and slice turns, and the frames rotations leave the cube in
 import { writingPlan, frameAfter, undoRotations } from "./writings";
 // A step's moves joined onto the moves before it
@@ -28,6 +28,7 @@ export interface FingeringStep {
   finger: string; // "wrist", a trick's fingers, "rotation", "tilt" (an x turn the wrists make together) or "other"
   cost: number; // the move's own cost (its finger regrips, grip surcharges and hand regrips are counted apart)
   fingerRegrips: number; // what its finger regrips cost: a finger leaving its place to reach the turn, or coming back to where this move needs it (0 = none)
+  tired: number; // added because a finger it uses made the move before the one before it, with one other move between (0 = it didn't)
   awkward: number; // added because the move is made from, or ends in, a grip with both hands away from home, the wrists turned the same way (0 = it isn't)
   twisted: number; // added because the move is made from, or ends in, a twisted grip: the wrists turned opposite ways (0 = it isn't)
   again: number; // added because the sequence turned this layer before, for layers that are slow to turn again and again (0 = not so)
@@ -57,6 +58,12 @@ const HOME_STATE = WRISTS.indexOf("home") * WRISTS.length + WRISTS.indexOf("home
 
 // Fingers as bits, so sets of them can be compared
 const BITS: Record<Finger, number> = { thumb: 1, index: 2, middle: 4, ring: 8, pinky: 16 };
+
+// A mark next to a trick's fingers that it's a push: a push and a flick by one finger are different motions of it, so they tire it differently
+const PUSHED = 32;
+
+// Tricks with one of these in them neither pay for tired fingers nor tire them (see HandModel.tired)
+const RESTING = BITS.thumb | PUSHED;
 
 // The fingers that hold the cube from behind while the others turn
 const BACK = BITS.middle | BITS.ring;
@@ -107,11 +114,17 @@ interface Reached {
 type Reach = Map<string, Reached[]>;
 
 // A model made ready for the search, once: each hand's reach per wrist position, every set of fingers its tricks use, and the ways to make each turn seen
-// so far, from each wrist state. A state's class says whose fingers the last move left out of place: 0 = nobody's, then one per hand and set
+// so far, from each wrist state. A state's class says whose fingers the last move left out of place: 0 = nobody's, then one per hand and set. Its tire
+// says whose fingers made the move before that, so they're tired for the next one: 0 = nobody's, then one per hand and set of flicking fingers
 interface Ready {
   reach: Record<Hand, Reach[]>;
   sets: number[];
   classes: number;
+  tires: number;
+  width: number; // states per wrist state (a state = (wrists * classes + class) * tires + tire)
+  tireOf: number[]; // per class: the tire it leaves once another move has been made (a trick with the thumb in it leaves none)
+  tireSide: number[]; // per tire: its hand's number (-1 for none)
+  tireFingers: number[]; // per tire: its fingers as bits
   ways: Map<string, Way[][]>;
   floors: Map<string, number>; // the least each turn seen so far can cost (see turnFloor)
   any?: { quarter: number; half: number }; // the least any quarter turn and any half turn can cost in any writing (see writingFloor)
@@ -146,12 +159,19 @@ function bitsOf(fingers: Finger[]): number {
   return fingers.reduce((bits, finger) => bits | BITS[finger], 0);
 }
 
+// A trick's set: its fingers as bits, with the mark when it's a push
+function setOf(trick: Trick): number {
+  return bitsOf(trick.fingers) | (trick.push ? PUSHED : 0);
+}
+
 // One hand's reach at a wrist position (the left hand's tricks are the listed ones mirrored)
 function reachAt(hands: HandModel, wrist: Wrist, mirrored: boolean): Reach {
   const reach: Reach = new Map();
   for (const trick of hands.tricks[wrist] ?? []) {
     const turn = mirrored ? mirror(trick.turn) : trick.turn;
-    reach.set(turn, [...(reach.get(turn) ?? []), { finger: trickName(trick), cost: trick.cost, fingers: bitsOf(trick.fingers), reach: Boolean(trick.reach) }]);
+    // The left hand pays its own cost for a trick that suits the right hand better
+    const cost = mirrored && trick.left !== undefined ? trick.left : trick.cost;
+    reach.set(turn, [...(reach.get(turn) ?? []), { finger: trickName(trick), cost, fingers: setOf(trick), reach: Boolean(trick.reach) }]);
   }
   // Cheapest first, counting the finger regrip of the tricks a finger has to reach for
   const whole = (trick: Reached) => trick.cost + (trick.reach ? hands.fingerRegrip : 0);
@@ -164,8 +184,19 @@ function readyFor(hands: HandModel): Ready {
   let ready = readied.get(hands);
   if (!ready) {
     const reach = { right: WRISTS.map((wrist) => reachAt(hands, wrist, false)), left: WRISTS.map((wrist) => reachAt(hands, wrist, true)) };
-    const sets = [...new Set(WRISTS.flatMap((wrist) => (hands.tricks[wrist] ?? []).map((trick) => bitsOf(trick.fingers))))];
-    ready = { reach, sets, classes: 1 + BOTH.length * sets.length, ways: new Map(), floors: new Map() };
+    const sets = [...new Set(WRISTS.flatMap((wrist) => (hands.tricks[wrist] ?? []).map(setOf)))];
+    const classes = 1 + BOTH.length * sets.length;
+    // The sets of flicking fingers that can tire, in the order they first come up (the pinky only ever turns along with the ring finger, so it says nothing more)
+    const tiring = [...new Set(sets.filter((set) => !(set & RESTING)).map((set) => set & ~BITS.pinky))];
+    const tires = 1 + BOTH.length * tiring.length;
+    // Each class's tire: its hand's place, and its set's place among the flicking ones
+    const tireOf = Array.from({ length: classes }, (_, last) => {
+      const set = last ? sets[(last - 1) % sets.length] : BITS.thumb;
+      return set & RESTING ? 0 : 1 + Math.floor((last - 1) / sets.length) * tiring.length + tiring.indexOf(set & ~BITS.pinky);
+    });
+    const tireSide = Array.from({ length: tires }, (_, tire) => (tire ? Math.floor((tire - 1) / tiring.length) : -1));
+    const tireFingers = Array.from({ length: tires }, (_, tire) => (tire ? tiring[(tire - 1) % tiring.length] : 0));
+    ready = { reach, sets, classes, tires, width: classes * tires, tireOf, tireSide, tireFingers, ways: new Map(), floors: new Map() };
     readied.set(hands, ready);
   }
   return ready;
@@ -262,7 +293,7 @@ function fingerCost(hands: HandModel, ready: Ready, last: number, way: Way, regr
   const reach = way.reach ? hands.fingerRegrip : 0;
   if (last === 0 || regripped || Math.floor((last - 1) / ready.sets.length) !== way.side) return reach;
   // Fingers the move before left out of place, and the back fingers this move leaves holding the cube
-  const out = ready.sets[(last - 1) % ready.sets.length];
+  const out = ready.sets[(last - 1) % ready.sets.length] & ~PUSHED;
   const holding = BACK & ~way.fingers;
   const back = (!way.reach && (way.fingers & out) !== 0) || (holding !== 0 && (holding & ~out) === 0);
   return back ? reach + hands.fingerRegrip : reach;
@@ -296,7 +327,7 @@ function apartAfter(turn: Turn | null, apart: number): number {
 
 // How one state after a move was reached: the state before the move, the wrist state the move was made from (after any regrips), whether those regrips came
 // before the first turn, who made the move, what it cost on its own, its surcharges for an awkward or a twisted grip, for finger regrips and for turning its
-// layer again, what it saved by keeping the rhythm, and what it paid for an open opposite layer beyond its grip's surcharge
+// layer again, what it saved by keeping the rhythm, what it paid for an open opposite layer beyond its grip's surcharge, and for a tired finger
 interface Link {
   from: number;
   via: number;
@@ -310,35 +341,36 @@ interface Link {
   again: number;
   flow: number;
   open: number;
+  tired: number;
 }
 
 // What advance hands over for each way into a state: the state, its cost so far, and the parts of its link (see Link; `first` is the caller's own).
 // Plain values, so a search that only wants costs makes no object per way
-type Offer = (to: number, total: number, from: number, via: number, hand: Hand | null, finger: string, cost: number, awkward: number, twisted: number, fingers: number, again: number, flow: number, open: number) => void;
+type Offer = (to: number, total: number, from: number, via: number, hand: Hand | null, finger: string, cost: number, awkward: number, twisted: number, fingers: number, again: number, flow: number, open: number, tired: number) => void;
 
 // One move of the search: from each state the hands can be in before it (`before`: their costs so far), every way into a state after it, each handed to
 // `offer`. `first` = no turn was made yet (regrips cost less), `free` = a rotation costs nothing (nothing was turned yet, at the start of a solve),
 // `again` = what the move pays for turning its layer again (and for leaving the rhythm), `opposite` = what it pays for an open opposite layer (see openCost)
 // unless its grip is awkward or twisted, `flow` = what it saves when no hand regrips before it (it keeps the rhythm of the move before)
 function advance(hands: HandModel, ready: Ready, turn: Turn | null, before: number[], first: boolean, free: boolean, again: number, opposite: number, flow: number, offer: Offer): void {
-  const { classes } = ready;
+  const { classes, tires, width, tireOf, tireSide, tireFingers } = ready;
   // States the hands can be in before this move
   const open: number[] = [];
   for (let state = 0; state < before.length; state++) if (before[state] < Infinity) open.push(state);
   if (turn && ROTATIONS.includes(turn.layer)) {
-    // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started); a half turn costs more
+    // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started), which rests their fingers too; a half turn costs more
     const cost = free ? 0 : turn.quarters === 2 ? hands.rotation.half : hands.rotation.quarter;
-    for (const from of open) offer(HOME_STATE * classes, before[from] + cost, from, Math.floor(from / classes), null, "rotation", cost, 0, 0, 0, 0, 0, 0);
+    for (const from of open) offer(HOME_STATE * width, before[from] + cost, from, Math.floor(from / width), null, "rotation", cost, 0, 0, 0, 0, 0, 0, 0);
     // A tilt: an x turn the wrists make together without letting go, where both can go that way (x takes both a step up, x' a step down, x2 two steps)
     if (turn.layer === "x") {
       for (const step of turn.quarters === 2 ? [2, -2] : [turn.quarters === 1 ? 1 : -1]) {
         for (const from of open) {
-          const wrists = Math.floor(from / classes);
+          const wrists = Math.floor(from / width);
           const [right, left] = [wristsOf(wrists).right + step, wristsOf(wrists).left + step];
           if (Math.min(right, left) < 0 || Math.max(right, left) >= WRISTS.length) continue;
           // Both wrists turn with the whole cube in them, so it costs wherever it leads, back home too (the cube really turns, it isn't just named anew)
           const tilt = hands.tilt * Math.abs(step);
-          offer((right * WRISTS.length + left) * classes, before[from] + tilt, from, wrists, null, "tilt", tilt, 0, 0, 0, 0, 0, 0);
+          offer((right * WRISTS.length + left) * width, before[from] + tilt, from, wrists, null, "tilt", tilt, 0, 0, 0, 0, 0, 0, 0);
         }
       }
     }
@@ -352,7 +384,7 @@ function advance(hands: HandModel, ready: Ready, turn: Turn | null, before: numb
     if (!ways.length) continue;
     made = true;
     for (const from of open) {
-      const pair = Math.floor(from / classes) * STATES + via;
+      const pair = Math.floor(from / width) * STATES + via;
       const moved = HANDS_MOVED[pair];
       const home = HOME_REGRIPS[pair];
       // Before the first turn the hands leave home: the first one cheaply, a second one at the full price
@@ -360,36 +392,46 @@ function advance(hands: HandModel, ready: Ready, turn: Turn | null, before: numb
       // A hand that regrips first breaks the rhythm, so the move saves nothing then
       const kept = moved ? 0 : flow;
       const base = before[from] + regrips + again - kept;
+      const last = Math.floor(from / tires) % classes;
+      const tire = from % tires;
+      // The fingers the move before made are tired for the next move, unless their hand regrips now and rests them
+      const tiring = tireOf[last] && !(REGRIPPED[pair] & (1 << tireSide[tireOf[last]])) ? tireOf[last] : 0;
       for (const way of ways) {
-        const fingers = fingerCost(hands, ready, from % classes, way, (REGRIPPED[pair] & (1 << way.side)) !== 0);
+        const regripped = (REGRIPPED[pair] & (1 << way.side)) !== 0;
+        const fingers = fingerCost(hands, ready, last, way, regripped);
+        // A finger that made the move before the one before pays, unless its hand has regripped; a push is the opposite motion, and a trick with the thumb in it is the wrist's or the holding finger's work
+        const tired = !regripped && tireSide[tire] === way.side && way.fingers & tireFingers[tire] && !(way.fingers & RESTING) ? hands.tired : 0;
         // A move made from a twisted grip, or ending in one, costs more; so does one made from, or ending in, a grip with both hands away from home, a little less
         const twisted = TWISTED[via] || TWISTED[way.state] ? hands.twisted : 0;
         const awkward = !twisted && (BOTH_AWAY[via] || BOTH_AWAY[way.state]) ? hands.awkward : 0;
         // An open opposite layer is the same strain as an awkward or a twisted grip (the hands can't hold the rest still): only the bigger of the two is paid
         const opened = Math.max(0, opposite - awkward - twisted);
-        offer(way.state * classes + way.class, base + way.cost + fingers + awkward + twisted + opened, from, via, way.hand, way.finger, way.cost, awkward, twisted, fingers, again, kept, opened);
+        offer((way.state * classes + way.class) * tires + tiring, base + way.cost + fingers + tired + awkward + twisted + opened, from, via, way.hand, way.finger, way.cost, awkward, twisted, fingers, again, kept, opened, tired);
       }
     }
   }
   // No trick makes it from any state (E2, S2, a move the model can't read): it costs `other` and leaves the hands where they are
   if (!made) {
     for (const from of open) {
-      const wrists = Math.floor(from / classes);
+      const wrists = Math.floor(from / width);
       const twisted = TWISTED[wrists] ? hands.twisted : 0;
       const awkward = !twisted && BOTH_AWAY[wrists] ? hands.awkward : 0;
       // An open opposite layer only adds what the grip's surcharge doesn't already charge
       const opened = Math.max(0, opposite - awkward - twisted);
-      offer(wrists * classes, before[from] + hands.other + awkward + twisted + opened + again, from, wrists, null, "other", hands.other, awkward, twisted, 0, again, 0, opened);
+      offer(wrists * width + tireOf[Math.floor(from / tires) % classes], before[from] + hands.other + awkward + twisted + opened + again, from, wrists, null, "other", hands.other, awkward, twisted, 0, again, 0, opened, 0);
     }
   }
 }
 
-// The search behind fingering and speedCost. A state is the wrists and the class of the last move (wrists * classes + class); with `trace` off only the cost is worked out.
+// What tells two fingerings of the same cost apart, far below what a cost is rounded to
+const LATER = 1e-9;
+
+// The search behind fingering and speedCost. A state is the wrists, the class of the last move and the fingers tired by the move before it (see Ready); with `trace` off only the cost is worked out.
 // `starts` = where each step starts, for a joined solve (see joinStep): the counts that belong to one step start over there
 function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolean, starts: number[] = []): Fingering {
   const ready = readyFor(hands);
-  const { classes } = ready;
-  const size = STATES * classes;
+  const { width } = ready;
+  const size = STATES * width;
   const tokens = moves.split(/\s+/).filter(Boolean);
   const turns = tokens.map(readTurn);
   const stepStarts = new Set(starts);
@@ -419,7 +461,7 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
   });
   // Cheapest cost of each state after the moves so far (Infinity = can't be in it): both hands start at home with every finger in place
   let costs = new Array<number>(size).fill(Infinity);
-  costs[HOME_STATE * classes] = 0;
+  costs[HOME_STATE * width] = 0;
   // Per move, each state's link back to the state before it
   const trail: (Link | null)[][] = [];
   // Whether a turn was made yet
@@ -430,10 +472,12 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
     // Before the first turn of a solve a regrip costs less and a rotation is free (in the middle of a solve the hands come straight from the moves before)
     const first = fresh && !started;
     // Keep the cheaper of two ways into a state (its link only when tracing)
-    advance(hands, ready, turn, costs, first, first, agains[index] + leaves[index], opens[index], flows[index], (to, total, from, via, hand, finger, cost, awkward, twisted, fingers, again, flow, open) => {
+    advance(hands, ready, turn, costs, first, first, agains[index] + leaves[index], opens[index], flows[index], (to, plain, from, via, hand, finger, cost, awkward, twisted, fingers, again, flow, open, tired) => {
+      // When tracing, a middle finger flick weighs a hair more the earlier it's made, so of two fingerings that cost the same the index finger goes first (U' R' U', as solvers do it)
+      const total = trace && finger === "middle" ? plain + (tokens.length - index) * LATER : plain;
       if (total >= next[to]) return;
       next[to] = total;
-      if (links) links[to] = { from, via, first, hand, finger, cost, awkward, twisted, fingers, again, flow, open };
+      if (links) links[to] = { from, via, first, hand, finger, cost, awkward, twisted, fingers, again, flow, open, tired };
     });
     // Anything but a rotation is a turn (a move the model can't read too)
     if (!turn || !ROTATIONS.includes(turn.layer)) started = true;
@@ -441,23 +485,23 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
     if (links) trail.push(links);
   }
   // Each end state's cost with its hands brought back home; the cheapest one is where the sequence ends
-  const away = (state: number) => HANDS_MOVED[Math.floor(state / classes) * STATES + HOME_STATE];
+  const away = (state: number) => HANDS_MOVED[Math.floor(state / width) * STATES + HOME_STATE];
   const ends = costs.map((cost, end) => cost + hands.lastRegrip * away(end));
   const total = Math.min(...ends);
   if (!trace) return { cost: round(total), regrips: 0, steps: [], ending: [] };
   // On a tie the end state with fewer hands away from home wins (home itself first)
-  let state = HOME_STATE * classes;
+  let state = HOME_STATE * width;
   for (let end = 0; end < size; end++) {
     const sooner = round(ends[end]) - round(ends[state]);
-    if (sooner < 0 || (sooner === 0 && away(end) < away(state))) state = end;
+    if (sooner < 0 || (sooner === 0 && (away(end) < away(state) || (away(end) === away(state) && ends[end] < ends[state] - LATER / 2)))) state = end;
   }
-  const ending = regripsBetween(Math.floor(state / classes), HOME_STATE).map(({ hand }) => ({ hand, cost: hands.lastRegrip }));
+  const ending = regripsBetween(Math.floor(state / width), HOME_STATE).map(({ hand }) => ({ hand, cost: hands.lastRegrip }));
   // Walk back from that end state, one step per move
   const steps: FingeringStep[] = [];
   for (let index = tokens.length - 1; index >= 0; index--) {
     const link = trail[index][state]!;
     const turn = turns[index];
-    const at = wristsOf(Math.floor(state / classes));
+    const at = wristsOf(Math.floor(state / width));
     // The other ways from the hand position the move was made in (finger tricks of either hand; a wrist turn has none)
     const others = link.hand && turn ? waysFrom(turn, link.via, hands, ready).filter((way) => way.hand !== link.hand || way.finger !== link.finger) : [];
     steps.unshift({
@@ -466,13 +510,14 @@ function evaluate(moves: string, hands: HandModel, fresh: boolean, trace: boolea
       finger: link.finger,
       cost: round(link.cost),
       fingerRegrips: round(link.fingers),
+      tired: link.tired,
       awkward: link.awkward,
       twisted: link.twisted,
       again: agains[index],
       flow: link.flow,
       leave: leaves[index],
       open: round(link.open),
-      regrips: regripsBetween(Math.floor(link.from / classes), link.via).map((regrip, second) => ({ ...regrip, cost: regripCost(hands, regrip.to, link.first, second > 0) })),
+      regrips: regripsBetween(Math.floor(link.from / width), link.via).map((regrip, second) => ({ ...regrip, cost: regripCost(hands, regrip.to, link.first, second > 0) })),
       others: others.map(({ hand, finger, cost, reach }) => ({ hand, finger, cost: round(cost + (reach ? hands.fingerRegrip : 0)) })).sort((a, b) => a.cost - b.cost),
       wrists: { right: WRISTS[at.right], left: WRISTS[at.left] },
     });
@@ -604,8 +649,8 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
     }
     return floor;
   };
-  const { classes } = ready;
-  const size = STATES * classes;
+  const { width } = ready;
+  const size = STATES * width;
   // Layers that cost more to turn again, each a bit of a place's `turned`; what a turn of a layer pays when its bit is set
   const layers = Object.keys(hands.again);
   const againCost = (turned: number, bit: number) => (bit >= 0 && turned & (1 << bit) ? hands.again[layers[bit]] : 0);
@@ -614,7 +659,7 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
   // may keep its rhythm) and which of R and L are a quarter turn off the middle layer
   const madeFirst = (text: string) => {
     let costs = new Array<number>(size).fill(Infinity);
-    costs[HOME_STATE * classes] = 0;
+    costs[HOME_STATE * width] = 0;
     let started = false;
     let turned = 0;
     let last: Turn | null = null;
@@ -696,7 +741,7 @@ export function writingSearch(moves: string, axes: string[] | { wide: string[]; 
   for (const place of levels[plan.length].values()) {
     const end = frames.indexOf(place.frame);
     for (let state = 0; state < size; state++) {
-      const total = place.costs[state] + hands.lastRegrip * HANDS_MOVED[Math.floor(state / classes) * STATES + HOME_STATE];
+      const total = place.costs[state] + hands.lastRegrip * HANDS_MOVED[Math.floor(state / width) * STATES + HOME_STATE];
       const best = bests[end];
       if (!best || round(total) < round(best.total)) bests[end] = { place, state, total };
     }
@@ -776,7 +821,7 @@ function rotationFloor(turn: Turn, hands: HandModel): number {
 // same terms already come over it, those (a lower bound too), without the search
 export function leastCostAfter(moves: string, hands: HandModel = HANDS, bar = Infinity): number {
   const ready = readyFor(hands);
-  const { classes } = ready;
+  const { width } = ready;
   const turns = moves.split(/\s+/).filter(Boolean).map(readTurn);
   // A last turn counts only by whether its layer flows and whether it's slow (see flowAfter, leaveAfter): one of each kind, or none
   const kinds: (Turn | null)[] = [null];
@@ -808,7 +853,7 @@ export function leastCostAfter(moves: string, hands: HandModel = HANDS, bar = In
     return { paid, open, flow };
   });
   if (floor > bar) return floor;
-  let costs = new Array<number>(STATES * classes).fill(0);
+  let costs = new Array<number>(STATES * width).fill(0);
   for (const [index, turn] of turns.entries()) {
     const next = new Array<number>(costs.length).fill(Infinity);
     advance(hands, ready, turn, costs, false, false, terms[index].paid, terms[index].open, terms[index].flow, (to, total) => {
@@ -817,7 +862,7 @@ export function leastCostAfter(moves: string, hands: HandModel = HANDS, bar = In
     costs = next;
   }
   // The hands brought back home at the end, as evaluate does
-  return Math.min(...costs.map((cost, end) => cost + hands.lastRegrip * HANDS_MOVED[Math.floor(end / classes) * STATES + HOME_STATE]));
+  return Math.min(...costs.map((cost, end) => cost + hands.lastRegrip * HANDS_MOVED[Math.floor(end / width) * STATES + HOME_STATE]));
 }
 
 // The least any quarter turn and any half turn of an answer can cost in any writing: a face turn at its cheapest and in rhythm, or half a slice turn

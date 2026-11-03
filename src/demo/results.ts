@@ -126,18 +126,19 @@ function fingeringRows(hands: Fingering): HTMLTableRowElement[] {
     // Who makes the move: a hand's wrist or finger, or nobody (a rotation, or a move no trick makes)
     const by = step.hand ? `${step.hand} ${step.finger}` : step.finger === "other" ? "no trick" : step.finger;
     const others = step.others.map((way) => `${way.hand} ${way.finger} ${way.cost}`).join(", ");
-    // Finger regrips, an awkward grip (both hands away from home), a twisted one (the wrists turned opposite ways), turning a slow layer again and leaving
+    // Finger regrips, a tired finger, an awkward grip (both hands away from home), a twisted one (the wrists turned opposite ways), turning a slow layer again and leaving
     // the rhythm for a slow layer cost more, and a turn that keeps the rhythm of the one before it costs less: all of it is in the move's score, and named
     // beside who makes it
     const notes =
       (step.fingerRegrips ? ` · finger regrip +${step.fingerRegrips}` : "") +
+      (step.tired ? ` · tired finger +${step.tired}` : "") +
       (step.awkward ? ` · awkward grip +${step.awkward}` : "") +
       (step.twisted ? ` · twisted wrists +${step.twisted}` : "") +
       (step.again ? ` · ${step.move[0].toUpperCase()} again +${step.again}` : "") +
       (step.leave ? ` · leaves the rhythm +${step.leave}` : "") +
       (step.open ? ` · opposite layer open +${step.open}` : "") +
       (step.flow ? ` · in rhythm −${step.flow}` : "");
-    const score = Math.round((step.cost + step.fingerRegrips + step.awkward + step.twisted + step.again + step.leave + step.open - step.flow) * 100) / 100;
+    const score = Math.round((step.cost + step.fingerRegrips + step.tired + step.awkward + step.twisted + step.again + step.leave + step.open - step.flow) * 100) / 100;
     return [...regrips, textRow([step.move, by + notes, String(score), others || "—", `R ${step.wrists.right} · L ${step.wrists.left}`])];
   });
   return [...moves, ...hands.ending.map((end) => gripRow(`${end.hand} back home`, end.cost))];

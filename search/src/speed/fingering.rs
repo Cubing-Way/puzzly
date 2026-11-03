@@ -3,23 +3,111 @@
 
 use std::collections::HashMap;
 
-use super::model::{apart_after, read_turn, round, Model, Turn, Way, BACK, HOME_STATE, STATES, WRISTS, X};
+use super::model::{apart_after, read_turn, round, Model, Turn, Way, BACK, HOME_STATE, RESTING, STATES, WRISTS, X};
 use super::writings::{writing_plan, Frame, Token, WritingPlan};
 
-// A state the hands can be in before a move: its number, and its wrist state and class (state = wrists * classes + class)
+// A state the hands can be in before a move: its number, its cost so far, and its wrist state, class and tire (state = (wrists * classes + class) * tires + tire)
 #[derive(Clone, Copy)]
 struct Open {
     from: usize,
+    cost: f64,
     wrists: usize,
     class: usize,
+    tire: usize,
 }
 
-// What a way's finger regrips cost after a move of class `last`: one when the finger first has to reach the turn, and one when the move before was made by
-// the same hand (which hasn't regripped since) and left out of place a finger this one needs: a finger that makes it, or the last one holding the cube from behind
-fn finger_cost(model: &Model, last: usize, way: &Way, regripped: bool) -> f64 {
+impl Open {
+    // A state with what the search reads from it worked out once, not once per way
+    fn new(model: &Model, state: usize, cost: f64) -> Open {
+        let hold = state / model.tires;
+        Open { from: state, cost, wrists: hold / model.classes, class: hold % model.classes, tire: state % model.tires }
+    }
+}
+
+// Calls `each` with every state set in these bits, in order
+fn walk(bits: &[u64], mut each: impl FnMut(usize)) {
+    for (at, &word) in bits.iter().enumerate() {
+        let mut left = word;
+        while left != 0 {
+            each(at * 64 + left.trailing_zeros() as usize);
+            left &= left - 1;
+        }
+    }
+}
+
+// Words of bits for this many states
+fn words(size: usize) -> usize {
+    size.div_ceil(64)
+}
+
+// Each hand state's cheapest cost so far (infinite = can't be in it), and which ones were reached as bits, so a move walks only those, in order
+struct Costs {
+    costs: Vec<f64>,
+    bits: Vec<u64>,
+}
+
+impl Costs {
+    // No state reached yet
+    fn new(size: usize) -> Costs {
+        Costs { costs: vec![f64::INFINITY; size], bits: vec![0; words(size)] }
+    }
+
+    // Keep the cheaper of two ways into a state
+    fn offer(&mut self, to: usize, total: f64) {
+        if total < self.costs[to] {
+            self.costs[to] = total;
+            self.bits[to / 64] |= 1 << (to % 64);
+        }
+    }
+
+    // No state reached again
+    fn clear(&mut self) {
+        let costs = &mut self.costs;
+        walk(&self.bits, |state| costs[state] = f64::INFINITY);
+        self.bits.fill(0);
+    }
+
+    // The states worth going on from
+    fn open(&self, model: &Model, open: &mut Vec<Open>) {
+        open.clear();
+        walk(&self.bits, |state| open.push(Open::new(model, state, self.costs[state])));
+        keep_worthwhile(model, open);
+    }
+}
+
+// Leaves out of the open states (in order, so the tires of a wrist state and class are together) those no way on can come through: two of them differ only by which fingers are tired for the next move, so the cheaper one can pay `tired` at most, one with no tired fingers nothing, and everything after that is the same. Only states that are strictly worse go, so the answer and its ties stay what they are with all of them (TypeScript's search keeps them all)
+fn keep_worthwhile(model: &Model, open: &mut Vec<Open>) {
+    let tires = model.tires;
+    let (mut kept, mut at) = (0, 0);
+    while at < open.len() {
+        let hold = open[at].from / tires;
+        let (mut end, mut least) = (at, f64::INFINITY);
+        while end < open.len() && open[end].from / tires == hold {
+            least = least.min(open[end].cost);
+            end += 1;
+        }
+        // Tire 0 comes first among them when it's there
+        let bar = if open[at].tire == 0 { open[at].cost.min(least + model.tired) } else { least + model.tired };
+        for index in at..end {
+            if open[index].cost <= bar + 1e-9 {
+                open[kept] = open[index];
+                kept += 1;
+            }
+        }
+        at = end;
+    }
+    open.truncate(kept);
+}
+
+// Room for the states a move walks (more are made room for if it takes more)
+const ROOM: usize = 256;
+
+// What a way's finger regrips cost after a move of class `last` (0 when the hand regripped since): one when the finger first has to reach the turn, and one when the move before was made by
+// the same hand and left out of place a finger this one needs: a finger that makes it, or the last one holding the cube from behind
+fn finger_cost(model: &Model, last: usize, way: &Way) -> f64 {
     let reach = if way.reach { model.finger_regrip } else { 0.0 };
     // Class 0 (no finger out of place) belongs to no hand
-    if regripped || model.class_side[last] != way.side {
+    if model.class_side[last] != way.side {
         return reach;
     }
     // Fingers the move before left out of place, and the back fingers this move leaves holding the cube
@@ -33,33 +121,38 @@ fn finger_cost(model: &Model, last: usize, way: &Way, regripped: bool) -> f64 {
     }
 }
 
-// One move of the search: from each state the hands can be in before it (`before`: their costs so far), every way into a state after it, each handed to
-// `offer` as (state after, cost so far, state before). `first`, `free`, `again`, `opposite` and `flow` as in fingering.ts's advance; `open` is room
-// for the states the hands can be in before the move, each with its wrist state and class
+// What's left of a state once its regrips are made before a move: the cheapest such state (the first one on a tie), with what they cost, and the class and tire left (a hand that regrips rests its fingers, so states that differ only by those are the same now)
+#[derive(Clone, Copy)]
+struct Ready {
+    from: usize,
+    base: f64,
+    class: usize,
+    tire: usize,
+}
+
+// One move of the search: from each state the hands can be in before it (`open`, with their costs so far), every way into a state after it, each handed to
+// `offer` as (state after, cost so far, state before). `first`, `free`, `again`, `opposite` and `flow` as in fingering.ts's advance; `ready` is room for what's left of the states before each wrist state, which comes to the same as trying each way from every state and keeping the first of the cheapest
 #[allow(clippy::too_many_arguments)]
-fn advance(model: &Model, turn: Option<Turn>, before: &[f64], first: bool, free: bool, again: f64, opposite: f64, flow: f64, open: &mut Vec<Open>, mut offer: impl FnMut(usize, f64, usize)) {
-    let classes = model.classes;
-    // States the hands can be in before this move (wrists and class worked out once each, not once per way)
-    open.clear();
-    open.extend((0..before.len()).filter(|&state| before[state] < f64::INFINITY).map(|state| Open { from: state, wrists: state / classes, class: state % classes }));
+fn advance(model: &Model, turn: Option<Turn>, open: &[Open], first: bool, free: bool, again: f64, opposite: f64, flow: f64, ready: &mut Vec<Ready>, mut offer: impl FnMut(usize, f64, usize)) {
+    let (tires, width) = (model.tires, model.width);
     if let Some(turn) = turn.filter(Turn::rotation) {
-        // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started); a half turn costs more
+        // A rotation: both hands let go and take the cube again at home (free while the solve hasn't started), which rests their fingers too; a half turn costs more
         let cost = if free { 0.0 } else if turn.quarters == 2 { model.rotation_half } else { model.rotation_quarter };
-        for &Open { from, .. } in open.iter() {
-            offer(HOME_STATE * classes, before[from] + cost, from);
+        for &Open { from, cost: before, .. } in open.iter() {
+            offer(HOME_STATE * width, before + cost, from);
         }
         // A tilt: an x turn the wrists make together without letting go, where both can go that way (x takes both a step up, x' a step down, x2 two steps)
         if turn.layer == X {
             let steps: &[isize] = if turn.quarters == 2 { &[2, -2] } else if turn.quarters == 1 { &[1] } else { &[-1] };
             for &step in steps {
-                for &Open { from, wrists, .. } in open.iter() {
+                for &Open { from, cost, wrists, .. } in open.iter() {
                     let (right, left) = ((wrists / WRISTS) as isize + step, (wrists % WRISTS) as isize + step);
                     if right.min(left) < 0 || right.max(left) >= WRISTS as isize {
                         continue;
                     }
                     // Both wrists turn with the whole cube in them, so it costs wherever it leads, back home too
                     let tilt = model.tilt * step.abs() as f64;
-                    offer((right as usize * WRISTS + left as usize) * classes, before[from] + tilt, from);
+                    offer((right as usize * WRISTS + left as usize) * width, cost + tilt, from);
                 }
             }
         }
@@ -73,31 +166,52 @@ fn advance(model: &Model, turn: Option<Turn>, before: &[f64], first: bool, free:
             continue;
         }
         made = true;
-        for &Open { from, wrists, class } in open.iter() {
+        ready.clear();
+        for &Open { from, cost, wrists, class, tire } in open.iter() {
             let pair = wrists * STATES + via;
             let moved = model.hands_moved[pair];
             // Before the first turn the hands leave home: the first one cheaply, a second one at the full price (see Model::regrips_first)
             let regrips = if first { model.regrips_first[pair] } else { model.regrips_later[pair] };
             // A hand that regrips first breaks the rhythm, so the move saves nothing then
             let kept = if moved > 0 { 0.0 } else { flow };
-            let base = before[from] + regrips + again - kept;
+            let base = cost + regrips + again - kept;
+            // A hand that regrips rests its fingers: they're neither out of place nor tired after it
             let regripped = model.regripped[pair];
+            let class = if class != 0 && regripped & (1 << model.class_side[class]) != 0 { 0 } else { class };
+            let tire = if tire != 0 && regripped & (1 << model.tire_side[tire]) != 0 { 0 } else { tire };
+            match ready.iter_mut().find(|same| same.class == class && same.tire == tire) {
+                Some(same) => {
+                    if base < same.base {
+                        same.base = base;
+                        same.from = from;
+                    }
+                }
+                None => ready.push(Ready { from, base, class, tire }),
+            }
+        }
+        // In the order the states come in, so a tie goes to the first of them
+        ready.sort_unstable_by_key(|each| each.from);
+        for &Ready { from, base, class, tire } in ready.iter() {
+            // The fingers the move before made are tired for the next move
+            let tiring = model.class_tire[class];
             for way in ways {
-                let fingers = finger_cost(model, class, way, regripped & (1 << way.side) != 0);
+                let fingers = finger_cost(model, class, way);
+                // A finger that made the move before the one before pays; a push is the opposite motion, and a trick with the thumb in it is the wrist's or the holding finger's work
+                let tired = if model.tire_side[tire] == way.side && way.fingers & model.tire_fingers[tire] != 0 && way.fingers & RESTING == 0 { model.tired } else { 0.0 };
                 // An open opposite layer is the same strain as an awkward or a twisted grip (see Way): only the bigger of the two is paid
                 let opened = (opposite - way.awkward - way.twisted).max(0.0);
-                offer(way.to, base + way.cost + fingers + way.awkward + way.twisted + opened, from);
+                offer(way.to * tires + tiring, base + way.cost + fingers + tired + way.awkward + way.twisted + opened, from);
             }
         }
     }
     // No trick makes it from any state (E2, S2, a move the model can't read): it costs `other` and leaves the hands where they are
     if !made {
-        for &Open { from, wrists, .. } in open.iter() {
+        for &Open { from, cost, wrists, class, .. } in open.iter() {
             let twisted = if model.twisted_state[wrists] { model.twisted } else { 0.0 };
             let awkward = if twisted == 0.0 && model.both_away[wrists] { model.awkward } else { 0.0 };
             // An open opposite layer only adds what the grip's surcharge doesn't already charge
             let opened = (opposite - awkward - twisted).max(0.0);
-            offer(wrists * classes, before[from] + model.other + awkward + twisted + opened + again, from);
+            offer(wrists * width + model.class_tire[class], cost + model.other + awkward + twisted + opened + again, from);
         }
     }
 }
@@ -110,13 +224,14 @@ fn bit(turn: Turn) -> u32 {
 // A move sequence's speed cost (fingering.ts's speedCost): the cheapest way for the hands to make it from home and back. `fresh` = nothing was turned
 // before (rotations before the first turn are free), `starts` = where each step starts in a joined solve (the counts that belong to one step start over there)
 pub(crate) fn speed_cost(model: &Model, moves: &str, fresh: bool, starts: &[u32]) -> f64 {
-    let classes = model.classes;
-    let size = STATES * classes;
+    let width = model.width;
+    let size = STATES * width;
     // Cheapest cost of each state after the moves so far (infinite = can't be in it): both hands start at home with every finger in place
-    let mut costs = vec![f64::INFINITY; size];
-    costs[HOME_STATE * classes] = 0.0;
-    let mut next = vec![f64::INFINITY; size];
-    let mut open = Vec::with_capacity(size);
+    let mut costs = Costs::new(size);
+    costs.offer(HOME_STATE * width, 0.0);
+    let mut next = Costs::new(size);
+    let mut open = Vec::with_capacity(ROOM);
+    let mut ready = Vec::with_capacity(ROOM);
     // Layers turned since the step's start or the last rotation, which of R and L are off the middle layer, the move before, and whether a turn was made yet
     let mut turned = 0;
     let mut apart = 0;
@@ -148,12 +263,9 @@ pub(crate) fn speed_cost(model: &Model, moves: &str, fresh: bool, starts: &[u32]
         apart = apart_after(turn, apart);
         // Before the first turn of a solve a regrip costs less and a rotation is free; keep the cheaper of two ways into a state
         let first = fresh && !started;
-        next.fill(f64::INFINITY);
-        advance(model, turn, &costs, first, first, again + leave, opened, flow, &mut open, |to, total, _| {
-            if total < next[to] {
-                next[to] = total;
-            }
-        });
+        costs.open(model, &mut open);
+        next.clear();
+        advance(model, turn, &open, first, first, again + leave, opened, flow, &mut ready, |to, total, _| next.offer(to, total));
         // Anything but a rotation is a turn (a move the model can't read too)
         if !turn.is_some_and(|turn| turn.rotation()) {
             started = true;
@@ -162,7 +274,8 @@ pub(crate) fn speed_cost(model: &Model, moves: &str, fresh: bool, starts: &[u32]
         last = turn;
     }
     // Each end state's cost with its hands brought back home; the cheapest one is where the sequence ends
-    let total = (0..size).map(|end| costs[end] + model.last_regrip * model.hands_moved[end / classes * STATES + HOME_STATE] as f64).fold(f64::INFINITY, f64::min);
+    let mut total = f64::INFINITY;
+    walk(&costs.bits, |end| total = total.min(costs.costs[end] + model.last_regrip * model.hands_moved[end / width * STATES + HOME_STATE] as f64));
     round(total)
 }
 
@@ -212,21 +325,67 @@ pub(crate) fn writing_floor(model: &Model, moves: &str, fresh: bool, before: &st
     total
 }
 
+// A hand state a place has reached: its cheapest cost so far, and how it was reached (the place before as its level and number, the state there and the token made)
+struct Reached {
+    cost: f64,
+    from: Option<(usize, usize)>,
+    state: usize,
+    token: Token,
+}
+
 // One place in an answer being written: the frame the cube is held in, the layers turned so far that cost more to turn again, the rhythm the move made last
-// leaves, which of R and L are off the middle layer, each hand state's cheapest cost so far, and how each state was reached (the place before as its
-// level and number, the state there and the token made). A place a writing starts from also says whether its first turn is a solve's first (regrips
-// cost less), and for a start other than after `before`, which of the other starts it is
+// leaves, which of R and L are off the middle layer, the hand states reached (a place reaches few of them: `slots` says where each one is in `reached`, plus
+// one, and `bits` which ones they are). A place a writing starts from also says whether its first turn is a solve's first (regrips cost less), and for a
+// start other than after `before`, which of the other starts it is
 struct Place {
     frame: Frame,
     turned: u32,
     rhythm: u8,
     apart: u8,
-    costs: Vec<f64>,
-    from: Vec<Option<(usize, usize)>>,
-    state: Vec<usize>,
-    token: Vec<Token>,
+    slots: Vec<u16>,
+    bits: Vec<u64>,
+    reached: Vec<Reached>,
     first: bool,
     start: Option<usize>,
+}
+
+impl Place {
+    // Keep the cheaper of two ways into a hand state
+    fn offer(&mut self, to: usize, way: Reached) {
+        match self.slots[to] {
+            0 => {
+                self.reached.push(way);
+                self.slots[to] = self.reached.len() as u16;
+                self.bits[to / 64] |= 1 << (to % 64);
+            }
+            slot => {
+                let kept = &mut self.reached[slot as usize - 1];
+                if way.cost < kept.cost {
+                    *kept = way;
+                }
+            }
+        }
+    }
+
+    // A reached hand state
+    fn at(&self, state: usize) -> &Reached {
+        &self.reached[self.slots[state] as usize - 1]
+    }
+
+    // Start over from these hand states, reached by nothing before them
+    fn start_from(&mut self, costs: &Costs) {
+        self.slots.fill(0);
+        self.bits.fill(0);
+        self.reached.clear();
+        walk(&costs.bits, |state| self.offer(state, Reached { cost: costs.costs[state], from: None, state: 0, token: Token::default() }));
+    }
+
+    // The states worth going on from
+    fn open(&self, model: &Model, open: &mut Vec<Open>) {
+        open.clear();
+        walk(&self.bits, |state| open.push(Open::new(model, state, self.at(state).cost)));
+        keep_worthwhile(model, open);
+    }
 }
 
 // The places with the same number of the answer's turns made, in the order they were first reached, found by their key
@@ -242,7 +401,7 @@ impl Level {
         let key = (frame.code() as u64) << 32 | (turned as u64) << 8 | (rhythm as u64) << 4 | apart as u64;
         let places = &mut self.places;
         *self.keys.entry(key).or_insert_with(|| {
-            places.push(Place { frame, turned, rhythm, apart, costs: vec![f64::INFINITY; size], from: vec![None; size], state: vec![0; size], token: vec![Token::default(); size], first: false, start: None });
+            places.push(Place { frame, turned, rhythm, apart, slots: vec![0; size], bits: vec![0; words(size)], reached: Vec::new(), first: false, start: None });
             places.len() - 1
         })
     }
@@ -295,9 +454,10 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
     let ends: Vec<Frame> = std::iter::once(plan.home()).chain(ends).collect();
     // The least the rest of the answer can cost from each place and frame, whatever the hands do (see rest_floor)
     let mut rest = HashMap::new();
-    let classes = model.classes;
-    let size = STATES * classes;
-    let mut open = Vec::with_capacity(size);
+    let width = model.width;
+    let size = STATES * width;
+    let mut open = Vec::with_capacity(ROOM);
+    let mut ready = Vec::with_capacity(ROOM);
     // A layer turned again pays only for the layers the model lists (the others aren't counted, so places don't split on them)
     let again_bit = |turn: Option<Turn>| turn.filter(|turn| model.again[turn.layer].is_some()).map_or(0, bit);
     let again_cost = |turned: u32, turn: Option<Turn>| match turn {
@@ -307,8 +467,9 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
     // Moves made first, as the cost makes them: both hands start at home with every finger in place. Gives each hand state's cost after them, whether a
     // turn was made, the layers turned (that cost more to turn again), the move made last and which of R and L are off the middle layer
     let mut made_first = |text: &str| {
-        let mut costs = vec![f64::INFINITY; size];
-        costs[HOME_STATE * classes] = 0.0;
+        let mut costs = Costs::new(size);
+        costs.offer(HOME_STATE * width, 0.0);
+        let mut next = Costs::new(size);
         let mut started = false;
         let mut turned = 0;
         let mut last: Option<Turn> = None;
@@ -317,14 +478,11 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
             let turn = read_turn(token);
             let rotation = turn.is_some_and(|turn| turn.rotation());
             let bits = if rotation { 0 } else { again_bit(turn) };
-            let mut next = vec![f64::INFINITY; size];
+            next.clear();
             let first = fresh && !started;
             let again = (if rotation { 0.0 } else { again_cost(turned, turn) }) + model.leave_after(last, turn);
-            advance(model, turn, &costs, first, first, again, model.open_cost(turn, apart), model.flow_after(last, turn), &mut open, |to, total, _| {
-                if total < next[to] {
-                    next[to] = total;
-                }
-            });
+            costs.open(model, &mut open);
+            advance(model, turn, &open, first, first, again, model.open_cost(turn, apart), model.flow_after(last, turn), &mut ready, |to, total, _| next.offer(to, total));
             if !rotation {
                 started = true;
             }
@@ -333,7 +491,7 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
                 turned = 0;
             }
             turned |= bits;
-            costs = next;
+            std::mem::swap(&mut costs, &mut next);
             last = turn;
             apart = apart_after(turn, apart);
         }
@@ -349,7 +507,7 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
         let (costs, started, turned, last, apart) = made_first(rotations);
         let number = levels[0].place_on(frame, turned, model.rhythm_of(last), apart, size);
         let place = &mut levels[0].places[number];
-        place.costs = costs;
+        place.start_from(&costs);
         place.first = fresh && !started;
         place.start = start;
     }
@@ -362,12 +520,13 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
             // Regrips before a solve's first turn cost less
             let first = at == 0 && place.first;
             // No way on from here can come in under the limit: its cheapest hand state plus the least the turns left cost is over it
-            let least = place.costs.iter().copied().fold(f64::INFINITY, f64::min) + rest_floor(model, &mut plan, &mut rest, at, place.frame);
+            let least = place.reached.iter().map(|way| way.cost).fold(f64::INFINITY, f64::min) + rest_floor(model, &mut plan, &mut rest, at, place.frame);
             if limit < f64::INFINITY && least > limit + 1e-6 {
                 pruned = pruned.min(least);
                 continue;
             }
             kept = kept.max(least);
+            place.open(model, &mut open);
             for option in plan.options_at(at, place.frame) {
                 let turn = read_turn(option.token.as_str());
                 let after = place.turned | again_bit(turn);
@@ -384,13 +543,8 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
                 };
                 // The token made from this place into the next one, which keeps the cheapest way into each of its states
                 let target = &mut level.places[next];
-                advance(model, turn, &place.costs, first, false, again_cost(place.turned, turn) + leave, model.open_cost(turn, place.apart), flow, &mut open, |to, total, from| {
-                    if total < target.costs[to] {
-                        target.costs[to] = total;
-                        target.from[to] = Some((at, number));
-                        target.state[to] = from;
-                        target.token[to] = option.token;
-                    }
+                advance(model, turn, &open, first, false, again_cost(place.turned, turn) + leave, model.open_cost(turn, place.apart), flow, &mut ready, |to, total, from| {
+                    target.offer(to, Reached { cost: total, from: Some((at, number)), state: from, token: option.token });
                 });
             }
         }
@@ -400,22 +554,22 @@ pub(crate) fn cheapest_writing(model: &Model, moves: &str, wide: &str, slice: &s
     let mut bests: Vec<Option<(usize, usize, f64)>> = vec![None; ends.len()];
     for (number, place) in levels[turns.len()].places.iter().enumerate() {
         let Some(end) = ends.iter().position(|&frame| frame == place.frame) else { continue };
-        for state in 0..size {
-            let total = place.costs[state] + model.last_regrip * model.hands_moved[state / classes * STATES + HOME_STATE] as f64;
+        walk(&place.bits, |state| {
+            let total = place.at(state).cost + model.last_regrip * model.hands_moved[state / width * STATES + HOME_STATE] as f64;
             if bests[end].is_none_or(|(_, _, best)| round(total) < round(best)) {
                 bests[end] = Some((number, state, total));
             }
-        }
+        });
     }
     // Each one walked back, one token per place, to the place it started from: its start is left out when it started held as it ends
     let mut writings = bests.iter().zip(&ends).map(|(best, &end)| {
         best.filter(|(_, _, total)| *total < f64::INFINITY).map(|(mut number, mut state, total)| {
             let mut tokens = Vec::new();
             let mut level = turns.len();
-            while let Some((back_level, back_number)) = levels[level].places[number].from[state] {
-                let place = &levels[level].places[number];
-                tokens.push(place.token[state].as_str().to_owned());
-                (level, number, state) = (back_level, back_number, place.state[state]);
+            while let Some((back_level, back_number)) = levels[level].places[number].at(state).from {
+                let way = levels[level].places[number].at(state);
+                tokens.push(way.token.as_str().to_owned());
+                (level, number, state) = (back_level, back_number, way.state);
             }
             tokens.reverse();
             let first = &levels[level].places[number];
