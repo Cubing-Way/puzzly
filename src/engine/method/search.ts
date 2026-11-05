@@ -181,14 +181,16 @@ export async function searchMethod(scramble: string, method: Method, options: Me
   // Fewest moves a step start still needs: its closest combo's distance (0 past the last step)
   const needs = (level: SearchLevel): number => (level.end ? 0 : level.queue[0].bound);
 
-  // A whole run with fewer moves than the best: keep it (each step checked on its goal) and tell the listener
+  // A whole run with fewer moves counted step by step: the search goes on looking under that count, but keeps the run and tells the listener only if it's shorter once its steps are joined
   const record = (rows: SearchRow[], used: number, earlier: Goal): void => {
     if (used >= bestMoves) return;
     const found = rows.map(({ index, round, done, answer, searches, solvableWith }) => methodRow(scramble, method, index, round, done, stepResult(answer, searches, solvableWith), 0, null));
-    best = { ...methodTotals(joinCancelled(scramble, method, found), earlier), ms: performance.now() - started };
+    const run = { ...methodTotals(joinCancelled(scramble, method, found), earlier), ms: performance.now() - started };
     bestMoves = used;
     // As few moves as the start's bound: no run is shorter, so the search can stop
     proven = rootBound !== null && bestMoves <= rootBound;
+    if (best && run.moves >= best.moves) return;
+    best = run;
     options.onBetter?.(best);
   };
 
