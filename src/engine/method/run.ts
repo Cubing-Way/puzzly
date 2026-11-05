@@ -386,7 +386,13 @@ export async function runMethodRows(scramble: string, method: Method, options: M
     }
     // The winner's total over the steps judging it, to two decimals (speed costs are sums of tenths), and by speed how much of it is finding pieces
     const total = Number.isFinite(totals[winner]) ? Math.round(totals[winner] * 100) / 100 : null;
-    const lookahead = { candidates: candidates.length, steps: ahead, total, ...(bySpeed ? { rank: "speed" as const, look: Math.round(looked[winner] * 100) / 100 } : {}), ...(played ? { played } : {}), ...(kept ? { kept } : {}) };
+    // Every answer the steps ahead fully judged, the pick first, then lowest total first (one cut off early can't win and isn't listed)
+    const ranked = candidates
+      .map((candidate, at) => ({ moves: handsMoves(candidate), total: totals[at], at }))
+      .filter((answer) => Number.isFinite(answer.total))
+      .sort((a, b) => Number(b.at === winner) - Number(a.at === winner) || a.total - b.total)
+      .map(({ moves, total }) => ({ moves, total }));
+    const lookahead = { candidates: candidates.length, steps: ahead, total, ...(bySpeed ? { rank: "speed" as const, look: Math.round(looked[winner] * 100) / 100 } : {}), ...(played ? { played } : {}), ...(kept ? { kept } : {}), ranked };
     return { result: candidates[winner], lookahead };
   };
   // Each step's plain pick at a point (its lookahead's winner, without playing picks out), made once per run: the run itself comes back to the points a

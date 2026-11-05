@@ -185,7 +185,8 @@ export interface MethodStepResult extends StepResult {
   // end at the same point), the winner's total over this step and those (null = no answer got through them), what that total counts (moves when left
   // out), and by speed how much of it is finding pieces (see speed/look.ts). From a lookahead of 2: how many different picks it and the shorter lookaheads
   // made, played to the end of the solve (left out when they all picked the same answer), and when a shorter lookahead's pick won that way, its length
-  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank; look?: number; played?: number; kept?: number } | null;
+  // `ranked` = every answer the steps ahead fully judged, the pick first, then lowest total first, for rating other answers against them
+  lookahead: { candidates: number; steps: number; total: number | null; rank?: Rank; look?: number; played?: number; kept?: number; ranked?: { moves: string; total: number }[] } | null;
 }
 
 // A whole method run
