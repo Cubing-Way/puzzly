@@ -3,7 +3,7 @@
 // keeps its tables between requests. Bundled by server/build.mjs, with the search helper and the scoring worker in threads, as the benchmarks run them
 
 // The answer files, next to the bundle, gzipped
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 // The compiled Rust search code
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
@@ -28,9 +28,10 @@ const CALLS: BatchCalls = { solveStep, stepCandidates, runMethod, searchMethod, 
 const BUDGET_GBS = Number(process.env.BUDGET_GBS ?? Infinity);
 const MEMORY_GB = Number(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE ?? 1024) / 1024;
 
-// The full answer files next to the bundle (answers/*.answers.gz), unzipped
+// The full answer files next to the bundle (answers/*.answers.gz), unzipped; none when there's no such folder (bench/check.ts runs the handler without them)
 function answerFiles(): Uint8Array[] {
   const folder = new URL("./answers/", import.meta.url);
+  if (!existsSync(folder)) return [];
   return readdirSync(folder)
     .filter((name) => name.endsWith(".answers.gz"))
     .map((name) => gunzipSync(readFileSync(new URL(name, folder))));

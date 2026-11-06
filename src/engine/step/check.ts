@@ -12,6 +12,8 @@ import { solvableIndex } from "../goal/solvable";
 import { goalTargets } from "../goal/targets";
 // Goals that keep every other piece untouched
 import { keptOthers } from "../goal/untouched";
+// The active puzzle (its whole-puzzle check)
+import { puzzle } from "../puzzle/active";
 
 // Check that scramble + done (earlier steps and this solution) really reaches the goal, in the grip it ends in, up to any of the step's offsets
 // (and with solvable-with moves, up to what those moves can still do); with alternatives, any one counts (pieces = null means the whole cube, where neither applies).
@@ -25,9 +27,9 @@ export function reachesGoal(
   solvableWith: string[] = [],
   untouched?: { from: string; changed: string },
 ): boolean {
-  // Full goal: every piece home, judged by the centers
+  // Full goal: the whole puzzle solved, in whatever grip it's held (the 3x3x3: judged by the centers, turned any way)
   if (pieces === null) {
-    return heldPattern(joinMoves(scramble, done)).experimentalIsSolved({ ignorePuzzleOrientation: true, ignoreCenterOrientation: true });
+    return puzzle.isSolved(heldPattern(joinMoves(scramble, done)));
   }
   // Step goal: some alternative's pieces match the solved cube turned by one of the offsets (relative groups anywhere they fit), everything else hidden
   const held = heldPattern(scramble, done);

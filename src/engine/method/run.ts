@@ -4,8 +4,10 @@
 import { Alg } from "cubing/alg";
 // Alg sets and the turns that line their cases up
 import { algSet } from "../algs/sets";
-// Piece names and grips
+// Grips (from the active puzzle)
 import { gripRotations } from "../core/cube";
+// The active puzzle (its frame)
+import { puzzle } from "../puzzle/active";
 // Move text helpers
 import { countMoves, joinMoves, joinSteps, joinStep, NO_STEPS, invertMoves, lookedFrom, movesAfter, withoutEndRotations, type JoinedSteps } from "../core/moves";
 // Loaded cube definition and held cubes
@@ -60,16 +62,16 @@ export function handsMoves(result: StepResult): string {
   return result.wide ?? result.solution.toString();
 }
 
-// A goal's pieces as "orbit piece role" keys, centers left out (they only set the frame)
+// A goal's pieces as "orbit piece role" keys, frame pieces (centers) left out (they only say how it's held)
 function pieceKeys(goal: Goal): string[] {
   return Object.entries(dropFree(goal))
-    .filter(([orbit]) => orbit !== "CENTERS")
+    .filter(([orbit]) => orbit !== puzzle.frame)
     .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => `${orbit} ${piece} ${role}`));
 }
 
-// True when earlier pieces (named in the grip a step starts in) cover every piece of a goal, centers left out
+// True when earlier pieces (named in the grip a step starts in) cover every piece of a goal, frame pieces (centers) left out
 function coveredBy(goal: Goal, before: Goal): boolean {
-  return Object.entries(dropFree(goal)).every(([orbit, roles]) => orbit === "CENTERS" || Object.entries(roles).every(([piece, role]) => covers(before[orbit]?.[Number(piece)], role)));
+  return Object.entries(dropFree(goal)).every(([orbit, roles]) => orbit === puzzle.frame || Object.entries(roles).every(([piece, role]) => covers(before[orbit]?.[Number(piece)], role)));
 }
 
 // How many later steps each place one of step `index`'s alternatives along with pieces of their own: their alternatives, less the pieces all of them

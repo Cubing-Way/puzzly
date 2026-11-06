@@ -2,8 +2,8 @@
 
 // Cube patterns
 import type { KPattern } from "cubing/kpuzzle";
-// Piece names and grips
-import { PIECE_NAMES } from "../core/cube";
+// The active puzzle (its pieces and frame)
+import { puzzle } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { kpuzzle } from "../core/puzzle";
 // Engine data shapes
@@ -80,13 +80,13 @@ export function bufferFromText(text: string): string {
   const pieces = parseGoalText(text);
   if (!pieces.length) return "";
   const [piece] = pieces;
-  if (pieces.length > 1 || piece.orbit === "CENTERS" || piece.role !== "solve") throw new Error('The buffer is one edge or corner, e.g. "UF" or "UFR".');
-  return PIECE_NAMES[piece.orbit][piece.index];
+  if (pieces.length > 1 || piece.orbit === puzzle.frame || piece.role !== "solve") throw new Error('The buffer is one edge or corner, e.g. "UF" or "UFR".');
+  return puzzle.pieces[piece.orbit][piece.index];
 }
 
 // Read BLD parity pieces ("UFR UBR"; "" = none) into piece names; throws a clear error on a typo or a role suffix
 export function parityFromText(text: string): string {
   const pieces = parseGoalText(text);
   if (pieces.some((piece) => piece.role !== "solve")) throw new Error("Parity pieces are plain piece names, e.g. UFR UBR.");
-  return pieces.map((piece) => PIECE_NAMES[piece.orbit][piece.index]).join(" ");
+  return pieces.map((piece) => puzzle.pieces[piece.orbit][piece.index]).join(" ");
 }

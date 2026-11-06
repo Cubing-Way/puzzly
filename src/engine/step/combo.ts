@@ -5,7 +5,11 @@ import type { KPattern } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
-import { FACE_MOVES, countMoves } from "../core/moves";
+import { countMoves } from "../core/moves";
+// Lookup caches (emptied when a puzzle is loaded)
+import { lookupCache } from "../core/cache";
+// The active puzzle's default moves
+import { defaultMoves } from "../puzzle/active";
 // Engine data shapes
 import type { Goal, StepOptions } from "../types";
 // Page side of the search worker
@@ -43,8 +47,8 @@ export function orbitTables(combo: Combo): number | undefined {
 }
 
 // Shortest answers of untouched steps by allowed moves + relabeled start: a relabeled BLD case (a 3-cycle, a flip, a parity) doesn't depend on the rest of the cube,
-// so the same case in a later step or scramble is answered at once (kept while the page is open, oldest dropped past the limit)
-const knownAnswers = new Map<string, string>();
+// so the same case in a later step or scramble is answered at once (kept while the page is open, oldest dropped past the limit; emptied when a puzzle is loaded)
+const knownAnswers = lookupCache<string>();
 const MAX_KNOWN_ANSWERS = 5_000;
 
 // Key of an untouched combo's answer: the allowed moves and its relabeled start
@@ -62,7 +66,7 @@ export function knownAnswer(combo: Combo, moves: string[]): string | undefined {
 // One combo's shortest answer within maxDepth moves (Infinity = no limit): known already, or searched by the worker (which only finds answers shorter than
 // the maxDepth it gets, hence + 1); throws "No solution found!" when there's none
 export async function searchCombo(combo: Combo, options: StepOptions, maxDepth: number): Promise<string> {
-  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  const generatorMoves = options.generatorMoves ?? defaultMoves;
   const known = knownAnswer(combo, generatorMoves);
   if (known !== undefined) {
     if (countMoves(known) > maxDepth) throw new Error("No solution found!");

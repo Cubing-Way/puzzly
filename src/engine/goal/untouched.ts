@@ -2,8 +2,8 @@
 
 // Cube patterns
 import { KPattern } from "cubing/kpuzzle";
-// Piece names and grips
-import { PIECE_NAMES } from "../core/cube";
+// The active puzzle (its pieces)
+import { puzzle } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { kpuzzle } from "../core/puzzle";
 // Error messages
@@ -206,9 +206,9 @@ export function untouchedPieces(wanted: Wanted): { solved: Goal; changed: Goal }
   return { solved, changed };
 }
 
-// Every piece solved, centers included: what an untouched step aims for once relabeled (see relabel)
+// Every piece solved, the frame (centers) included: what an untouched step aims for once relabeled (see relabel)
 export function wholeGoal(): Goal {
-  return Object.fromEntries(Object.entries(PIECE_NAMES).map(([orbit, names]) => [orbit, Object.fromEntries(names.map((_, index) => [index, "solve" as Role]))]));
+  return Object.fromEntries(Object.entries(puzzle.pieces).map(([orbit, names]) => [orbit, Object.fromEntries(names.map((_, index) => [index, "solve" as Role]))]));
 }
 
 // True when every spot but the changed ones holds the same piece, turned the same way (where twists count), in both patterns

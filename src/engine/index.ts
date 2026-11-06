@@ -12,7 +12,11 @@ export { runBatch, stopEngines, type BatchSettled, type BatchRunOptions } from "
 export type { BatchCall, BatchCalls, BatchResult } from "./worker/protocol";
 // Solve server: the same calls answered by the engine on a server (server/handler.ts), so the page builds no tables and loads no answer files
 export { remoteEngine, RemoteEngineError } from "./remote/client";
-// Piece names and grips
+// Puzzles: a puzzle's description (loadEngine's `puzzle`), the 3x3x3's, and the active one (live: it follows loadEngine)
+export type { PuzzleSpec, TurnFamilies, ViewerSpec } from "./puzzle/spec";
+export { CUBE3 } from "./puzzle/cube3";
+export { puzzle as activePuzzle } from "./puzzle/active";
+// Piece names and grips (the active puzzle's, live)
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text
 export { FACE_MOVES, joinMoves, joinSteps, cancelInto, movesAfter, invertMoves, countMoves } from "./core/moves";

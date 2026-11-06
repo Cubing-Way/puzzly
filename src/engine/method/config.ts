@@ -1,9 +1,9 @@
 // Method files: read plain method data (parsed JSON) into a checked method with every field filled in
 
-// Piece names and grips
-import { BOTTOM_TURNS } from "../core/cube";
+// The active puzzle: its faces, the rotation that puts each on the bottom, its default moves and its rotations
+import { puzzle } from "../puzzle/active";
 // Move text helpers
-import { FACE_MOVES, rotationsIn } from "../core/moves";
+import { rotationsIn } from "../core/moves";
 // Loaded cube definition and held cubes
 import { parseMoves } from "../core/puzzle";
 // BLD buffers and parity
@@ -30,14 +30,14 @@ export function readMethod(data: unknown): Method {
   return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
 }
 
-// Read an axes field (e.g. "x z") into its distinct axes; throws when one isn't x, y or z
+// Read an axes field (e.g. "x z") into its distinct axes; throws when one isn't one of the active puzzle's rotations (x, y or z)
 function axesFromText(value: unknown, field: string): string[] {
   const axes = [...new Set(String(value ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean))];
-  if (!axes.every((axis) => ["x", "y", "z"].includes(axis))) throw new Error(`${field} must be some of x y z.`);
+  if (!axes.every((axis) => puzzle.rotations.includes(axis))) throw new Error(`${field} must be some of ${puzzle.rotations.join(" ")}.`);
   return axes;
 }
 
-// Read one step's data, filling defaults (D bottom, face turns, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, fewest moves, no repeat)
+// Read one step's data, filling defaults (the bottom as held, D on the 3x3x3, the default moves, no offsets or solvable-with moves, nothing untouched, no buffer, no limit, no lookahead, fewest moves, no repeat)
 // and checking pieces, grips, offsets, solvable-with moves, the BLD fields, moves, lookahead, rank, avoided faces, wide, slice and rotation axes and the alg set
 function readStep(data: unknown, index: number): StepConfig {
   const step = (data ?? {}) as Partial<StepConfig>;
@@ -52,8 +52,8 @@ function readStep(data: unknown, index: number): StepConfig {
     const pieces = readAlternatives(Array.isArray(given) ? given.join("|") : String(given ?? ""), !keep && !buffer).join(" | ");
     if (buffer && pieces) throw new Error("A step with a buffer picks its own pieces (the next targets of the buffer's cycle): leave its pieces empty.");
     // Grips: faces that may go on the bottom
-    const bottom = (step.grips?.bottom ?? ["D"]).map((face) => String(face).toUpperCase());
-    if (!bottom.length || !bottom.every((face) => Object.hasOwn(BOTTOM_TURNS, face))) throw new Error("Bottom faces must be some of U D F B R L.");
+    const bottom = (step.grips?.bottom ?? [Object.keys(puzzle.bottoms)[0]]).map((face) => String(face).toUpperCase());
+    if (!bottom.length || !bottom.every((face) => Object.hasOwn(puzzle.bottoms, face))) throw new Error(`Bottom faces must be some of ${puzzle.faces.join(" ")}.`);
     // Offsets text (checked by reading it)
     const offsets = String(step.offsets ?? "").trim();
     offsetsFromText(offsets);
@@ -68,9 +68,9 @@ function readStep(data: unknown, index: number): StepConfig {
     if (!(Number.isInteger(targetsPerStep) && targetsPerStep >= 1)) throw new Error("Targets per step must be a whole number from 1 (2 = 3-cycles).");
     const parity = parityFromText(String(step.parity ?? ""));
     // Allowed moves: one real move per entry, no whole-cube turns
-    const moves = (step.moves ?? FACE_MOVES).map((move) => parseMoves(String(move)));
+    const moves = (step.moves ?? puzzle.defaultMoves).map((move) => parseMoves(String(move)));
     if (!moves.length || moves.some((move) => !move || /\s/.test(move) || rotationsIn(move))) {
-      throw new Error("Allowed moves must be a list of single moves without x, y, z.");
+      throw new Error(`Allowed moves must be a list of single moves without ${puzzle.rotations.join(", ")}.`);
     }
     // Depth limit: a whole number, or null for none
     const maxDepth = step.maxDepth == null ? null : Number(step.maxDepth);
@@ -84,7 +84,7 @@ function readStep(data: unknown, index: number): StepConfig {
     if (!(Number.isInteger(candidates) && candidates >= 0)) throw new Error("Candidates must be a whole number (0 = the most).");
     // Faces the answer avoids when it can: face letters, written back one space apart
     const avoid = [...new Set(String(step.avoid ?? "").toUpperCase().split(/[\s,]+/).filter(Boolean))];
-    if (!avoid.every((face) => FACE_MOVES.includes(face))) throw new Error("Avoid must be faces out of U R F D L B.");
+    if (!avoid.every((face) => puzzle.defaultMoves.includes(face))) throw new Error(`Avoid must be faces out of ${puzzle.defaultMoves.join(" ")}.`);
     // Axes its answer may make wide turns, slice turns and rotations about: x, y, z, written back one space apart. A file from before they were apart
     // only has wide axes, which meant all three, so slices and rotations left out follow them
     const wideAxes = axesFromText(step.wideAxes, "Wide axes");

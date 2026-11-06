@@ -2,8 +2,10 @@
 
 // Patterns the requests carry
 import type { KPattern } from "cubing/kpuzzle";
-// Loaded cube definition (sent along with each request)
+// Loaded puzzle definition (sent along with each request)
 import { kpuzzle } from "../core/puzzle";
+// Lookup caches (emptied when a puzzle is loaded)
+import { lookupCache, remember } from "../core/cache";
 // Table progress, as listeners hear it
 import type { TableProgress } from "../types";
 // Messages to and from the worker
@@ -50,8 +52,8 @@ const waiting = new Map<number, { resolve: (reply: SearchReply) => void; reject:
 let nextRequest = 0;
 // Timer that stops the worker once it's idle
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
-// The puzzle definition as JSON, without its check function (which JSON can't carry), made on first use
-let puzzleJson = "";
+// The puzzle definition as JSON, without its check function (which JSON can't carry), made on first use (again once a puzzle is loaded)
+const puzzleJson = lookupCache<string>();
 
 // Set how the search worker is started and how long an idle one is kept (left-out options stay as they were); a worker started another way is stopped
 export function configureSearch(options: SearchClientOptions): void {
@@ -101,11 +103,11 @@ function getSearchWorker(): SearchWorker {
 export function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress) => void): Promise<SearchReply> {
   // A request keeps the worker alive
   clearTimeout(idleTimer);
-  if (!puzzleJson) {
+  const definitionJson = remember(puzzleJson, "", () => {
     const definition: Record<string, unknown> = { ...kpuzzle.definition };
     delete definition.experimentalIsPatternSolved;
-    puzzleJson = JSON.stringify(definition);
-  }
+    return JSON.stringify(definition);
+  });
   const id = nextRequest++;
   return new Promise<SearchReply>((resolve, reject) => {
     // No way to start a worker: the request fails with the reason
@@ -114,7 +116,7 @@ export function askWorker(request: WorkerRequest, onProgress?: (progress: TableP
     worker.postMessage({
       id,
       kind: request.kind,
-      kpuzzle: puzzleJson,
+      kpuzzle: definitionJson,
       start: JSON.stringify(request.start.patternData),
       // Targets as a list, or with the moves that may finish them later (the worker closes them under those moves) and / or the whole-orbit tables to add
       targets: JSON.stringify(

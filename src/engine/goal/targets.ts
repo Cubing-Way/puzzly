@@ -4,8 +4,8 @@
 import { KPattern } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
-// Piece names and grips
-import { ALL_GRIPS } from "../core/cube";
+// The active puzzle's grips
+import { grips } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { centerLayout, solvedAfter, kpuzzle } from "../core/puzzle";
 // Engine data shapes
@@ -13,7 +13,7 @@ import type { Goal } from "../types";
 // Roles, goal text and goal masks
 import { maskPattern, relativeGroup } from "./goal";
 
-// True when the allowed moves can bring the start's goal centers to where the target has them (few center layouts, so a quick breadth-first walk)
+// True when the allowed moves can bring the start's frame pieces (the 3x3x3's centers) to where the target has them (few layouts, so a quick breadth-first walk)
 export function centersReachable(start: KPattern, target: KPattern, moves: string[]): boolean {
   const goalLayout = centerLayout(target);
   // Center layouts seen so far, and the patterns still to expand
@@ -92,7 +92,7 @@ function placedPatterns(goal: Goal, placement: Placement): KPattern[] {
 }
 
 // What a step aims for, turned by an offset: maskedTarget, or with relative groups (:r, :r2…) one target per way to place them: each group turned as a whole
-// by any of the 24 grips, landing only on spots of pieces that may move (see placedPatterns), every mix of the groups' placements;
+// by any of the grips (24 on the 3x3x3), landing only on spots of pieces that may move (see placedPatterns), every mix of the groups' placements;
 // all groups at home comes first, so it wins a tie. The offset turns the cube after the groups are placed (the goal met, then off by that move)
 export function goalTargets(goal: Goal, offset = ""): KPattern[] {
   // Each relative group's pieces as [type, number]
@@ -105,7 +105,7 @@ export function goalTargets(goal: Goal, offset = ""): KPattern[] {
   }
   if (!groups.size) return [maskedTarget(goal, offset)];
   // Where each grip takes every piece ("as held" first)
-  const turned = ALL_GRIPS.map((grip) => solvedAfter(grip).patternData);
+  const turned = grips.map((grip) => solvedAfter(grip).patternData);
   // Each group's placements: its pieces' spots and twists after each grip (each placement once)
   const placements = [...groups.values()].map((pieces) => {
     const seen = new Set<string>();

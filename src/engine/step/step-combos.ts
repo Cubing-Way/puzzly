@@ -5,7 +5,9 @@ import type { KPattern } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
-import { FACE_MOVES, joinMoves, countMoves } from "../core/moves";
+import { joinMoves, countMoves } from "../core/moves";
+// The active puzzle's default moves
+import { defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -48,7 +50,7 @@ export async function stepCombos(scramble: string, pieces: string, options: Step
 // its targets, its twins and its easy-looking order, worked out on the page alone, plus the error to throw if none of them finds anything
 export function plannedCombos(scramble: string, pieces: string, options: StepOptions): { candidates: Combo[]; lastError: unknown } {
   const keep = options.keep;
-  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  const generatorMoves = options.generatorMoves ?? defaultMoves;
   // Moves that may finish the goal later ([] = none)
   const solvableWith = options.solvableWith ?? [];
   // Offsets the goal may be reached up to (an empty list means no offset), in groups that share one table
@@ -141,11 +143,11 @@ async function measureCombos(candidates: Combo[], options: StepOptions, lastErro
   const measured = await Promise.all(
     candidates.map(async (combo) => {
       // An untouched combo at its goal already, or answered before, needs no tables: its distance is known
-      const known = knownAnswer(combo, options.generatorMoves ?? FACE_MOVES);
+      const known = knownAnswer(combo, options.generatorMoves ?? defaultMoves);
       if (known !== undefined) return { ...combo, bound: countMoves(known) };
       try {
         const { bound, exact } = await askWorker(
-          { kind: "measure", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, orbitTables: orbitTables(combo) },
+          { kind: "measure", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? defaultMoves, solvableWith: options.solvableWith, orbitTables: orbitTables(combo) },
           options.onProgress,
         );
         return { ...combo, bound: exact ? (bound ?? Infinity) : Math.max(bound ?? 0, combo.bound), twips: bound === null };
@@ -167,7 +169,7 @@ async function measureCombos(candidates: Combo[], options: StepOptions, lastErro
 // So every such step searches "solve the whole cube" from a cube solved but for a few pieces, with one shared set of tables; measured and sorted closest first
 async function untouchedCombos(scramble: string, pieces: string, options: StepOptions): Promise<{ queue: Combo[]; lastError: unknown }> {
   if ((options.offsets ?? []).some(Boolean) || options.solvableWith?.length) throw new Error(UNTOUCHED_MIX);
-  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  const generatorMoves = options.generatorMoves ?? defaultMoves;
   // Changes the allowed moves can make, the whole-cube goal and its target, and how each piece moves (for the easy-looking scores)
   const reachable = reachableChanges(generatorMoves);
   const whole = wholeGoal();

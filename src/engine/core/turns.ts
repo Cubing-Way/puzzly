@@ -8,6 +8,8 @@ import { remember, lookupCache } from "./cache";
 import { joinMoves, invertMoves } from "./moves";
 // Loaded cube definition and held cubes
 import { solvedAfter } from "./puzzle";
+// Turn families a step's moves may use (the active puzzle's face, slice and wide turns), to name a turn the way another grip sees it
+import { turnFamilies } from "../puzzle/active";
 
 // Allowed moves as turns of the cube itself in this grip (rotation, move, rotation back), so grips only merge when they allow the same turns
 export function movesKey(rotation: string, moves: string[]): string {
@@ -23,8 +25,6 @@ export function movesKey(rotation: string, moves: string[]): string {
 // Moves keys already worked out, by rotation and moves
 const movesKeys = lookupCache<string>();
 
-// Turn families a step's moves may use (face, slice and wide turns), to name a turn the way another grip sees it
-const TURN_FAMILIES = ["U", "R", "F", "D", "L", "B", "M", "E", "S", "Uw", "Rw", "Fw", "Dw", "Lw", "Bw"];
 // Moves renamed for another grip, by both grips and the move (null = no single move is that turn)
 const movesRenamed = lookupCache<string | null>();
 
@@ -45,7 +45,7 @@ export function moveInGrip(move: string, from: string, to: string): string | nul
     const turn = (rotation: string, name: string) => JSON.stringify(solvedAfter(joinMoves(rotation, name, invertMoves(rotation))).patternData);
     const wanted = turn(from, move);
     // The move that turns the cube the same way in the other grip
-    for (const family of TURN_FAMILIES) {
+    for (const family of turnFamilies) {
       for (const amount of ["", "2", "'"]) if (turn(to, family + amount) === wanted) return turnName(family + amount);
     }
     return null;
@@ -68,7 +68,7 @@ export function movesInGrip(moves: string, from: string, to: string): string | n
       remember(movesExact, `${from}/${move}/${to}`, () => {
         const wanted = turn(from, move);
         // The move that turns the cube the same way in the other grip
-        for (const family of TURN_FAMILIES) {
+        for (const family of turnFamilies) {
           for (const amount of ["", "2", "'"]) if (turn(to, family + amount) === wanted) return family + amount;
         }
         return null;

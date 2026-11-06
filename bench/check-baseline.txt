@@ -1,0 +1,146 @@
+PIECE_NAMES: {"EDGES":["UF","UR","UB","UL","DF","DR","DB","DL","FR","FL","BR","BL"],"CORNERS":["UFR","UBR","UBL","UFL","DFR","DFL","DBL","DBR"],"CENTERS":["U","L","F","R","B","D"]}
+ORBIT_BY_LENGTH: {"1":"CENTERS","2":"EDGES","3":"CORNERS"}
+BOTTOM_TURNS: {"D":"","U":"x2","F":"x'","B":"x","R":"z","L":"z'"}
+FRONT_TURNS: ["","y","y2","y'"]
+FACE_MOVES: ["U","R","F","D","L","B"]
+normalizeName rfu: FRU
+gripRotations D U any front: ["","y","y2","y'","x2","x2 y","x2 y2","x2 y'"]
+gripRotations all: ["","x2","x'","x","z","z'"]
+parseGoalText: [{"orbit":"EDGES","index":4,"role":"solve"},{"orbit":"EDGES","index":5,"role":"solve"},{"orbit":"EDGES","index":0,"role":"orient1"},{"orbit":"EDGES","index":8,"role":"orient2"},{"orbit":"CORNERS","index":0,"role":"place"},{"orbit":"CENTERS","index":1,"role":"solve"},{"orbit":"CORNERS","index":0,"role":"swap1"},{"orbit":"EDGES","index":1,"role":"relative2"},{"orbit":"EDGES","index":6,"role":"free"},{"orbit":"EDGES","index":11,"role":"swap3"}]
+parseGoalText typo: ERROR Unknown piece: "XY"
+parseGoalText long name: ERROR Unknown piece: "UFRB"
+parseGoalText bad role: ERROR Unknown role in "UF:q" (use :o, :o2…, :s, :s2…, :r, :r2…, :p or :x)
+parseGoalText empty name: ERROR Unknown piece: ""
+roleFromSuffix: ["solve","place","free","orient1","orient2","swap3","relative1","relative12",null,null]
+roleSuffix: ["",":p",":x",":o",":o2",":s3",":r",":r4"]
+splitAlternatives: ["DF DR","DF DR DFR FR","DB"]
+readAlternatives: ["DF DR","DF DR DFR FR"]
+readAlternatives empty: ERROR Pick at least one piece, or keep earlier steps' pieces.
+readAlternatives typo: ERROR Alternative 2: Unknown piece: "QQ"
+goalFromText: {"EDGES":{"4":"solve","5":"orient1"},"CORNERS":{"0":"place"},"CENTERS":{"0":"solve","1":"solve","2":"solve","3":"solve","4":"solve","5":"solve"}}
+goalFromText no centers: {"EDGES":{"4":"solve","5":"solve"}}
+goalFromText some centers: {"CENTERS":{"1":"solve"},"EDGES":{"7":"solve"},"CORNERS":{"5":"solve"}}
+goalToText: UF:o2 UR:x DF FR:r BL DFR:p
+goalToText centers: DL L R
+goalToText whole: UF UR UB UL DF DR DB DL FR FL BR BL UFR UBR UBL UFL DFR DFL DBL DBR
+mergeGoals: {"CORNERS":{"4":"relative2","5":"relative1"},"EDGES":{"4":"place","8":"relative2","9":"relative1"},"CENTERS":{"0":"solve","1":"solve","2":"solve","3":"solve","4":"solve","5":"solve"}}
+dropFree: {"EDGES":{"0":"solve"},"CENTERS":{"0":"solve","1":"solve","2":"solve","3":"solve","4":"solve","5":"solve"}}
+goalOnCube: {"CORNERS":{"1":"solve"},"EDGES":{"1":"solve"},"CENTERS":{"0":"solve","1":"solve","2":"solve","3":"solve","4":"solve","5":"solve"}}
+rotateGoal: {"CORNERS":{"5":"solve"},"EDGES":{"9":"solve"},"CENTERS":{"0":"solve","1":"solve","2":"solve","3":"solve","4":"solve","5":"solve"}}
+stickeringMask: EDGES:IIIII-OIII-I,CORNERS:IPIIIIII,CENTERS:------
+stickeringMask whole: EDGES:------------,CORNERS:--------,CENTERS:------
+offsetsFromText: ["","D","D2","D'"]
+offsetsFromText commas: ["","U D","U2"]
+offsetsFromText rotation: ERROR Offset "y" turns the whole cube: use Bottom face / any front for grips.
+offsetsFromText typo: ERROR Invalid move for KPuzzle (3x3x3): Q
+offsetsToText: ["D D2","U D, U2"]
+solvableFromText: ["R","U2","r"]
+solvableFromText rotation: ERROR Solvable with "y" turns the whole cube: list face or slice moves (e.g. R U).
+bufferFromText: ["UF","UFR",""]
+bufferFromText two: ERROR The buffer is one edge or corner, e.g. "UF" or "UFR".
+bufferFromText center: ERROR The buffer is one edge or corner, e.g. "UF" or "UFR".
+parityFromText: UFR UBR
+parityFromText role: ERROR Parity pieces are plain piece names, e.g. UFR UBR.
+parseMoves: R U R' U' Rw M2 x
+parseMoves typo: ERROR Invalid move for KPuzzle (3x3x3): Q
+countMoves: [3,4,0,3]
+joinSteps: ["","R U2 R","y","L","z'"]
+cancelInto: [{"kept":"F","rest":"R' D"},null]
+movesAfter: [0,1]
+invertMoves: Rw' x' F U2' R'
+toFaces: {"faces":"L F R' F' L' F R F' L2 R2","home":false}
+reachesGoal: [true,false,true,true,true]
+solveFull: B D2 L' U F2 R D' B2 L U' F'
+randomScramble: ok
+readMethod: {"name":"Untitled method","steps":[{"name":"Step 1","pieces":"DF DR","keep":false,"grips":{"bottom":["D"],"anyFront":false},"offsets":"","solvableWith":"","untouched":false,"buffer":"","targetsPerStep":2,"parity":"","moves":["U","R","F","D","L","B"],"maxDepth":null,"firstFound":false,"lookahead":0,"candidates":0,"extraMoves":0,"pastCut":false,"rank":"moves","style":"human","avoid":"","wideAxes":"","sliceAxes":"","rotationAxes":"","algs":"","repeat":false},{"name":"Pair","pieces":"DFR FR | DFL FL","keep":true,"grips":{"bottom":["D","U"],"anyFront":true},"offsets":"","solvableWith":"","untouched":false,"buffer":"","targetsPerStep":2,"parity":"","moves":["R","U2"],"maxDepth":null,"firstFound":false,"lookahead":0,"candidates":0,"extraMoves":0,"pastCut":false,"rank":"moves","style":"human","avoid":"F B","wideAxes":"x z","sliceAxes":"x z","rotationAxes":"x z","algs":"OLL","repeat":false}]}
+readMethod no steps: ERROR A method needs a list of steps.
+readMethod bottom: ERROR Step 1: Bottom faces must be some of U D F B R L.
+readMethod moves: ERROR Step 1 (Spin): Allowed moves must be a list of single moves without x, y, z.
+readMethod avoid: ERROR Step 1: Avoid must be faces out of U R F D L B.
+readMethod axes: ERROR Step 1: Wide axes must be some of x y z.
+readMethod algs: ERROR Step 1: Algs must be one of OLL, PLL, ZBLL (or empty for none).
+readMethod buffer: ERROR Step 1: A step with a buffer picks its own pieces (the next targets of the buffer's cycle): leave its pieces empty.
+readMethod untouched: ERROR Step 1: With every other piece untouched, list pieces as solved, :p (in place, any twist) or :x (its spot may change).
+readMethod examples: 7 7 7 7 7 8 6 7 14 6 4 4 5 6 5 4 6 4 2 4 2 2
+requests text: 0 e3b0c44298fc1c14
+step cross #0: 5 "D B D F' D" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step pseudo-cross any grip #0: 4 "D B D F'" rotation "" offset "D'" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step cross or XCross #0: 5 "D B D F' D" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step XXCross #0: 9 "L2 U2 R' B R U' D' F' B2" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR FL DFR DFL" settled "DF DR DB DL FR FL DFR DFL" ok true
+step relative pair #0: 6 "D2 F' L2 U2 D F'" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR:r DFR:r" settled "DF DR DB DL FR:r DFR:r" ok true
+step EO #0: 4 "F2 U L2 F" rotation "" offset "" alternative 0 searches 1 pieces "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o FL:o BR:o BL:o" settled "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o FL:o BR:o BL:o" ok true
+step Roux block with M #0: 7 "U2 B' L2 B2 D' M2 F'" rotation "" offset "" alternative 0 searches 1 pieces "DL FL BL DFL DBL L" settled "DL FL BL DFL DBL L" ok true
+step CP line with R U #0: 5 "U' B' L2 D' F'" rotation "" offset "" alternative 0 searches 1 pieces "DL UFR:p UBR:p UBL:p UFL:p DFR:p DFL DBL DBR:p" settled "DL DFL DBL" ok true
+step untouched 3-cycle #0: 10 "U' R' F' U2 F U R F R2 F'" rotation "" offset "" alternative 0 searches 12 pieces "UR UB" settled "UR UB" changed "UF UR UB DR BR" ok true
+step buffer #0: 7 "F' U D' L2 U' D F'" rotation "" offset "" alternative 0 searches 1 pieces "DF BL" settled "DF BL" changed "UF DF BL" ok true
+step max depth fails #0: ERROR No solution found.
+step first found #0: 4 "D B D F'" rotation "" offset "D'" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step pair after cross #0: 5 "y2 U R2 F R2 F'" rotation "y2" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" ok true
+step faces avoided #0: 7 "R F U F R F2 R'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" tier 1 ok true
+step offset undone #0: 5 "D B D F' D" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step cross #1: 7 "U2 B L' F' B D' F'" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step pseudo-cross any grip #1: 4 "x' U R2 F2 L2" rotation "x'" offset "D" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step cross or XCross #1: 7 "U2 B L' F' B D' F'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step XXCross #1: 10 "R U B' D' B' R2 D' L' B R2" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR FL DFR DFL" settled "DF DR DB DL FR FL DFR DFL" ok true
+step relative pair #1: 8 "U F R2 U2 D' R B' L'" rotation "" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR:r DFR:r" settled "DF DR DB DL FR:r DFR:r" ok true
+step EO #1: 6 "U R B L F B" rotation "" offset "" alternative 0 searches 1 pieces "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o FL:o BR:o BL:o" settled "UF:o UR:o UB:o UL:o DF:o DR:o DB:o DL:o FR:o FL:o BR:o BL:o" ok true
+step Roux block with M #1: 6 "D R2 M F2 R' D" rotation "" offset "" alternative 0 searches 1 pieces "DL FL BL DFL DBL L" settled "DL FL BL DFL DBL L" ok true
+step CP line with R U #1: 6 "U D L' F L B" rotation "" offset "" alternative 0 searches 1 pieces "DL UFR:p UBR:p UBL:p UFL:p DFR:p DFL DBL DBR:p" settled "DL DFL DBL" ok true
+step untouched 3-cycle #1: 10 "U R2 B U F B' R' F' R2 U'" rotation "" offset "" alternative 0 searches 12 pieces "UR UB" settled "UR UB" changed "UF UR UB DR FR" ok true
+step buffer #1: 10 "D2 F U' D R' D2 R U D' F'" rotation "" offset "" alternative 0 searches 18 pieces "DB" settled "DB" changed "UF DF DB" ok true
+step max depth fails #1: ERROR No solution found.
+step first found #1: 7 "U R2 U L' F' B L'" rotation "" offset "D" alternative 0 searches 1 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+step pair after cross #1: 4 "y' F2 R2 F2 R2" rotation "y'" offset "" alternative 0 searches 1 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" ok true
+step faces avoided #1: 6 "U' F' B U F B'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" tier 1 ok true
+step offset undone #1: 7 "U2 B L' F' B D' F'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL" settled "DF DR DB DL" ok true
+requests step: 173 4c006eea2391156e
+candidates cross by moves #0: U R D L F D2 F2 | U R' D L D2 F' B' | U2 F2 U R' F L2 B' | U2 F2 U R' F B' L2 | U2 F2 U R' L2 F B' | U2 F2 U R' B' L2 F | U2 B' R D L F D2 | U' R D L F B' D2
+candidates cross or XCross per alternative #0: U R D L F D2 F2 | U R' D L D2 F' B' | U2 F2 U R' F L2 B' | y2 R2 L' U D R' F D2 F2 | y2 L' U R' D F R2 D2 F2 | y2 L' U D R F D2 F2 B'
+candidates cross by speed #0: U' R' D' F U2 B' R (10) | y L U2 F' L' D' R' F (10.1) | y L U F' L' U D' R' F (10.2) | y L F' U2 L' D' R' F (10.25) | y L U F' U L' D' R' F (10.55) | y L F' U L' U D' R' F (10.55)
+candidates cross by moves #1: F2 U2 R2 L' D' | F2 U' L' D' F2 | F2 L' D2 L' D | L F2 R' L2 D' | L' F2 D2 L' D | U L' U R2 D' L' | U L' U2 D' F2 L' | U L' U2 D' L' F2
+candidates cross or XCross per alternative #1: F2 U2 R2 L' D' | F2 U' L' D' F2 | F2 L' D2 L' D | y2 U B R' D F2 L D2 | y2 U2 D2 F2 U L D B2 | y2 D R' F2 L B2 D' L'
+candidates cross by speed #1: y' R2 U' F' D' R2 (8.6) | y' R U' R F' D' R (8.9) | y L2 U' B' D' L2 (9.5) | y' R U' F' R D' R (9.5) | y L2 U2 F2 B' D' (9.65) | U L' U2 D' L' F2 (9.75)
+requests candidates: 42 e759af1d6640ef8e
+speed cross wide and slice #0: 8 "y2 L R' U R' D B' F R" wide "x y2 M' U R' D B' F R" rotation "y2" offset "" alternative 0 searches 2 pieces "DF DR DB DL" settled "DF DR DB DL" speed 8.9 ok true
+speed pair wide and slice #0: 9 "R' U R2 U2 R' U2 R U' R'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" tier 0 speed 8.7 ok true
+speed cross wide and slice #1: 5 "x' R U L x U' F2" wide "x' R U Rw U' F2" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL" settled "DF DR DB DL" speed 7.1 ok true
+speed pair wide and slice #1: 9 "F2 R' F' R F' R' F R F'" wide "x U2 R' U' R U' R' U R U' x'" rotation "" offset "" alternative 0 searches 2 pieces "DF DR DB DL FR DFR" settled "DF DR DB DL FR DFR" tier 0 speed 10.7 ok true
+speed last layer from alg sets #0: 22 moves ok true [F2L:0 OLL:7(OLL 27) PLL:15(T perm)] "R U R' U R U2 R' U R U R' U' R' F R2 U' R' U' R U R' F'" speed 21.1
+speed last layer from alg sets #1: 21 moves ok true [F2L:0 OLL:6(OLL 45) PLL:15(Jb perm)] "F R U R' U' F' U2 R U R' F' R U R' U' R' F R2 U' R' U" speed 23.5
+speed last layer from alg sets #2: 21 moves ok true [F2L:0 OLL:9(OLL 22) PLL:12(H perm)] "R U2 R2 U' R2 U' R2 U2 R M2 U M2 U2 M2 U M2 U'" speed 23.5
+speed last layer from alg sets #3: 21 moves ok true [F2L:0 OLL:8(OLL 24) PLL:13(Ub perm)] "Rw U R' U' Rw' F R F' U' M2 U' M U2 M' U' M2 U2" speed 24.2
+requests speed: 30 3f248d7a06051fd4
+example CFOP level 1 (greedy: each step its fastest answer): 42 moves ok true [Cross:6 Pair 1:7 Pair 2:5 Pair 3:8 Pair 4:4 OLL:11(OLL 47) PLL:1] "L2 U2 F2 B' D' F U' L' U' L R' U' R L F' U2 L' F y' U R U R' U R U' R' y' U2 R U' R' U2 F' L' U' L U L' U' L U F U'" speed 56.3
+example CFOP level 2 (lookahead 1, cross or easy XCross) (cut down): 55 moves ok true [Cross or XCross:7 Pair 1:6 Pair 2:7 Pair 3:3 Pair 4:8 OLL:11(OLL 47) PLL:13(Ub perm)] "y R' U S2 R U' Rw2 F' U2 L U L' F R' U' R U L' U' L F' U' F y U' R U R' U' R U R' U' F' L' U' L U L' U' L U F U' M2 U' M U2 M' U' M2 U'" speed 66.25
+example CFOP level 3 (human: any easy XCross, lookahead 1, 4 extra moves) (cut down): 55 moves ok true [Cross or XCross:7 Pair 1:6 Pair 2:7 Pair 3:3 Pair 4:8 OLL:11(OLL 47) PLL:13(Ub perm)] "y R' U S2 R U' Rw2 F' U2 L U L' F R' U' R U L' U' L F' U' F y U' R U R' U' R U R' U' F' L' U' L U L' U' L U F U' M2 U' M U2 M' U' M2 U'" speed 66.25
+example CFOP level 4 (human: any easy XCross, planned to the end of F2L) (cut down): 55 moves ok true [Cross or XCross:7 Pair 1:6 Pair 2:7 Pair 3:3 Pair 4:8 OLL:11(OLL 47) PLL:13(Ub perm)] "y R' U S2 R U' Rw2 F' U2 L U L' F R' U' R U L' U' L F' U' F y U' R U R' U' R U R' U' F' L' U' L U L' U' L U F U' M2 U' M U2 M' U' M2 U'" speed 66.25
+example CFOP level 5, max (computer: any XCross planned to the end of F2L, turning only) (cut down): 58 moves ok true [Cross or XCross:12 Pair 1:0 Pair 2:7 Pair 3:6 Pair 4:7 OLL:7(OLL 5) PLL:19(Y perm)] "y R' U S2 R U' Rw' y R Fw' R U R' L2 U L' U' L U' L U' R D B D' R' y R' U' R U' R' U' R Rw' U2 R U R' U Rw U F R U' R' U' R U R' F' R U R' U' R' F R F' U" speed 72.95
+example Pseudo-slotting (CFOP up to ADF, lookahead) (cut down): 56 moves ok true [Pseudo cross:5 Pseudo pair 1:6 Pseudo pair 2:7 Pseudo pair 3:7 Pseudo pair 4:10 ADF:0 OLL:21(OLL 52 + Ua perm) PLL:0] "z y R' U2 F D2 Rw U2 L' U L2 U' L' D' L U2 L' R U' R' y' R U' R' U' F' U' F Lw U L2 U L2 U2 L' Lw' U' L R' F' U' F U' R U R' U R' U' R' U' R U R U R U' R U" speed 70.8
+example CFOP with ZBLL (cross or XCross planned ahead, last pair + EO, then one look) (cut down): 49 moves ok true [Cross:5 Pair 1:7 Pair 2:6 Pair 3:17 Last pair + EO:0 ZBLL:14(ZBLL T 48)] "z y R' U2 F D2 Rw U2 L' U L2 U' L' D' L U2 L' R U' R' F U F' U' L' U L2 U' F U R U' R' U F' U2 L' F' Rw U R' U' Rw' F R2 U R' U R U2 R'" speed 61.85
+example CFCE (cross, 4 pairs, CLL, ELL) (cut down): 52 moves ok true [Cross:7 Pair 1:6 Pair 2:7 Pair 3:3 Pair 4:8 CLL:11 ELL:10] "y R' U S2 R U' Rw2 F' U2 L U L' F R' U' R U L' U' L F' U' F y U' R U R' U' R U R' U R U2 R2 U' R2 U' R2 U2 R U2 R' U' R S' R' U R S" speed 63.1
+example Beginner (layer by layer): 76 moves ok true [Cross:6 Corner 1:4 Corner 2:3 Corner 3:4 Corner 4:3 Middle edge 1:6 Middle edge 2:15 Middle edge 3:0 Middle edge 4:0 Top cross:6 Top edges:8 Top corners in place:8 One top corner turned:0 Top corners turned:13] "L2 U2 F2 B' D' F U2 R' U' R L U L' U R U R' L' U L F U L F' L' F' R F R F' R' U' F' U' D' L U' L' U D F L' U' B' U B L U R U R' U R U2 R' U B U' F' U B' U' F U R D' R2 U F2 U' F2 R U' R2 D R2" speed 112.35
+example Roux (blocks, CMLL, last six edges): 41 moves ok true [First block:8 Second block:11 CMLL:10 Edge orientation:4 UL and UR:7 Last four edges:1] "D' L2 U2 R F2 U R' D' U' R' U Rw U Rw' R2 U' R2 U R' L' B U2 B' L B L' U2 L B' U M' U' M U2 M U2 M' U' M2 U' M2" speed 69.6
+example ZZ (EOLine, blocks, ZBLL): 44 moves ok true [EOLine:7 Left block:11 Right block:11 ZBLL:15] "L' U F' L' R D' F' R2 U' L U' R U' R' U' L U2 L R U2 R U R' U' R U2 R2 U R U L U' R' U L' U R L U' R' U L' U2 R" speed 58.1
+example ZZ (left block + CP, then R U only): 44 moves ok true [EOLine:7 Left block + CP:11[37.6] Right block:12 Last layer:14] "L' U F' L' R D' F' L U2 L2 R' U R' L2 U2 L' U' L2 U2 R U' R' U R2 U R' U2 R U R' U2 R2 U' R' U' R2 U R U R2 U R' U R" speed 61.95
+example ZZ-CT (EOLine, F2L minus a pair, TSLE, TTLL): 53 moves ok true [EOLine:7 Left block:11 Right block minus a pair:9 TSLE:26 TTLL:0] "L' U F' L' R D' F' R2 U' L U' R U' R' U' L U2 L R U R' U2 R U R' U' R U' R U2 R' U' L' U R U' L U' R' U' R L U2 R' U2 R U2 R' L' U R U R'" speed 65.4
+example Petrus (2x2x2, 2x2x3, EO, F2L, COLL, EPLL): 42 moves ok true [2x2x2:6 2x2x3:9 Edge orientation:0 F2L:8 COLL:10 EPLL:9] "L U' L2 D L' D' U' R F' U2 R2 U F2 R F' U' R U2 R U2 R' U' R' U' F2 D F' U2 F D' F' U2 F' B2 U R L' B2 R' L U B2" speed 69.3
+example Heise (blocks, EO, edges + 2 corners, last 3 corners): 39 moves ok true [2x2x2:6 2x2x3:6 F2L minus a pair + EO:8 Edges + 2 corners:10 Last 3 corners:9] "L U' L2 D L' D' U' R F' U2 R2 F R2 U R D' L F L' D U' F' L' B' U2 B U L F U2 B2 R2 B' L2 B R2 B' L2 B'" speed 82.65
+example LEOR (left block, EO stripe, right block, ZBLL): 37 moves ok true [Left block:6 EO stripe:8 Right block:23 ZBLL:0] "y R2 U' R' F' B D2 R' B' R U2 L2 F' D L2 U' R' U R' U' R' U R' U' R2 U R2 U L' U R2 U R2 U R2 U2 R' L" speed 57.6
+example Mehta (FB, 3QB, EOLE, 6CO, 6CP, L5EP): 52 moves ok true [First block:7 3QB:25 EOLE:0 6CO:0 6CP:10 L5EP:10] "y R' D2 R U' D B2 L' D' F' L F' L' D' R B R' D2 L R' F L' R2 U R' U2 R U' R U' R' U' R' U2 F2 U2 D' F2 D2 R2 U R2 D' U' L2 F2 U' B2 R2 F2 D' B2 U" speed 86.9
+example Corners first (corners, left edges, right edges, middle slice): 33 moves ok true [Corners:9 Left edges:9 Right edges:11 Middle slice:4] "R2 U2 B' L U' R2 U B2 R2 B S2 D' S D L S L' B' U' R' S R F2 S2 U' S U F2 U D2 M' D2 M" speed 67.35
+example Two-phase (domino reduction, then finish): 23 moves ok true [Domino reduction:10 Finish:13] "U2 B L' U2 D R F R2 U' B U2 F2 U R2 F2 B2 D2 B2 U' F2 D' R2 L2" speed 47.4
+example Four-phase (EO, domino, half-turn reduction, finish): 32 moves ok true [Edge orientation:6 Domino reduction:9 Half-turn reduction:7 Finish:10] "U D B R L2 F U B2 L U F2 R2 F2 D' R F2 U' R2 F2 U2 R2 U F2 L2 F2 L2 F2 D2 R2 B2 U2 F2" speed 64.5
+example 3-style BLD (edges from UF, then corners from UFR): 101 moves ok true [Edges 1:9 Edges 2:7 Edges 3:9 Edges 4:7 Edges 5:11 Edges 6:8 Edges 7:13 Corners 1:8 Corners 2:8 Corners 3:8 Corners 4:8 Corners 5:9] "R' U' F B' R2 F' B U' R D' R L' F2 R' L D2 F U' D R2 U D' F D F' U D' L2 U' D F' U L B' U' D L2 U D' B' L' U' R2 D2 F' D2 R2 U2 B' U' F U F2 D' L' U' L U D F2 U2 F' R' F' L F R F' L' F B' D F2 D' B D F2 D' F R B' R' F' R B F' L' F R' F' L F L2 U2 L' D2 L U2 L' D2 L'" speed 185.95
+example One target at a time BLD (edges from UR, then corners from UBL): 257 moves ok true [Edges 1:10 Edges 2:11 Edges 3:10 Edges 4:11 Edges 5:11 Edges 6:10 Edges 7:13 Edges 8:10 Edges 9:10 Edges 10:12 Edges 11:11 Edges 12:12 Edges 13:12 Edges 14:10 Corners 1:10 Corners 2:12 Corners 3:13 Corners 4:10 Corners 5:11 Corners 6:10 Corners 7:13 Corners 8:10 Corners 9:12 Corners 10:10] "R2 D' R' D R' B2 L U' L' B2 R2 F' R F R2 F' B' R F R' B R2 D R D' R F2 L' U L F2 U F2 U' R2 B2 U' L2 U B2 D' R' B R B' R D2 L' F L D2 R U F2 L2 B D B' L2 F U' F U L' U2 B' U' L' B' L U B U' L U' F2 L2 B D B' L2 F U' F U R U' R B2 L' D L B2 R2 U R U' R' F' U F R B' R B R' U2 L' B' L U2 R' F R' F' R U' R' U2 F' U' R' F' R U F U' R U R U2 B U R B R' U' B' U R' U R U' R B2 L' D L B2 F' U' F R2 B' D B' D' B2 U' R2 F R' B' D' R D F' R' B R' U' B R2 F2 D' F' D F' R2 B U' B2 U F2 R U R' F2 L D' L D L2 U2 B U' F U F' B' U2 F U F' U R' F2 L D' L D L2 F2 R' U' R2 U' R2 U F U F' R2 F U' F' R U R' F2 L D' L D L2 F' U2 B U' F U F' B' U2 F U F2 R U R' F2 L D' L D L2 F2" speed 476.25
+requests examples: 971 511d424eccb9af50
+search two edges then cross #0: best 6 moves ok true [Two edges:6 Cross:0] "F D R' L2 B D" speed 13.85 seed 8 optimal true bound 6 states 7814
+search two edges then cross #1: best 5 moves ok true [Two edges:5 Cross:0] "B2 D R B2 D" speed 12.3 seed 6 optimal true bound 5 states 1757
+requests search: 9684 19eb3d618d982837
+lookahead CFOP level 2 #0: 49 moves ok true [Cross or XCross:7[16.55] Pair 1:8[16.8] Pair 2:3[17.02] Pair 3:8[20.98] Pair 4:4[19.49] OLL:8(OLL 6)[25.89] PLL:11(Ja perm)] "y2 U' R D R2 D R' F R U' R' L U2 L2 U L R' U R y' U' L' U2 L U' R' U2 R U F U2 F' U Rw U2 R' U' R U' Rw' U R' U L' U2 R U' R' U2 R L" speed 63.7
+requests lookahead: 469 e731d710bb06d60b
+scoring pair on the page: U R' U2 R2 U R' (6) | U R' U R U' R' U R (6.9) | U R' U R U2 R' U2 R (7.6) | U R' U2 R2 U R2 U' R (7.8) | L U L' R' U2 R2 U R' (8.05) | L' U L R' U2 R2 U R' (8.05) | R U' R' U R' U2 R2 U R' (8.1) | y' L' U L R U' R' (8.15) | U R' U2 R2 U Lw' x' (8.2) | y R' U' R L U L' (8.3) | U R' U2 R2 U R2 U R (8.3) | U R' U2 R2 U R2 U2 R (8.4) | U' L' U2 L U2 R U R' (8.4) | L' U' L2 U2 L' R U' R' (8.45) | R U2 R' U R' U2 R2 U R' (8.7) | R U R' U R' U2 R2 U R' (8.8)
+scoring pair in the scoring worker: U R' U2 R2 U R' (6) | U R' U R U' R' U R (6.9) | U R' U R U2 R' U2 R (7.6) | U R' U2 R2 U R2 U' R (7.8) | L U L' R' U2 R2 U R' (8.05) | L' U L R' U2 R2 U R' (8.05) | R U' R' U R' U2 R2 U R' (8.1) | y' L' U L R U' R' (8.15) | U R' U2 R2 U Lw' x' (8.2) | y R' U' R L U L' (8.3) | U R' U2 R2 U R2 U R (8.3) | U R' U2 R2 U R2 U2 R (8.4) | U' L' U2 L U2 R U R' (8.4) | L' U' L2 U2 L' R U' R' (8.45) | R U2 R' U R' U2 R2 U R' (8.7) | R U R' U R' U2 R2 U R' (8.8)
+requests scoring: 42 6ae295c2965cf19e
+server CFOP level 2 #0: 49 moves ok true [Cross or XCross:7[16.55] Pair 1:8[16.8] Pair 2:3[17.02] Pair 3:8[20.98] Pair 4:4[19.49] OLL:8(OLL 6)[25.89] PLL:11(Ja perm)] "y2 U' R D R2 D R' F R U' R' L U2 L2 U L R' U R y' U' L' U2 L U' R' U2 R U F U2 F' U Rw U2 R' U' R U' Rw' U R' U L' U2 R U' R' U2 R L" speed 63.7
+requests server: 0 e3b0c44298fc1c14
+requests all: 11411 8f9de5f14c74b8b2

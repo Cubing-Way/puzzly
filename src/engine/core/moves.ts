@@ -1,13 +1,13 @@
-// Move text: face turns and whole-cube rotations, joining, inverting and counting moves
+// Move text: face turns and whole-cube rotations, joining, inverting and counting moves (the rotations are the active puzzle's; the joining below, with
+// its axes and the faces each rotation moves, is still the cube's)
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
+// The active puzzle: its default moves, and which moves are whole-puzzle rotations (they change the grip and don't count as moves)
+import { defaultMoves, isRotation, isRotationFamily, mayHoldRotation } from "../puzzle/active";
 
-// Face turns used when a step search isn't given its own moves
-export const FACE_MOVES = ["U", "R", "F", "D", "L", "B"];
-
-// Whole-cube rotations: they change the grip and don't count as moves
-const ROTATIONS = ["x", "y", "z"];
+// Moves used when a step search isn't given its own (the active puzzle's default moves: the face turns on the 3x3x3), live
+export { defaultMoves as FACE_MOVES };
 
 // Join move texts with spaces, skipping empty ones
 export function joinMoves(...parts: string[]): string {
@@ -69,7 +69,7 @@ export function shortRotations(moves: string): string {
   const out: string[] = [];
   for (let at = 0; at < tokens.length; ) {
     let end = at;
-    while (end < tokens.length && ROTATIONS.includes(tokens[end][0])) end++;
+    while (end < tokens.length && isRotation(tokens[end])) end++;
     if (end === at) {
       out.push(tokens[at++]);
       continue;
@@ -99,7 +99,7 @@ function layerBefore(layer: string, rotations: string[]): string | null {
 // Where the turns of some moves end: the rotations they end with come after
 function turnsEnd(out: string[]): number {
   let end = out.length;
-  while (end > 0 && ROTATIONS.includes(out[end - 1][0])) end--;
+  while (end > 0 && isRotation(out[end - 1])) end--;
   return end;
 }
 
@@ -139,7 +139,7 @@ function joinOnto(out: string[], moves: string[], joining?: { open: boolean }): 
     }
     const quarters = quartersOf(next);
     // A rotation: as one with a rotation about its axis right before it, otherwise after the moves before; then the rotations they end with the short way
-    if (ROTATIONS.includes(next[1])) {
+    if (isRotationFamily(next[1])) {
       const last = out.length ? TURN.exec(out[out.length - 1]) : null;
       if (last && last[1] === next[1]) {
         out.pop();
@@ -234,7 +234,7 @@ export function cancelsInto(before: string): (moves: string) => { kept: string; 
     const tokens = moves.split(/\s+/).filter(Boolean);
     // The rotations the moves start with, and their first turn
     let first = 0;
-    while (first < tokens.length && ROTATIONS.includes(tokens[first][0])) first++;
+    while (first < tokens.length && isRotation(tokens[first])) first++;
     // A first rotation joins the rotations the moves before end with (as one with the last, or written short with them); otherwise the first turn has
     // to meet one of their last turns (with two rotations or more first, which may join each other, the whole joining is made)
     if (first === 0 || (first === 1 && !trailing.length)) {
@@ -255,12 +255,12 @@ export function movesAfter(moves: string, before: string): number {
   return cut ? countMoves(cut.rest) - countMoves(before) + countMoves(cut.kept) : countMoves(moves);
 }
 
-// Only the x, y, z rotations of a move sequence, in order
+// Only the whole-puzzle rotations of a move sequence (x, y, z), in order
 export function rotationsIn(moves: string): string {
-  // No x, y or z anywhere: nothing to parse (no other move has those letters)
-  if (!/[xyz]/.test(moves)) return "";
+  // No rotation's letter anywhere (no x, y or z): nothing to parse (no other move has those letters)
+  if (!mayHoldRotation(moves)) return "";
   return Array.from(new Alg(moves).expand().experimentalLeafMoves())
-    .filter((move) => ROTATIONS.includes(move.family))
+    .filter((move) => isRotationFamily(move.family))
     .join(" ");
 }
 
@@ -277,8 +277,8 @@ export function countMoves(alg: string): number {
   // Plain move text (every answer a search lists): one move per word that isn't a rotation
   if (PLAIN_MOVES.test(alg)) {
     let count = 0;
-    for (const move of alg.split(" ")) if (move && !ROTATIONS.includes(move[0])) count++;
+    for (const move of alg.split(" ")) if (move && !isRotation(move)) count++;
     return count;
   }
-  return Array.from(new Alg(alg).experimentalLeafMoves()).filter((move) => !ROTATIONS.includes(move.family)).length;
+  return Array.from(new Alg(alg).experimentalLeafMoves()).filter((move) => !isRotationFamily(move.family)).length;
 }

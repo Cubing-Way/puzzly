@@ -1,11 +1,11 @@
-// Step solvers: the shortest answer over a step's combos, every answer up to some extra moves (for lookahead), and the full-cube solver
+// Step solvers: the shortest answer over a step's combos, every answer up to some extra moves (for lookahead), and the whole-puzzle solver
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
-// Full 3x3x3 solver
-import { experimentalSolve3x3x3IgnoringCenters } from "cubing/search";
 // Move text helpers
-import { FACE_MOVES, countMoves, joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
+import { countMoves, joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
+// The active puzzle: its default moves and its full solver
+import { puzzle, defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Goal text
@@ -41,7 +41,7 @@ export async function searchCombos(queue: Combo[], options: StepOptions, lastErr
   let bestFresh = -1;
   let searches = 0;
   // Untouched combos whose answer is known already go first: they cost nothing and bound the searches after them (other steps keep their order)
-  const known = queue.filter((combo) => knownAnswer(combo, options.generatorMoves ?? FACE_MOVES) !== undefined);
+  const known = queue.filter((combo) => knownAnswer(combo, options.generatorMoves ?? defaultMoves) !== undefined);
   for (const combo of [...known, ...queue.filter((combo) => !known.includes(combo))]) {
     const { fresh, bound } = combo;
     // Only look for answers shorter than the best so far, or as short when this alternative adds more new pieces (and within the user's limit)
@@ -237,7 +237,7 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
       let reply;
       try {
         reply = await askWorker(
-          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? FACE_MOVES, solvableWith: options.solvableWith, orbitTables: orbitTables(combo), ...page },
+          { kind: "list", start: combo.start, targets: combo.targets, moves: options.generatorMoves ?? defaultMoves, solvableWith: options.solvableWith, orbitTables: orbitTables(combo), ...page },
           options.onProgress,
         );
       } catch (error) {
@@ -342,7 +342,8 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
   });
 }
 
-// Solve the whole cube, judged by its centers in the grip it's held in
+// Solve the whole puzzle in the grip it's held in, with the active puzzle's full solver (the 3x3x3's: cubing.js's, judged by the centers); throws when it has none
 export async function solveFull(scramble: string, done = ""): Promise<Alg> {
-  return experimentalSolve3x3x3IgnoringCenters(heldPattern(joinMoves(scramble, done)));
+  if (!puzzle.solveFull) throw new Error(`The ${puzzle.name} has no full solver: solve it with steps.`);
+  return puzzle.solveFull(heldPattern(joinMoves(scramble, done)));
 }

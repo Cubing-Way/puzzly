@@ -3,7 +3,7 @@
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
 // Lookup caches
-import { remember } from "../core/cache";
+import { remember, lookupCache } from "../core/cache";
 // Move text helpers
 import { rotationsIn } from "../core/moves";
 // Loaded cube definition and held cubes
@@ -15,8 +15,8 @@ export function offsetGroups(offsets: string[], moves: string[]): string[][] {
   return remember(offsetGroupsMade, `${offsets.join(",")}/${moves.join(" ")}`, () => groupOffsets(offsets, moves));
 }
 
-// Offset groups already worked out, by offsets and moves
-const offsetGroupsMade = new Map<string, string[][]>();
+// Offset groups already worked out, by offsets and moves (emptied when a puzzle is loaded)
+const offsetGroupsMade = lookupCache<string[][]>();
 
 // Work out offsetGroups' answer
 function groupOffsets(offsets: string[], moves: string[]): string[][] {
@@ -38,7 +38,7 @@ function groupOffsets(offsets: string[], moves: string[]): string[][] {
 export function offsetsFromText(text: string): string[] {
   const offsets = [""];
   for (const part of text.split(text.includes(",") ? "," : /\s+/)) {
-    // Clean up the moves (throws on moves the 3x3x3 doesn't have)
+    // Clean up the moves (throws on moves the active puzzle doesn't have)
     const offset = parseMoves(part);
     // Whole-cube turns are grips, not offsets
     if (rotationsIn(offset)) throw new Error(`Offset "${offset}" turns the whole cube: use Bottom face / any front for grips.`);

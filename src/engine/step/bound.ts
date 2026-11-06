@@ -9,6 +9,8 @@
 
 // Move text helpers
 import { joinMoves, shortRotations } from "../core/moves";
+// Lookup caches (emptied when a puzzle is loaded)
+import { lookupCache } from "../core/cache";
 // Floors of what the hands make, what cancelling into the moves before saves, and where a writing may start
 import { cancelSaving, speedFloor, tokenFloors, writingStarts } from "../speed/fingering";
 // Frames rotations hold the cube in
@@ -103,8 +105,8 @@ function runsBefore(previous: string, rotation: string): { runs: [number, number
 }
 
 // The most cancelling into the moves before could save once they're cut back to each length (see cancelSaving: any cut at that length or longer), from
-// `from` on (no joining reaches shorter ones), worked out once per moves before (lookahead asks again for each candidate)
-const credits = new Map<string, number[]>();
+// `from` on (no joining reaches shorter ones), worked out once per moves before (lookahead asks again for each candidate; emptied when a puzzle is loaded)
+const credits = lookupCache<number[]>();
 function creditFrom(previous: string, starts: number[] | undefined, from: number): number[] {
   const key = `${from}/${starts?.join(",")}/${previous}`;
   let credit = credits.get(key);

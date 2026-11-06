@@ -17,7 +17,7 @@ import { maskedTarget } from "./targets";
 export function solvableFromText(text: string): string[] {
   const moves: string[] = [];
   for (const word of text.split(/[\s,]+/).filter(Boolean)) {
-    // Clean up the move (throws on moves the 3x3x3 doesn't have)
+    // Clean up the move (throws on moves the active puzzle doesn't have)
     const move = parseMoves(word);
     // Whole-cube turns are grips, not moves that finish a goal
     if (rotationsIn(move)) throw new Error(`Solvable with "${move}" turns the whole cube: list face or slice moves (e.g. R U).`);

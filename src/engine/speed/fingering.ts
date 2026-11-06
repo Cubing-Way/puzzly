@@ -8,6 +8,8 @@ import { writingPlan, frameAfter, undoRotations } from "./writings";
 import { cancelInto } from "../core/moves";
 // The 24 ways to hold the cube
 import { ALL_GRIPS } from "../core/cube";
+// Lookup caches (emptied when a puzzle is loaded)
+import { lookupCache } from "../core/cache";
 // The speed model in Rust (search/src/speed.rs): the class loadEngine hands over once the Rust code is loaded
 import type { SpeedModel } from "../../../search/pkg/puzzly_search.js";
 
@@ -581,8 +583,8 @@ const ROTATION_TOKEN = /^[xyz][2']?$/;
 // Where a writing may start besides after `before` (the grip rotation), each as the frame the cube is then held in (its faces as the grip names them)
 // and the rotations the hands make to hold it so: on a solve's first step any of the 24 ways to pick the cube up (free, as the grip rotation is); on a
 // later step as the hands hold it now, with no rotation, when every rotation of the grip is about an axis the wide or slice turns may turn about (so
-// `Dw R' U R` for `y' U R' U R`). None when `before` isn't made of rotations alone. Worked out once per case
-const startsMade = new Map<string, { frame: string; rotations: string }[]>();
+// `Dw R' U R` for `y' U R' U R`). None when `before` isn't made of rotations alone. Worked out once per case, again once a puzzle is loaded
+const startsMade = lookupCache<{ frame: string; rotations: string }[]>();
 export function writingStarts(fresh: boolean, before: string, axes: string[]): { frame: string; rotations: string }[] {
   const key = `${fresh}/${before}/${axes.join("")}`;
   let starts = startsMade.get(key);

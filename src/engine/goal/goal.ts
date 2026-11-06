@@ -2,8 +2,8 @@
 
 // Cube patterns
 import { KPattern } from "cubing/kpuzzle";
-// Piece names and grips
-import { PIECE_NAMES, normalizeName, ORBIT_BY_LENGTH } from "../core/cube";
+// The active puzzle: its pieces, the piece a typed name stands for, and its frame
+import { puzzle, pieceByName } from "../puzzle/active";
 // Engine data shapes
 import type { Role, GoalPiece, Goal } from "../types";
 
@@ -42,11 +42,6 @@ export function relativeGroup(role: Role): number {
   return role.startsWith("relative") ? Number(role.slice("relative".length)) : 0;
 }
 
-// Piece number by name with its letters sorted, per piece type (so "RFU" finds UFR), made once
-const PIECE_INDEX: Record<string, Map<string, number>> = Object.fromEntries(
-  Object.entries(PIECE_NAMES).map(([orbit, names]) => [orbit, new Map(names.map((name, index) => [normalizeName(name), index]))]),
-);
-
 // Read goal text like "DF DR UF:o FR:o2 UFR:p L" into pieces with roles; throws a clear error on a typo
 export function parseGoalText(text: string): GoalPiece[] {
   return text
@@ -56,14 +51,12 @@ export function parseGoalText(text: string): GoalPiece[] {
       // Split the piece name from its optional role suffix
       const [name, ...suffix] = word.split(":");
       const role = roleFromSuffix(suffix.length ? `:${suffix.join(":")}` : "");
-      // Pick the piece type from the name's length
-      const orbit = ORBIT_BY_LENGTH[name.length];
-      // Find the piece's number in that type's list
-      const index = orbit ? (PIECE_INDEX[orbit]?.get(normalizeName(name)) ?? -1) : -1;
+      // Find the piece the name stands for, in any of the active puzzle's piece types ("RFU" finds UFR on the 3x3x3)
+      const piece = pieceByName(name);
       // Stop with a clear message on a typo
-      if (!orbit || index === -1) throw new Error(`Unknown piece: "${name}"`);
+      if (!piece) throw new Error(`Unknown piece: "${name}"`);
       if (!role) throw new Error(`Unknown role in "${word}" (use :o, :o2…, :s, :s2…, :r, :r2…, :p or :x)`);
-      return { orbit, index, role };
+      return { orbit: piece.orbit, index: piece.index, role };
     });
 }
 
@@ -87,27 +80,33 @@ export function readAlternatives(text: string, needPieces = false): string[] {
   return alternatives;
 }
 
-// All six centers kept solved (a goal's centers when its text names none)
-export function allCenters(): Record<number, Role> {
-  return Object.fromEntries(PIECE_NAMES.CENTERS.map((_, index) => [index, "solve" as Role]));
+// Every frame piece kept solved (on the 3x3x3 all six centers: a goal's centers when its text names none)
+export function allFrame(): Record<number, Role> {
+  return Object.fromEntries((puzzle.frame ? puzzle.pieces[puzzle.frame] : []).map((_, index) => [index, "solve" as Role]));
 }
 
-// Turn goal text into the per-piece roles that maskPattern expects (defaultCenters = false leaves centers out when none is typed)
+// Add the whole frame, solved, to a goal that names none of its pieces (so slice moves can't move the 3x3x3's centers); nothing on a puzzle without a frame
+export function keepFrame(goal: Goal): Goal {
+  if (puzzle.frame) goal[puzzle.frame] ??= allFrame();
+  return goal;
+}
+
+// Turn goal text into the per-piece roles that maskPattern expects (defaultCenters = false leaves the frame out when none of its pieces is typed)
 export function goalFromText(text: string, defaultCenters = true): Goal {
   const goal: Goal = {};
   // Add each typed piece with its role (a piece typed twice keeps its last role)
   for (const { orbit, index, role } of parseGoalText(text)) (goal[orbit] ??= {})[index] = role;
-  // No center typed: keep all six, so slice moves can't move them
-  if (defaultCenters) goal.CENTERS ??= allCenters();
-  return goal;
+  // No frame piece typed (no center): keep the whole frame, so slice moves can't move it
+  return defaultCenters ? keepFrame(goal) : goal;
 }
 
-// Write a goal back as goal text in piece-list order (all six solved centers are left out, since that's what no center means)
+// Write a goal back as goal text in piece-list order (the whole frame solved is left out, since that's what no frame piece means)
 export function goalToText(goal: Goal): string {
-  const centers = Object.values(goal.CENTERS ?? {});
-  const allSix = centers.length === PIECE_NAMES.CENTERS.length && centers.every((role) => role === "solve");
-  return Object.entries(PIECE_NAMES)
-    .filter(([orbit]) => !(orbit === "CENTERS" && allSix))
+  const frame = puzzle.frame;
+  const kept = frame ? Object.values(goal[frame] ?? {}) : [];
+  const wholeFrame = frame !== null && kept.length === puzzle.pieces[frame].length && kept.every((role) => role === "solve");
+  return Object.entries(puzzle.pieces)
+    .filter(([orbit]) => !(orbit === frame && wholeFrame))
     .flatMap(([orbit, names]) => names.flatMap((name, index) => (goal[orbit]?.[index] ? [name + roleSuffix(goal[orbit][index])] : [])))
     .join(" ");
 }

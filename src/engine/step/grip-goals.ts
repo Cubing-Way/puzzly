@@ -1,7 +1,9 @@
 // A step's goal in each grip worth trying, worked out from the pieces earlier steps did (no cube needed)
 
 // Roles, goal text and goal masks
-import { readAlternatives, dropFree, goalFromText, mergeGoals, allCenters, covers } from "../goal/goal";
+import { readAlternatives, dropFree, goalFromText, mergeGoals, keepFrame, covers } from "../goal/goal";
+// The active puzzle (its frame)
+import { puzzle } from "../puzzle/active";
 // Goals named for another grip
 import { rotateGoal } from "../goal/grips";
 // Error messages
@@ -25,16 +27,14 @@ export function gripGoals(pieces: string, rotations: string[], keep: Goal | unde
   const perAlternative = readAlternatives(pieces).map((text, alternative) => {
     // This alternative's pieces (with kept pieces, its centers only count when typed, so the kept ones stand; :x pieces are just not checked)
     const own = dropFree(goalFromText(text, !keep));
-    // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no centers left at all = all six, like goal text)
+    // Goal in one grip: the kept pieces renamed for that grip, with this alternative's pieces on top (no frame piece left at all = the whole frame, like goal text)
     const goalFor = (rotation: string): Goal => {
       if (!keep) return own;
-      const goal = mergeGoals(rotateGoal(keep, rotation), own);
-      goal.CENTERS ??= allCenters();
-      return goal;
+      return keepFrame(mergeGoals(rotateGoal(keep, rotation), own));
     };
-    // Its pieces as [type, number, role], centers left out (they only set the frame), to check each grip against earlier steps
+    // Its pieces as [type, number, role], frame pieces (centers) left out (they only say how it is held), to check each grip against earlier steps
     const ownPieces = Object.entries(own)
-      .filter(([orbit]) => orbit !== "CENTERS")
+      .filter(([orbit]) => orbit !== puzzle.frame)
       .flatMap(([orbit, roles]) => Object.entries(roles).map(([piece, role]) => [orbit, Number(piece), role] as const));
     // Orientation is judged from the grip, so orient-group goals can't be shared between grips
     const gripMatters = [own, keep ?? {}].some((goal) => Object.values(goal).some((roles) => Object.values(roles).some((role) => role.startsWith("orient"))));

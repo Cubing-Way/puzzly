@@ -5,6 +5,7 @@
     "dev": "node script/build.js -- --dev",
     "build-search": "wasm-pack build search --target web --release",
     "bench-build": "node bench/build.mjs",
+    "check": "node bench/build.mjs && node bench/out/check.js",
     "clean": "rm -rf ./dist",
     "upgrade-cubing": "npm install --save cubing@latest",
     "server-build": "node server/build.mjs",
