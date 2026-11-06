@@ -43,6 +43,14 @@ export interface HandModel {
   other: number; // a move no trick makes (E2, S2, notation the model can't read)
 }
 
+// The hand map as a puzzle has it: only the tricks for turns of the families its moves come in (no M E S tricks without slice turns); the very same map when it keeps every trick
+export function handsFor(hands: HandModel, families: string[]): HandModel {
+  // A trick's family is its turn without the amount: M2 → M, F' → F
+  const kept = (trick: Trick) => families.includes(trick.turn.replace(/[2']+$/, ""));
+  if (WRISTS.every((wrist) => (hands.tricks[wrist] ?? []).every(kept))) return hands;
+  return { ...hands, tricks: Object.fromEntries(WRISTS.map((wrist) => [wrist, (hands.tricks[wrist] ?? []).filter(kept)])) as Record<Wrist, Trick[]> };
+}
+
 // A trick's name in a fingering: its own, or its fingers and whether it's a push
 export function trickName(trick: Pick<Trick, "fingers" | "push" | "name">): string {
   return trick.name ?? trick.fingers.join(" + ") + (trick.push ? " push" : "");

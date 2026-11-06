@@ -7,8 +7,10 @@
 import { KPattern } from "cubing/kpuzzle";
 // The speed model in Rust (wasm-bindgen glue for the search crate, built by `npm run build-search`)
 import { SpeedModel, type InitInput } from "../../../search/pkg/puzzly_search.js";
-// The cube definition, loaded here too (looks and held cubes need it)
-import { kpuzzle, loadPuzzle } from "../core/puzzle";
+// The puzzle definition, loaded here too (looks and held cubes need it): the one each scoring's begin names
+import { kpuzzle, loadPuzzleOnce } from "../core/puzzle";
+// The built-in puzzles, by id
+import { puzzleById } from "../puzzle/puzzles";
 // Scores with the speed model in Rust
 import { useRustSpeed } from "../speed/fingering";
 // One alternative × grip of a step
@@ -90,8 +92,7 @@ interface Scoring {
   error?: string;
 }
 
-// Start handling the page's scorings in this worker: load the cube definition and the Rust code, then take the messages in order; call it once from the
-// worker's script
+// Start handling the page's scorings in this worker: load the Rust code, then take the messages in order (each begin loads its puzzle); call it once from the worker's script
 export function runScoringWorker(options: ScoringWorkerOptions): void {
   // Worker-side global (tsconfig only has the page's DOM types)
   const scope = self as unknown as Worker;
@@ -173,6 +174,8 @@ export function runScoringWorker(options: ScoringWorkerOptions): void {
     const scoring = scorings.get(request.id);
     try {
       if (request.kind === "begin") {
+        // The puzzle the page has loaded (a step's held cubes and goal are that puzzle's)
+        await loadPuzzleOnce(puzzleById(request.puzzle));
         const combos = combosOf(request.combos);
         const ids = new Map(combos.map((combo, place) => [combo, place]));
         const share: Sharing = { idOf: (combo) => ids.get(combo)! };
@@ -204,9 +207,8 @@ export function runScoringWorker(options: ScoringWorkerOptions): void {
       else if (scoring) scoring.error ??= message;
     }
   };
-  // Messages are handled one at a time, in order, once the cube definition and the Rust code are loaded (if they can't be, each finish says why); answers
-  // added go out to the helpers at once, and a limit or a finish waits for every answer of its scoring to be scored
-  const ready = Promise.all([loadPuzzle(), loadWasm(options.wasm).then(() => useRustSpeed(SpeedModel))]);
+  // Messages are handled one at a time, in order, once the Rust code is loaded (else each finish says why); a limit or a finish waits for its scoring's answers
+  const ready = loadWasm(options.wasm).then(() => useRustSpeed(SpeedModel));
   let queue: Promise<void> = Promise.resolve();
   scope.onmessage = ({ data }: MessageEvent<ScoringRequest>) => {
     queue = queue.then(() => ready).then(

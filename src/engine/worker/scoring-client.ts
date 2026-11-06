@@ -9,6 +9,8 @@ import { makeScorer, type Listed, type Places, type ScoringOptions } from "../st
 import type { Limit } from "../step/bound";
 // Messages to and from the scoring worker
 import type { ComboData, ScoringReply, ScoringWorker } from "./protocol";
+// The active puzzle (the scoring worker loads the one it's sent)
+import { puzzle } from "../puzzle/active";
 
 // How the app using the engine runs its scoring worker
 export interface ScoringClientOptions {
@@ -130,7 +132,7 @@ export function scoringSession(scramble: string, pieces: string, options: Scorin
       ...(combo.twins?.length ? { twins: combo.twins.map((twin) => placeOf.get(twin)!) } : {}),
     }),
   );
-  worker.postMessage({ id, kind: "begin", scramble, pieces, options, places, combos: data });
+  worker.postMessage({ id, kind: "begin", puzzle: puzzle.id, scramble, pieces, options, places, combos: data });
   return {
     add: (entries) => {
       if (entries.length) worker.postMessage({ id, kind: "add", answers: entries.map((entry) => [placeOf.get(entry.answer.combo)!, entry.answer.moves, entry.length, entry.order]) });

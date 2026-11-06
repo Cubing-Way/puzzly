@@ -1,13 +1,13 @@
 // Speed model, the evaluator: the cheapest way for two hands to make a move sequence (finger tricks, wrist turns, finger regrips and hand regrips), and who makes each move
 
-// The hand map, its wrist positions and its fingers
-import { type HandModel, type Trick, type Wrist, type Finger, HANDS, WRISTS, trickName } from "./hands";
-// The ways an answer can be written with wide and slice turns, and the frames rotations leave the cube in
-import { writingPlan, frameAfter, undoRotations } from "./writings";
+// The hand map, its wrist positions and its fingers, and the map as a puzzle has it
+import { type HandModel, type Trick, type Wrist, type Finger, HANDS, WRISTS, trickName, handsFor } from "./hands";
+// The ways an answer can be written with wide and slice turns (about the axes the puzzle has them about), and the frames rotations leave the cube in
+import { writingPlan, frameAfter, undoRotations, puzzleAxes } from "./writings";
 // A step's moves joined onto the moves before it
 import { cancelInto } from "../core/moves";
-// The 24 ways to hold the cube
-import { ALL_GRIPS } from "../core/cube";
+// The active puzzle: its grips (the ways to pick it up) and the turn families its moves come in, each kind apart and all in one list
+import { puzzle, grips, turnFamilies } from "../puzzle/active";
 // Lookup caches (emptied when a puzzle is loaded)
 import { lookupCache } from "../core/cache";
 // The speed model in Rust (search/src/speed.rs): the class loadEngine hands over once the Rust code is loaded
@@ -132,8 +132,30 @@ interface Ready {
   any?: { quarter: number; half: number }; // the least any quarter turn and any half turn can cost in any writing (see writingFloor)
 }
 
-// Models made ready so far
-const readied = new WeakMap<HandModel, Ready>();
+// Models made ready so far (started over when another puzzle is active, see forPuzzle)
+let readied = new WeakMap<HandModel, Ready>();
+// Each hand map as the active puzzle has it (see handsFor), the same way
+let trimmed = new WeakMap<HandModel, HandModel>();
+// The puzzle the caches of hand maps were made for
+let cachesFor: unknown = null;
+
+// Start the caches of hand maps over when another puzzle is active (what a map makes depends on the turns the puzzle has)
+function forPuzzle(): void {
+  if (cachesFor === puzzle) return;
+  cachesFor = puzzle;
+  readied = new WeakMap();
+  trimmed = new WeakMap();
+  tokenFloorsMade = new WeakMap();
+  costsBefore = new WeakMap();
+}
+
+// A hand map as the active puzzle has it: only the tricks for its turn families (the very same map on the 3x3x3)
+function puzzleHands(hands: HandModel): HandModel {
+  forPuzzle();
+  let own = trimmed.get(hands);
+  if (!own) trimmed.set(hands, (own = handsFor(hands, turnFamilies)));
+  return own;
+}
 
 // The speed model in Rust, once loadEngine has loaded it (null until then: the TypeScript code below scores, with the same costs). Only fingering
 // stays in TypeScript: it says who makes each move, for one solution at a time
@@ -148,11 +170,12 @@ export function useRustSpeed(model: typeof SpeedModel | null): void {
   rustModel = model;
 }
 
-// A hand map's copy in Rust, or null while the Rust code isn't loaded
+// A hand map's copy in Rust, as the active puzzle has it, or null while the Rust code isn't loaded
 function rustFor(hands: HandModel): SpeedModel | null {
   if (!rustModel) return null;
-  let copy = rustCopies.get(hands);
-  if (!copy) rustCopies.set(hands, (copy = new rustModel(JSON.stringify(hands))));
+  const own = puzzleHands(hands);
+  let copy = rustCopies.get(own);
+  if (!copy) rustCopies.set(own, (copy = new rustModel(JSON.stringify(own))));
   return copy;
 }
 
@@ -181,8 +204,9 @@ function reachAt(hands: HandModel, wrist: Wrist, mirrored: boolean): Reach {
   return reach;
 }
 
-// A model ready for the search (made on first use)
-function readyFor(hands: HandModel): Ready {
+// A model ready for the search, as the active puzzle has its hand map (made on first use)
+function readyFor(model: HandModel): Ready {
+  const hands = puzzleHands(model);
   let ready = readied.get(hands);
   if (!ready) {
     const reach = { right: WRISTS.map((wrist) => reachAt(hands, wrist, false)), left: WRISTS.map((wrist) => reachAt(hands, wrist, true)) };
@@ -581,7 +605,7 @@ export interface Writing {
 const ROTATION_TOKEN = /^[xyz][2']?$/;
 
 // Where a writing may start besides after `before` (the grip rotation), each as the frame the cube is then held in (its faces as the grip names them)
-// and the rotations the hands make to hold it so: on a solve's first step any of the 24 ways to pick the cube up (free, as the grip rotation is); on a
+// and the rotations the hands make to hold it so: on a solve's first step any of the puzzle's grips (free, as the grip rotation is); on a
 // later step as the hands hold it now, with no rotation, when every rotation of the grip is about an axis the wide or slice turns may turn about (so
 // `Dw R' U R` for `y' U R' U R`). None when `before` isn't made of rotations alone. Worked out once per case, again once a puzzle is loaded
 const startsMade = lookupCache<{ frame: string; rotations: string }[]>();
@@ -594,7 +618,7 @@ export function writingStarts(fresh: boolean, before: string, axes: string[]): {
     if (rotations.every((rotation) => ROTATION_TOKEN.test(rotation))) {
       // The frame the hands hold the cube in now, before the grip rotation
       const held = frameAfter(undoRotations(before));
-      const choices = fresh ? ALL_GRIPS : rotations.length && rotations.every((rotation) => axes.includes(rotation[0])) ? [""] : [];
+      const choices = fresh ? grips : rotations.length && rotations.every((rotation) => axes.includes(rotation[0])) ? [""] : [];
       // Each frame once, the one `before` leads to (the grip's own) left to it
       const seen = new Set([frameAfter("")]);
       for (const choice of choices) {
@@ -614,8 +638,8 @@ export function writingStarts(fresh: boolean, before: string, axes: string[]): {
 // twin grips at once (the same turns held with each front), each ending in its own (its start is left out when it starts held as it ends)
 export function writingSearch(moves: string, axes: string[] | { wide: string[]; slice: string[] }, hands: HandModel = HANDS, fresh = false, before = "", limit = Infinity, angles = false, ends: string[] = []): WritingSearch {
   const turns = moves.split(/\s+/).filter(Boolean);
-  // Wide and slice axes: the same list for both, or each its own
-  const [wide, slice] = Array.isArray(axes) ? [axes, axes] : [axes.wide, axes.slice];
+  // Wide and slice axes: the same list for both, or each its own; only those the active puzzle has such turns about
+  const [wide, slice] = Array.isArray(axes) ? [puzzleAxes(axes, "wide"), puzzleAxes(axes, "slice")] : [puzzleAxes(axes.wide, "wide"), puzzleAxes(axes.slice, "slice")];
   // Other starts the writing may take
   const starts = angles ? writingStarts(fresh, before, [...new Set([...wide, ...slice])]) : [];
   // In Rust once it's loaded (the writing it gives is read, then freed)
@@ -867,30 +891,37 @@ export function leastCostAfter(moves: string, hands: HandModel = HANDS, bar = In
   return Math.min(...costs.map((cost, end) => cost + hands.lastRegrip * HANDS_MOVED[Math.floor(end / width) * STATES + HOME_STATE]));
 }
 
-// The least any quarter turn and any half turn of an answer can cost in any writing: a face turn at its cheapest and in rhythm, or half a slice turn
-// (which makes two of the answer's turns)
+// The least any quarter turn and any half turn of an answer can cost in any writing: one of the puzzle's face turns at its cheapest and in rhythm, or half one of its slice turns (two of the answer's turns)
 function anyFloors(hands: HandModel, ready: Ready): { quarter: number; half: number } {
   const flow = Math.max(0, ...Object.values(hands.flow));
   const least = (quarters: number) =>
     Math.min(
-      ...["U", "D", "L", "R", "F", "B"].map((layer) => turnFloor({ layer, wide: false, quarters }, hands, ready) - flow),
-      ...["M", "E", "S"].map((layer) => turnFloor({ layer, wide: false, quarters }, hands, ready) / 2),
+      ...puzzle.turnFamilies.face.map((layer) => turnFloor({ layer, wide: false, quarters }, hands, ready) - flow),
+      ...puzzle.turnFamilies.slice.map((layer) => turnFloor({ layer, wide: false, quarters }, hands, ready) / 2),
     );
   return { quarter: Math.min(least(1), least(3)), half: least(2) };
 }
 
+// The order token floors are listed in (requests carry them, so a 3x3x3 request stays the very same); the puzzle's other turn families come after
+const FLOOR_ORDER = ["U", "D", "R", "L", "F", "B", "Uw", "Dw", "Rw", "Lw", "Fw", "Bw", "M", "E", "S"];
+
 // The least each token the hands may make costs, for the speed bound a step's lists prune with (see step/bound.ts): a face, wide or slice turn at its
 // floor less what keeping the rhythm could save it (as the writing search's own bound counts it), and a rotation as speedFloor counts it after a
-// solve's first turn. Worked out once per model
-const tokenFloorsMade = new WeakMap<HandModel, Record<string, number>>();
+// solve's first turn. Only the active puzzle's turn families; worked out once per model and puzzle
+let tokenFloorsMade = new WeakMap<HandModel, Record<string, number>>();
 export function tokenFloors(hands: HandModel = HANDS): Record<string, number> {
+  forPuzzle();
   let floors = tokenFloorsMade.get(hands);
   if (!floors) {
     const ready = readyFor(hands);
     floors = {};
-    for (const family of ["U", "D", "R", "L", "F", "B", "Uw", "Dw", "Rw", "Lw", "Fw", "Bw", "M", "E", "S"]) {
+    // The puzzle's face, wide and slice turn families, in the order floors are listed in
+    const families = [...FLOOR_ORDER.filter((family) => turnFamilies.includes(family)), ...turnFamilies.filter((family) => !FLOOR_ORDER.includes(family))];
+    for (const family of families) {
       for (const suffix of ["", "2", "'"]) {
-        const turn = readTurn(family + suffix)!;
+        // A turn the hand model can't read gets no floor of its own
+        const turn = readTurn(family + suffix);
+        if (!turn) continue;
         floors[family + suffix] = turnFloor(turn, hands, ready) - (hands.flow[turn.layer] ?? 0);
       }
     }
@@ -947,11 +978,12 @@ export function speedCost(moves: string, hands: HandModel = HANDS, fresh = false
   return evaluate(moves, hands, fresh, false, starts).cost;
 }
 
-// Speed costs of moves a step comes after, per model, by their step starts and text: a step scores many answers after the same moves (started over when it gets big)
-const costsBefore = new WeakMap<HandModel, Map<string, number>>();
+// Speed costs of moves a step comes after, per model, by their step starts and text: a step scores many answers after the same moves (started over when it gets big or another puzzle is active)
+let costsBefore = new WeakMap<HandModel, Map<string, number>>();
 
 // The speed cost of moves a step comes after: a solve's moves so far, so nothing was turned before them (`starts`: where each of its steps starts)
 function costBefore(moves: string, hands: HandModel, starts: number[]): number {
+  forPuzzle();
   let costs = costsBefore.get(hands);
   if (!costs || costs.size > 1000) costsBefore.set(hands, (costs = new Map()));
   const key = `${starts.join(",")}/${moves}`;

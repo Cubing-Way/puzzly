@@ -1,6 +1,6 @@
 // Method files: read plain method data (parsed JSON) into a checked method with every field filled in
 
-// The active puzzle: its faces, the rotation that puts each on the bottom, its default moves and its rotations
+// The active puzzle: its faces, the rotation that puts each on the bottom, its default moves, its rotations and its alg sets
 import { puzzle } from "../puzzle/active";
 // Move text helpers
 import { rotationsIn } from "../core/moves";
@@ -16,8 +16,8 @@ import { offsetsFromText } from "../goal/offsets";
 import { solvableFromText } from "../goal/solvable";
 // Goals that keep every other piece untouched
 import { checkUntouchedRoles } from "../goal/untouched";
-// The sets of cases a step can be answered from
-import { ALG_SETS, algSet } from "../algs/sets";
+// The sets of cases a step can be answered from (the active puzzle's)
+import { algSet } from "../algs/sets";
 // Error messages
 import { UNTOUCHED_MIX } from "../messages";
 // Engine data shapes
@@ -90,9 +90,9 @@ function readStep(data: unknown, index: number): StepConfig {
     const wideAxes = axesFromText(step.wideAxes, "Wide axes");
     const sliceAxes = step.sliceAxes === undefined ? wideAxes : axesFromText(step.sliceAxes, "Slice axes");
     const rotationAxes = step.rotationAxes === undefined ? wideAxes : axesFromText(step.rotationAxes, "Rotation axes");
-    // Alg set the step is answered from ("" = none), by its name
+    // Alg set the step is answered from ("" = none), by its name: one of the puzzle's own
     const algs = algSet(String(step.algs ?? ""))?.name ?? "";
-    if (String(step.algs ?? "").trim() && !algs) throw new Error(`Algs must be one of ${Object.keys(ALG_SETS).join(", ")} (or empty for none).`);
+    if (String(step.algs ?? "").trim() && !algs) throw new Error(puzzle.algSets.length ? `Algs must be one of ${puzzle.algSets.join(", ")} (or empty for none).` : `The ${puzzle.name} has no alg sets: leave Algs empty.`);
     // Rank: what the step's best answer is, the fewest moves or the fastest to turn
     const rank = step.rank ?? "moves";
     if (rank !== "moves" && rank !== "speed") throw new Error('Rank must be "moves" or "speed".');

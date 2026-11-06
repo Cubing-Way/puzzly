@@ -1,8 +1,8 @@
 // Engine setup: load the puzzle (the 3x3x3 unless the app gives another), say how the app runs the search and scoring workers and the batch engines, and
 // load the speed model in Rust when the app gives the Rust code
 
-// Loads the puzzle definition and makes it the active puzzle
-import { loadPuzzle } from "./core/puzzle";
+// Loads the puzzle definition and makes it the active puzzle (always, or only when another one is loaded)
+import { loadPuzzle, loadPuzzleOnce } from "./core/puzzle";
 // A puzzle's description
 import type { PuzzleSpec } from "./puzzle/spec";
 // The speed model in Rust (wasm-bindgen glue for the search crate, built by `npm run build-search`)
@@ -47,4 +47,11 @@ export async function loadEngine(options: EngineOptions = {}): Promise<void> {
   if (await loadPuzzle(options.puzzle)) stopSearchWorker();
   await rust;
   for (const file of options.answerFiles ?? []) loadAnswerFile(file);
+}
+
+// Make a puzzle the active one unless it is already, stopping the search worker when it changes as loadEngine does (batch engines and the server get the puzzle with each call)
+export async function switchPuzzle(spec: PuzzleSpec): Promise<boolean> {
+  const changed = await loadPuzzleOnce(spec);
+  if (changed) stopSearchWorker();
+  return changed;
 }

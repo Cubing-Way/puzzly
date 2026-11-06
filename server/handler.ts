@@ -7,8 +7,10 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 // The compiled Rust search code
 import wasm from "../search/pkg/puzzly_search_bg.wasm";
-// Engine setup and the calls a request may make
-import { loadEngine } from "../src/engine/setup";
+// Engine setup, a switch to the puzzle a request names, and the built-in puzzles by id
+import { loadEngine, switchPuzzle } from "../src/engine/setup";
+import { puzzleById } from "../src/engine/puzzle/puzzles";
+import type { PuzzleSpec } from "../src/engine/puzzle/spec";
 import { solveStep, stepCandidates } from "../src/engine/step/step";
 import { runMethod } from "../src/engine/method/run";
 import { searchMethod } from "../src/engine/method/search";
@@ -17,8 +19,8 @@ import type { BatchCalls } from "../src/engine/worker/protocol";
 // The search worker, run in this thread, its helpers and the scoring worker in threads of their own
 import { sameThreadSearchWorker } from "../src/engine/worker/search-worker";
 import { nodeHelper, nodeScoringWorker } from "../bench/node-helper";
-// Arguments and results as JSON
-import { fromWire, toWire } from "../src/engine/remote/wire";
+// Arguments and results as JSON, and a request's body
+import { fromWire, toWire, type WireCall } from "../src/engine/remote/wire";
 // The month's spend
 import { addUsage, reserveUsage, thisMonth, usedThisMonth } from "./usage";
 
@@ -74,11 +76,10 @@ export async function handler(event: UrlEvent, context?: UrlContext) {
   }
 }
 
-// GET: the month's spend. POST { call, args }: the call's result as { value }, or { error }. Before a call runs, the most it may cost (`most`: its time so
-// far and all it may still run) is counted in the month's spend, in `charge`, only if it fits in the budget: a call that may not fit is refused
+// GET: the month's spend. POST { call, args, puzzle? } (no puzzle: the 3x3x3): { value } or { error }; a call's most cost (`most`) is reserved in `charge` first, refused past the budget
 async function answer(event: UrlEvent, most: () => number, charge: { reserved: number }) {
   if (event.requestContext?.http?.method === "GET") return reply(200, { month: thisMonth(), ...(await usedThisMonth()), budgetGbs: BUDGET_GBS });
-  let request: { call?: string; args?: unknown };
+  let request: Partial<WireCall>;
   try {
     request = JSON.parse(event.isBase64Encoded ? Buffer.from(event.body ?? "", "base64").toString() : (event.body ?? ""));
   } catch {
@@ -86,11 +87,19 @@ async function answer(event: UrlEvent, most: () => number, charge: { reserved: n
   }
   const run = Object.hasOwn(CALLS, request.call ?? "") ? (CALLS[request.call as keyof BatchCalls] as (...args: unknown[]) => Promise<unknown>) : null;
   if (!run || !Array.isArray(request.args)) return reply(400, { error: `Send { call, args }, call one of ${Object.keys(CALLS).join(", ")}` });
+  // The puzzle the call is for (an unknown one is refused before anything is counted)
+  let spec: PuzzleSpec;
+  try {
+    spec = puzzleById(request.puzzle);
+  } catch (error) {
+    return reply(400, { error: error instanceof Error ? error.message : String(error) });
+  }
   const reserved = most();
   if (!(await reserveUsage(reserved, BUDGET_GBS))) return reply(429, { error: "The solve server has spent this month's budget: solve in the page", budget: true });
   charge.reserved = reserved;
   try {
     await ready;
+    await switchPuzzle(spec);
     return reply(200, { value: toWire(await run(...(fromWire(request.args) as unknown[]))) });
   } catch (error) {
     return reply(500, { error: error instanceof Error ? error.message : String(error) });

@@ -14,7 +14,11 @@ import type { KPattern, KPuzzle } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
-import { FACE_MOVES, joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
+import { joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
+// The active puzzle and its default moves
+import { puzzle, defaultMoves } from "../puzzle/active";
+// The puzzle a file that names none is for
+import { DEFAULT_PUZZLE } from "../puzzle/puzzles";
 // Loaded cube definition, and the rotation a move sequence makes
 import { kpuzzle, netRotation } from "../core/puzzle";
 // Moves as other grips see them
@@ -68,7 +72,7 @@ export function caseKey(combo: Pick<Combo, "goal" | "start">): string {
 
 const sameList = (a: string[], b: string[]): boolean => a.length === b.length && a.every((item, at) => item === b[at]);
 
-// The file made for a step's pieces and options, if one is loaded: the same goal, moves, grips, offsets, faces to avoid and hand-turn axes, and no more
+// The file made for a step's pieces and options, if one is loaded: the same puzzle, goal, moves, grips, offsets, faces to avoid and hand-turn axes, and no more
 // extra moves than it has. It holds every answer its step listed going on past the cap, so it stands for a step that goes on past the cap or not.
 // Never for a solve's first step (its grip rotation is free), a method's last one (no rotations after its last turn), BLD steps, steps that undo their
 // offset or stop at the first grip, places per alternative (a beam search), or a file whose answers may rotate the cube in their middle
@@ -77,7 +81,7 @@ function fileFor(pieces: string, options: StepOptions & { perAlternative?: numbe
   if (Number.isFinite(options.maxDepth ?? Infinity) || !options.done?.trim()) return undefined;
   const wideAxes = options.wideAxes ?? [];
   const asked = {
-    generatorMoves: options.generatorMoves ?? FACE_MOVES,
+    generatorMoves: options.generatorMoves ?? defaultMoves,
     rotations: options.rotations ?? [""],
     offsets: options.offsets?.length ? options.offsets : [""],
     solvableWith: options.solvableWith ?? [],
@@ -89,7 +93,7 @@ function fileFor(pieces: string, options: StepOptions & { perAlternative?: numbe
   const names = Object.keys(asked) as (keyof typeof asked)[];
   // Of the files that fit, the one made with the fewest extra moves: it was listed the way the step lists (a list going a move further runs out of
   // its cap or budget elsewhere)
-  const fits = files.filter(({ header }) => header.pieces === pieces && (options.extraMoves ?? 0) <= header.options.extraMoves && !header.options.rotationAxes.length && names.every((name) => sameList(asked[name], header.options[name])));
+  const fits = files.filter(({ header }) => (header.puzzle ?? DEFAULT_PUZZLE.id) === puzzle.id && header.pieces === pieces && (options.extraMoves ?? 0) <= header.options.extraMoves && !header.options.rotationAxes.length && names.every((name) => sameList(asked[name], header.options[name])));
   return fits.reduce<AnswerFile | undefined>((best, file) => (!best || file.header.options.extraMoves < best.header.options.extraMoves ? file : best), undefined);
 }
 
@@ -423,7 +427,7 @@ export function fileCandidates(scramble: string, pieces: string, options: StepOp
   // first): its turns named in the grip its combo is searched in, each run about one axis in the order the search allows (of two turns that commute,
   // the one of the earlier move first), as each turn's place in the search's turn order (the step's moves in order, each as a quarter, half and
   // counter turn)
-  const generatorMoves = options.generatorMoves ?? FACE_MOVES;
+  const generatorMoves = options.generatorMoves ?? defaultMoves;
   const listedOf = (ranked: Ranked): string => {
     if (ranked.listed !== undefined) return ranked.listed;
     const raw = (movesInGrip(ranked.moves, ranked.combo.rotation, ranked.listedIn) ?? ranked.moves).split(" ");

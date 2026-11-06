@@ -26,6 +26,8 @@ export const CUBE3: PuzzleSpec = {
   frame: "CENTERS",
   // Faces in opposite pairs
   faces: ["U", "D", "F", "B", "R", "L"],
+  // U and F face the solver, R and L are seen at a slant, B and D not at all
+  sight: { U: 1, F: 1, R: 1, L: 1, B: 0, D: 0 },
   defaultMoves: ["U", "R", "F", "D", "L", "B"],
   extraMoves: ["M", "E", "S"],
   turnFamilies: { face: ["U", "R", "F", "D", "L", "B"], slice: ["M", "E", "S"], wide: ["Uw", "Rw", "Fw", "Dw", "Lw", "Bw"] },

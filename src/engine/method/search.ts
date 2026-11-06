@@ -3,7 +3,9 @@
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
-import { FACE_MOVES, countMoves, joinMoves } from "../core/moves";
+import { countMoves, joinMoves } from "../core/moves";
+// The active puzzle's default moves
+import { defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { heldPattern, noteHeld } from "../core/puzzle";
 // Roles, goal text and goal masks
@@ -203,7 +205,7 @@ export async function searchMethod(scramble: string, method: Method, options: Me
           kind: "list",
           start: combo.start,
           targets: combo.targets,
-          moves: level.options.generatorMoves ?? FACE_MOVES,
+          moves: level.options.generatorMoves ?? defaultMoves,
           solvableWith: level.options.solvableWith,
           orbitTables: orbitTables(combo),
           maxDepth: length + 1,

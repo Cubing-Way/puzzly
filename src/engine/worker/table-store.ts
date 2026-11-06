@@ -3,12 +3,14 @@
 // The Rust side's table format number (tables saved by another format are never read)
 import { tableFormat } from "../../../search/pkg/puzzly_search.js";
 
-// Object store holding the tables (key: table format / moves / targets, value: the table's bytes)
+// Object store holding the tables (key: table format / key layout / puzzle id / moves / targets, value: the table's bytes)
 const DB_STORE = "tables";
+// The key layout: "p" since keys start with the puzzle id, so tables stored before that (same format, no id) are deleted when the store is listed
+const KEY_LAYOUT = "p";
 
 // The stored-tables database, or null when there's none (not opened, storing turned off, private window, blocked storage, Node tests…)
 let database: Promise<IDBDatabase | null> = Promise.resolve(null);
-// Keys (moves + targets) of the tables stored for the current table format
+// Keys (puzzle id + moves + targets) of the tables stored for the current table format and key layout
 const stored = new Set<string>();
 
 // An IndexedDB request as a promise
@@ -35,9 +37,9 @@ function openDatabase(name: string): Promise<IDBDatabase | null> {
   });
 }
 
-// Key of a table in the database: the table format first, so tables saved by an older format are never read as current ones
+// Key of a table in the database: the table format and key layout first, so tables saved by an older format or layout are never read as current ones
 function storeKey(key: string): string {
-  return `${tableFormat()}/${key}`;
+  return `${tableFormat()}/${KEY_LAYOUT}/${key}`;
 }
 
 // Open the store under this database name (null = keep nothing: every table is built when needed)
@@ -45,7 +47,7 @@ export function openTableStore(name: string | null): void {
   database = name === null ? Promise.resolve(null) : openDatabase(name);
 }
 
-// Note which tables are stored, deleting the ones saved by another table format (they'd never be read again); needs the Rust code loaded
+// Note which tables are stored, deleting the ones saved by another table format or key layout (they'd never be read again); needs the Rust code loaded
 export async function listStored(): Promise<void> {
   const db = await database;
   if (!db) return;

@@ -15,6 +15,8 @@ import { lookupCache } from "../core/cache";
 import { cancelSaving, speedFloor, tokenFloors, writingStarts } from "../speed/fingering";
 // Frames rotations hold the cube in
 import { frameAfter, undoRotations } from "../speed/writings";
+// The active puzzle's slice turns and rotations
+import { puzzle, isRotation } from "../puzzle/active";
 // Engine data shapes
 import type { StepOptions } from "../types";
 // One alternative × grip of a step
@@ -133,8 +135,8 @@ export function speedBound(combo: Combo, options: StepOptions, deepest: number):
   const writtenAxes = [...new Set([...wideAxes, ...sliceAxes])];
   const avoid = options.avoid ?? [];
   const floors = tokenFloors();
-  // The least a turn can cost: a face or wide turn at its floor, or half a slice turn
-  const least = Math.min(...Object.entries(floors).filter(([token]) => !"xyz".includes(token[0])).map(([token, floor]) => ("MES".includes(token[0]) ? floor / 2 : floor)));
+  // The least a turn can cost: a face or wide turn at its floor, or half a slice turn (rotations aside)
+  const least = Math.min(...Object.entries(floors).filter(([token]) => !isRotation(token)).map(([token, floor]) => (puzzle.turnFamilies.slice.includes(token.replace(/[2']+$/, "")) ? floor / 2 : floor)));
   // The moves before the step: how far cancelling into them could reach, and what it could save
   const previous = options.previous ?? "";
   const { runs, trailing } = runsBefore(previous, combo.rotation);

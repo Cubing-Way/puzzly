@@ -20,7 +20,7 @@ const BASELINE = new URL("../../bench/check-baseline.txt", import.meta.url);
 // Groups to run (all by default)
 const ONLY = process.env.ONLY?.split(",");
 
-// Every request the engine sends the search worker is hashed, per group and in all (the request number left out)
+// Every request the engine sends the search worker is hashed, per group and in all (the request number and the puzzle id left out: the baseline is from before requests had one)
 const allHash = createHash("sha256");
 let allCount = 0;
 let groupHash = createHash("sha256");
@@ -30,7 +30,7 @@ function hashedWorker(): engine.SearchWorker {
   const worker = inProcessWorker();
   const post = worker.postMessage.bind(worker);
   worker.postMessage = (data: any) => {
-    const { id: _, ...request } = data;
+    const { id: _, puzzle: __, ...request } = data;
     const text = JSON.stringify(request);
     allHash.update(text);
     groupHash.update(text);

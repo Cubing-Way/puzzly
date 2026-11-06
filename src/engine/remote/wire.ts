@@ -9,6 +9,13 @@ import { ALG_TEXT } from "../worker/protocol";
 // Key a value JSON can't hold goes under, as its text
 const WIRE_VALUE = "$value";
 
+// One call as a request's JSON body: the engine function's name, its arguments (as toWire gives them) and the puzzle's id (left out: the 3x3x3, as every call made before puzzles were data)
+export interface WireCall {
+  call: string;
+  args: unknown;
+  puzzle?: string;
+}
+
 // A call's arguments or result as plain JSON data
 export function toWire(value: unknown): unknown {
   if (value instanceof Alg) return { [ALG_TEXT]: value.toString() };

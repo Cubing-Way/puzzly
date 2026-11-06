@@ -8,6 +8,8 @@ import { Alg } from "cubing/alg";
 import { MAX_ENGINES } from "./limits";
 // Messages to and from the engines
 import { ALG_TEXT, type BatchCall, type BatchResult, type EngineReply, type EngineWorker } from "./protocol";
+// The active puzzle (each job's engine loads the one that was active when it was given)
+import { puzzle } from "../puzzle/active";
 
 // How the app runs its batch engines
 export interface BatchClientOptions {
@@ -36,8 +38,9 @@ export interface BatchRunOptions {
 // Idle time before the engines are stopped, unless the app sets its own
 const ENGINE_IDLE_MS = 60_000;
 
-// One job: its calls, their results so far, how many are still to come, and who hears when they're all in
+// One job: its puzzle's id, its calls, their results so far, how many are still to come, and who hears when they're all in
 interface Job {
+  puzzle: string;
   calls: BatchCall[];
   results: BatchSettled[];
   left: number;
@@ -109,7 +112,7 @@ export function runBatch(jobs: BatchCall[][], options: BatchRunOptions | BatchRu
           resolve(results);
         };
         if (!calls.length) return done([]);
-        const job: Job = { calls: calls.map(postable), results: [], left: calls.length, done };
+        const job: Job = { puzzle: puzzle.id, calls: calls.map(postable), results: [], left: calls.length, done };
         const places = calls.map((_, place) => place);
         if (spreadCalls) waiting.push(...places.map((place) => ({ job, calls: [place] })));
         else waiting.push({ job, calls: places });
@@ -146,7 +149,7 @@ function give(engine: Engine): void {
   if (!part) return;
   const id = nextPart++;
   engine.part = { id, part, left: part.calls.length };
-  engine.worker.postMessage({ id, calls: part.calls.map((place) => part.job.calls[place]) });
+  engine.worker.postMessage({ id, puzzle: part.job.puzzle, calls: part.calls.map((place) => part.job.calls[place]) });
 }
 
 // One call of a job answered: its result goes in, and a job with every result in is done

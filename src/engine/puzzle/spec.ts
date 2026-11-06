@@ -26,6 +26,7 @@ export interface PuzzleSpec {
   pieceKey: (name: string) => string; // a typed piece name as it's looked up (on the 3x3x3 its letters sorted, so "UR", "RU" and "ur" are one piece)
   frame: string | null; // the piece type that says how the puzzle is held (pieces that never move against each other, the 3x3x3's centers), or none
   faces: string[]; // the faces, as the messages list them
+  sight: Record<string, number>; // how much of a sticker on each face the solver sees with the puzzle held as it is (the look model's faces, see speed/look.ts)
   defaultMoves: string[]; // moves a step may use when it's given none (the face turns)
   extraMoves: string[]; // moves a step may be given beyond those (the page's move boxes offer them), e.g. M E S
   turnFamilies: TurnFamilies; // the turn families its moves come in, by kind

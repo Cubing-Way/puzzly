@@ -24,6 +24,7 @@ import type { beamSearchMethod } from "../method/beam";
 export interface SearchRequest {
   id: number;
   kind: "measure" | "search" | "list";
+  puzzle: string; // the definition's id (see definitionId in client.ts): every table key starts with it
   kpuzzle: string;
   start: string;
   targets: string;
@@ -90,10 +91,11 @@ export interface RankedData {
   tier?: number;
 }
 
-// How a step's scoring begins: the step as given, how it shares out its places, its combos
+// How a step's scoring begins: the puzzle, the step as given, how it shares out its places, its combos
 export interface ScoringBegin {
   id: number;
   kind: "begin";
+  puzzle?: string; // the puzzle's id (see puzzle/puzzles.ts), which the scoring worker and its helpers load; left out: the 3x3x3
   scramble: string;
   pieces: string;
   options: ScoringOptions;
@@ -163,9 +165,10 @@ export type BatchCall = { [Name in keyof BatchCalls]: { call: Name; args: Parame
 // What a batch call gives: what that engine function gives (a StepResult, a list of them, a MethodResult…)
 export type BatchResult = Awaited<ReturnType<BatchCalls[keyof BatchCalls]>>;
 
-// One job for a batch engine: its calls, run one after another
+// One job for a batch engine: its puzzle and its calls, run one after another
 export interface EngineRequest {
   id: number;
+  puzzle?: string; // the puzzle's id (see puzzle/puzzles.ts), which the engine loads before the calls; left out: the 3x3x3
   calls: BatchCall[];
 }
 

@@ -52,8 +52,22 @@ const waiting = new Map<number, { resolve: (reply: SearchReply) => void; reject:
 let nextRequest = 0;
 // Timer that stops the worker once it's idle
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
-// The puzzle definition as JSON, without its check function (which JSON can't carry), made on first use (again once a puzzle is loaded)
-const puzzleJson = lookupCache<string>();
+// The puzzle definition as JSON without its check function (which JSON can't carry), and its id, made on first use (again once a puzzle is loaded)
+const puzzleJson = lookupCache<{ json: string; id: string }>();
+
+// A definition's id, a 53-bit hash of its JSON in base 36: every table key starts with it, so two puzzles with the same names never share tables
+export function definitionId(json: string): string {
+  // cyrb53: two 32-bit FNV-style lanes mixed at the end
+  let [first, second] = [0xdeadbeef, 0x41c6ce57];
+  for (let at = 0; at < json.length; at++) {
+    const code = json.charCodeAt(at);
+    first = Math.imul(first ^ code, 2654435761);
+    second = Math.imul(second ^ code, 1597334677);
+  }
+  first = Math.imul(first ^ (first >>> 16), 2246822507) ^ Math.imul(second ^ (second >>> 13), 3266489909);
+  second = Math.imul(second ^ (second >>> 16), 2246822507) ^ Math.imul(first ^ (first >>> 13), 3266489909);
+  return (4294967296 * (2097151 & second) + (first >>> 0)).toString(36);
+}
 
 // Set how the search worker is started and how long an idle one is kept (left-out options stay as they were); a worker started another way is stopped
 export function configureSearch(options: SearchClientOptions): void {
@@ -103,10 +117,11 @@ function getSearchWorker(): SearchWorker {
 export function askWorker(request: WorkerRequest, onProgress?: (progress: TableProgress) => void): Promise<SearchReply> {
   // A request keeps the worker alive
   clearTimeout(idleTimer);
-  const definitionJson = remember(puzzleJson, "", () => {
-    const definition: Record<string, unknown> = { ...kpuzzle.definition };
-    delete definition.experimentalIsPatternSolved;
-    return JSON.stringify(definition);
+  const definition = remember(puzzleJson, "", () => {
+    const data: Record<string, unknown> = { ...kpuzzle.definition };
+    delete data.experimentalIsPatternSolved;
+    const json = JSON.stringify(data);
+    return { json, id: definitionId(json) };
   });
   const id = nextRequest++;
   return new Promise<SearchReply>((resolve, reject) => {
@@ -116,7 +131,8 @@ export function askWorker(request: WorkerRequest, onProgress?: (progress: TableP
     worker.postMessage({
       id,
       kind: request.kind,
-      kpuzzle: definitionJson,
+      puzzle: definition.id,
+      kpuzzle: definition.json,
       start: JSON.stringify(request.start.patternData),
       // Targets as a list, or with the moves that may finish them later (the worker closes them under those moves) and / or the whole-orbit tables to add
       targets: JSON.stringify(

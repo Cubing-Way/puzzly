@@ -1,6 +1,9 @@
 // Speed model, the writings: the ways the hands can make a sequence of face turns when some are made as the opposite wide turn, or two as one slice turn.
 // It only says which writings there are; fingering.ts finds the cheapest one
 
+// The active puzzle's turn families (a writing uses only the wide and slice turns it has)
+import { puzzle } from "../puzzle/active";
+
 // Faces a rotation moves, each to the next one's place (x turns like R, y like U, z like F)
 const CYCLES: Record<string, string[]> = { x: ["F", "U", "B", "D"], y: ["F", "L", "B", "R"], z: ["U", "R", "D", "L"] };
 
@@ -23,6 +26,12 @@ const WRITTEN: Record<string, { token: string; faces: string[]; rotation: string
     { token: "S", faces: ["F'", "B"], rotation: "z" },
   ],
 };
+
+// The axes the active puzzle has turns of this kind about: an axis is left out unless every wide turn (or slice turn) about it is one of its turn families (on a 2x2x2 there's none)
+export function puzzleAxes(axes: string[], kind: "wide" | "slice"): string[] {
+  const families = puzzle.turnFamilies[kind];
+  return axes.filter((axis) => (WRITTEN[axis] ?? []).filter((form) => (form.faces.length === 1) === (kind === "wide")).every((form) => families.includes(form.token)));
+}
 
 // What follows a turn's letter, by its quarter turns clockwise (1 = plain, 2 = half, 3 = prime)
 const SUFFIXES = ["", "", "2", "'"];

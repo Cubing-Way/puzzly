@@ -7,7 +7,9 @@ import { cellsKey, cellsOf } from "../core/cells";
 // Piece names and grips
 import { gripRotations } from "../core/cube";
 // Move text helpers
-import { joinMoves, FACE_MOVES, invertMoves } from "../core/moves";
+import { joinMoves, invertMoves } from "../core/moves";
+// The active puzzle's default moves
+import { defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { netRotation, heldInGrip } from "../core/puzzle";
 // Moves as other grips see them
@@ -91,7 +93,7 @@ export function laterGoals(steps: StepConfig[], index: number, earlier: Goal): L
         const turns = distinctTurns([...state.turns, ...(own as string[])]);
         if (at > index) {
           // Those moves named in the step's grip (a list some step uses when it's the same turns), and its goal's targets per offset group
-          const moves = movesForGrip(turns, grip, [step.moves, ...steps.slice(index, at).map((earlierStep) => earlierStep.moves), FACE_MOVES]);
+          const moves = movesForGrip(turns, grip, [step.moves, ...steps.slice(index, at).map((earlierStep) => earlierStep.moves), defaultMoves]);
           if (!moves) return standing();
           const key = [
             goalToText(rotateGoal(goal, invertMoves(grip))),

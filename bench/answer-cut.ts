@@ -65,7 +65,7 @@ if (!isMainThread) {
     }),
   );
   const cut = { ...rule, answers: 0, bytes: bytes.length };
-  const writer = answerFileWriter({ pieces: header.pieces, options: header.options, holds: header.holds, cut });
+  const writer = answerFileWriter({ puzzle: header.puzzle, pieces: header.pieces, options: header.options, holds: header.holds, cut });
   let kept = 0;
   for (const at of cases) {
     const entry = header.cases[at];

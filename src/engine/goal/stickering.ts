@@ -1,7 +1,7 @@
 // Sticker masks for cubing.js's 3D viewer (TwistyPlayer's experimentalStickeringMaskOrbits), so an app can show which pieces a goal is about
 
-// Piece names per type
-import { PIECE_NAMES } from "../core/cube";
+// The active puzzle's piece names per type
+import { pieceNames } from "../puzzle/active";
 // Roles a goal gives its pieces
 import type { Role } from "../types";
 // Goals named for the grip the cube is held in
@@ -19,7 +19,7 @@ function maskChar(role: Role): string {
 // Viewer mask for the grip after scramble + done: goal pieces drawn by role, the rest grey (pieces = null: the whole cube in full color)
 export function stickeringMask(pieces: string | null, scramble: string, done = ""): string {
   const goal = pieces === null ? null : goalOnCube(pieces, scramble, done);
-  return Object.entries(PIECE_NAMES)
+  return Object.entries(pieceNames)
     .map(([orbit, names]) => {
       // One letter per piece: its role's letter, or "I" when the goal ignores it
       const letters = names.map((_, i) => {

@@ -10,6 +10,9 @@
 // costs (u16, 0xffff = none); how many least costs after 3, 4… turns (u8), each as two i16 (hundredths rounded down); how many first turns (u8), each
 // as its token (u8), four least costs after it (i16), two costs (u16) and the tokens that come second (a u8 count, then u8 each)
 
+// The active puzzle (a file made now is for it)
+import { puzzle } from "../puzzle/active";
+
 // The options a file was made with: a step asked with the very same ones (and up to as many extra moves) can be answered from it
 export interface AnswerFileOptions {
   generatorMoves: string[];
@@ -37,6 +40,7 @@ export interface AnswerFileCase {
 
 // What a file says about itself
 export interface AnswerFileHeader {
+  puzzle?: string; // the puzzle it was made on, by id (see puzzle/puzzles.ts): it answers only that puzzle's steps; left out (files made before puzzles were data): the 3x3x3
   pieces: string; // the step's goal text, alternatives split by " | "
   options: AnswerFileOptions;
   holds: string[]; // grip rotations an answer may be held in, from its case's own grip ("" = as the case is held)
@@ -132,7 +136,7 @@ const lengthOf = (bits: number): number => (bits === 255 ? Infinity : bits);
 
 // A file made one case at a time: `add` each case with its answers (as bytes at once, so a big file never holds its answers as objects) and, for a cut
 // file, what it left out of the case (its tokens as text), then `finish` gives the file (the header's tokens and where each case is are filled in there)
-export function answerFileWriter(made: Pick<AnswerFileHeader, "pieces" | "options" | "holds" | "cut">): {
+export function answerFileWriter(made: Pick<AnswerFileHeader, "puzzle" | "pieces" | "options" | "holds" | "cut">): {
   add(entry: Omit<AnswerFileCase, "at" | "size">, answers: PreparedAnswer[], dropped?: DroppedHold<string>[]): void;
   finish(): Uint8Array;
 } {
@@ -210,7 +214,8 @@ export function answerFileWriter(made: Pick<AnswerFileHeader, "pieces" | "option
     size += body.length;
   };
   const finish = (): Uint8Array => {
-    const header: AnswerFileHeader = { pieces: made.pieces, options: made.options, holds: made.holds, tokens, cases, ...(made.cut ? { cut: made.cut } : {}) };
+    // Its puzzle: the one given (a cut file keeps its full file's), else the active one
+    const header: AnswerFileHeader = { puzzle: made.puzzle ?? puzzle.id, pieces: made.pieces, options: made.options, holds: made.holds, tokens, cases, ...(made.cut ? { cut: made.cut } : {}) };
     const json = new TextEncoder().encode(JSON.stringify(header));
     const out = new Uint8Array(8 + json.length + size);
     out.set(new TextEncoder().encode(MAGIC));

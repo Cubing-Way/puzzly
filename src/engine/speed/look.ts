@@ -3,8 +3,8 @@
 
 // Cube patterns
 import type { KPattern } from "cubing/kpuzzle";
-// Piece names
-import { PIECE_NAMES } from "../core/cube";
+// The active puzzle: its piece names, its frame, what's in sight of its faces and its turn families
+import { puzzle, pieceNames } from "../puzzle/active";
 // Move text helpers
 import { invertMoves } from "../core/moves";
 // Roles, goal text and goal masks
@@ -18,7 +18,7 @@ import type { Goal, Role, NextStep } from "../types";
 export interface LookModel {
   step: number; // a step after a solve's first one (that one is planned in inspection): finding its pieces when they and their spots are in plain sight
   hidden: number; // added when none of that is in sight (pieces and spots on the back and the bottom), in proportion when some is
-  faces: Record<string, number>; // how much of a sticker on each face the solver sees with the cube held as it is (a piece is seen in full from two stickers)
+  faces: Record<string, number>; // how much of a sticker on each face the solver sees with the cube held as it is (a piece is seen in full from two stickers); LOOK's are the active puzzle's sight
   later: number; // ranking a step's own answers: how much every piece set the next step could take counts, against the easiest one (0 = only the easiest)
   flip: number; // a searched answer written with wide or slice turns (x2 … Rw2, M … Rw), when a step comes after it: they move the centers in its middle, so the next step's pieces the solver was tracking are somewhere else
   plan: number; // a solve's first step, planned in inspection: each piece its answer plans beyond the step's smallest alternative (an XCross's pair beyond the cross), so only an easy one pays off
@@ -32,20 +32,33 @@ export interface LookModel {
 export const LOOK: LookModel = {
   step: 2,
   hidden: 3,
-  faces: { U: 1, F: 1, R: 1, L: 1, B: 0, D: 0 },
+  // The active puzzle's sight (PuzzleSpec.sight), read each time, so it follows loadEngine
+  get faces() {
+    return puzzle.sight;
+  },
   later: 0.5,
   flip: 2,
   plan: 2,
   planHidden: 3,
 };
 
-// A wide or slice turn in move text (Rw2, r', M, E, S…): it turns a middle layer, so the centers move
-const WIDE_OR_SLICE = /(^|\s)([UDLRFB]w|[udlrfbMES])/;
+// The active puzzle's wide and slice turns as a pattern, made once per puzzle (Rw2, r', M, E, S… on the 3x3x3: they turn a middle layer, so the centers move)
+let wideOrSlice: { for: unknown; pattern: RegExp } = { for: null, pattern: /$^/ };
+// The pattern that finds a wide or slice turn of the active puzzle in move text
+function wideOrSliceTurn(): RegExp {
+  if (wideOrSlice.for !== puzzle) {
+    // A wide turn as written (Rw) or as solvers write it (r), and a slice turn
+    const { wide, slice } = puzzle.turnFamilies;
+    const tokens = [...wide, ...wide.filter((token) => /^[A-Z]w$/.test(token)).map((token) => token[0].toLowerCase()), ...slice];
+    wideOrSlice = { for: puzzle, pattern: tokens.length ? new RegExp(`(^|\\s)(${tokens.map((token) => token.replace(/[^\w]/g, "\\$&")).join("|")})`) : /$^/ };
+  }
+  return wideOrSlice.pattern;
+}
 
 // What an answer pays for turning the cube in its middle (see LookModel.flip): `hands` = as the hands make it, `plain` = as searched. It pays when the
 // writing put wide or slice turns in (x2 … Rw2, or M … Rw that undo each other). Moves the step searched with (Roux's M) and tilts (x … x') don't pay
 export function flipLook(hands: string, plain: string, look: LookModel = LOOK): number {
-  return hands !== plain && WIDE_OR_SLICE.test(hands) ? look.flip : 0;
+  return hands !== plain && wideOrSliceTurn().test(hands) ? look.flip : 0;
 }
 
 // Roles with a spot of their own to go to (the others go anywhere in a group, so only where the piece sits counts)
@@ -56,16 +69,16 @@ function seen(spot: string, look: LookModel): number {
   return Math.min(1, [...spot].reduce((sum, face) => sum + (look.faces[face] ?? 0), 0) / 2);
 }
 
-// Pieces a goal holds, centers aside: how far a method run has got
+// Pieces a goal holds, the frame aside (the 3x3x3's centers): how far a method run has got
 export function pieceCount(goal: Goal): number {
-  return Object.entries(goal).reduce((count, [orbit, roles]) => (orbit === "CENTERS" ? count : count + Object.keys(roles).length), 0);
+  return Object.entries(goal).reduce((count, [orbit, roles]) => (orbit === puzzle.frame ? count : count + Object.keys(roles).length), 0);
 }
 
-// The pieces of `after` that `before` doesn't hold (centers aside)
+// The pieces of `after` that `before` doesn't hold (the frame aside)
 export function newPieces(after: Goal, before: Goal): Goal {
   const fresh: Goal = {};
   for (const [orbit, roles] of Object.entries(after)) {
-    if (orbit === "CENTERS") continue;
+    if (orbit === puzzle.frame) continue;
     const own = Object.entries(roles).filter(([piece]) => !before[orbit]?.[Number(piece)]);
     if (own.length) fresh[orbit] = Object.fromEntries(own);
   }
@@ -81,8 +94,8 @@ export function hiddenShare(pattern: Spots, pieces: Goal, look: LookModel = LOOK
   let hidden = 0;
   let parts = 0;
   for (const [orbit, roles] of Object.entries(pieces)) {
-    if (orbit === "CENTERS") continue;
-    const names = PIECE_NAMES[orbit];
+    if (orbit === puzzle.frame) continue;
+    const names = pieceNames[orbit];
     const spots = pattern.patternData[orbit].pieces;
     for (const [piece, role] of Object.entries(roles)) {
       // Where the piece sits now
@@ -102,10 +115,10 @@ export function lookCost(hidden: number, look: LookModel = LOOK): number {
   return look.step + look.hidden * hidden;
 }
 
-// A goal text's pieces, centers aside (they only set the frame)
+// A goal text's pieces, the frame aside (it only says how the puzzle is held)
 function piecesOf(text: string): Goal {
   const goal = dropFree(goalFromText(text, false));
-  delete goal.CENTERS;
+  if (puzzle.frame) delete goal[puzzle.frame];
   return goal;
 }
 
@@ -133,9 +146,9 @@ export function nextGroups(next: NextStep, kept: Goal): Goal[] {
   const groups: Goal[] = [];
   const seenKeys = new Set<string>();
   for (const text of readAlternatives(next.pieces)) {
-    // This alternative's pieces, centers aside
+    // This alternative's pieces, the frame aside
     const own = dropFree(goalFromText(text, false));
-    delete own.CENTERS;
+    if (puzzle.frame) delete own[puzzle.frame];
     for (const rotation of next.rotations) {
       // Named in that grip, so named here with the rotation undone
       const group = rotateGoal(own, invertMoves(rotation));

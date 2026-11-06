@@ -34,7 +34,7 @@ interface SolverListeners {
   build?: (tasks: TableTask[], handlers: TableHandlers) => Promise<void>;
 }
 
-// Kept solvers and tables by moves + targets, least recently used first (a Map keeps insertion order)
+// Kept solvers and tables by puzzle id + moves + targets, least recently used first (a Map keeps insertion order)
 const solvers = new Map<string, Entry>();
 // Memory the kept solvers hold, in MB
 let cacheMb = 0;
@@ -86,9 +86,9 @@ function trim(spare: Set<string>): void {
   }
 }
 
-// Cache key of a table or a goal's solver: moves + targets (sub-tables use the same format, so equal sub-goals share one table)
+// Cache key of a table or a goal's solver: puzzle id + moves + targets (sub-tables use the same format, so equal sub-goals of one puzzle share one table)
 export function tableKey(request: SearchRequest, targets: string): string {
-  return `${request.moves.join(" ")}/${targets}`;
+  return `${request.puzzle}/${request.moves.join(" ")}/${targets}`;
 }
 
 // The kept table under a cache key (a split search's sub-table, by one of its entry's `uses`)

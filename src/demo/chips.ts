@@ -40,7 +40,8 @@ export function buildChips(): void {
     ["CORNERS", $("corner-chips")],
     ["CENTERS", $("center-chips")],
   ] as const) {
-    PIECE_NAMES[orbit].forEach((name, index) => {
+    // The active puzzle's pieces of that type (none: its box stays empty; Part 3 of plan-puzzles.md makes the boxes from the puzzle's types)
+    (PIECE_NAMES[orbit] ?? []).forEach((name, index) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip";

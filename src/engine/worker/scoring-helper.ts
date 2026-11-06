@@ -3,8 +3,10 @@
 
 // The speed model in Rust (wasm-bindgen glue for the search crate, built by `npm run build-search`)
 import { SpeedModel, type InitInput } from "../../../search/pkg/puzzly_search.js";
-// The cube definition, loaded here too (looks and held cubes need it)
-import { loadPuzzle } from "../core/puzzle";
+// The puzzle definition, loaded here too (looks and held cubes need it): the one each scoring's begin names
+import { loadPuzzleOnce } from "../core/puzzle";
+// The built-in puzzles, by id
+import { puzzleById } from "../puzzle/puzzles";
 // Scores with the speed model in Rust
 import { useRustSpeed } from "../speed/fingering";
 // One alternative × grip of a step
@@ -32,16 +34,21 @@ interface Scoring {
   share: { idOf: (combo: Combo) => number; helper: true; record: Ahead };
 }
 
-// Start handling the scoring worker's messages in this worker: load the cube definition and the Rust code, then take them in order; call it once from the
-// helper's script
+// Start handling the scoring worker's messages in this worker: load the Rust code, then take them in order (each begin loads its puzzle); call it once from the helper's script
 export function runScoringHelper(options: ScoringHelperOptions): void {
   // Worker-side global (tsconfig only has the page's DOM types)
   const scope = self as unknown as Worker;
   // Scorings begun, by the scoring worker's number
   const scorings = new Map<number, Scoring>();
   // One message: begin a scoring, work out one chunk's looks and writings and send them back, or end a scoring
-  const handle = (message: ScoringHelperMessage): void => {
+  const handle = async (message: ScoringHelperMessage): Promise<void> => {
     if (message.kind === "begin") {
+      // The puzzle the scoring worker was sent (a puzzle that can't be loaded leaves the scoring unbegun: its chunks say so)
+      try {
+        await loadPuzzleOnce(puzzleById(message.puzzle));
+      } catch {
+        return;
+      }
       const combos = combosOf(message.combos);
       const ids = new Map(combos.map((combo, place) => [combo, place]));
       const share = { idOf: (combo: Combo) => ids.get(combo)!, helper: true as const, record: { looks: new Map(), writings: new Map() } };
@@ -63,8 +70,8 @@ export function runScoringHelper(options: ScoringHelperOptions): void {
       }
     }
   };
-  // Messages are handled one at a time, in order, once the cube definition and the Rust code are loaded (if they can't be, each chunk says why)
-  const ready = Promise.all([loadPuzzle(), loadWasm(options.wasm).then(() => useRustSpeed(SpeedModel))]);
+  // Messages are handled one at a time, in order, once the Rust code is loaded (if it can't be, each chunk says why)
+  const ready = loadWasm(options.wasm).then(() => useRustSpeed(SpeedModel));
   let queue: Promise<void> = Promise.resolve();
   scope.onmessage = ({ data }: MessageEvent<ScoringHelperMessage>) => {
     queue = queue.then(() => ready).then(

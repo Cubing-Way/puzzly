@@ -12,6 +12,8 @@ import { toFaces } from "../core/faces";
 import { countMoves, joinMoves, withoutEndRotations } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern, kpuzzle } from "../core/puzzle";
+// The active puzzle (its frame is left out of a case's key)
+import { puzzle } from "../puzzle/active";
 // Roles, goal text and goal masks
 import { maskPattern, goalToText } from "../goal/goal";
 // A goal's targets
@@ -58,18 +60,24 @@ function readyAlgs(set: AlgSet): ReadyAlg[] {
   return ready;
 }
 
-// A cube's edges and corners as a key: where each sits and how it's turned
+// The piece types an alg moves: every one but the frame (on the 3x3x3 its edges and corners, in the definition's order)
+function movedOrbits(pattern: KPattern): string[] {
+  return Object.keys(pattern.patternData).filter((orbit) => orbit !== puzzle.frame);
+}
+
+// A cube's pieces but the frame as a key: where each sits and how it's turned
 function pieceKey(pattern: KPattern): string {
-  const { EDGES, CORNERS } = pattern.patternData;
-  return `${EDGES.pieces}/${EDGES.orientation}/${CORNERS.pieces}/${CORNERS.orientation}`;
+  return movedOrbits(pattern)
+    .map((orbit) => `${pattern.patternData[orbit].pieces}/${pattern.patternData[orbit].orientation}`)
+    .join("/");
 }
 
-// True when a goal solves every edge and corner (none only placed, turned or grouped): one cube then reaches each of its targets, whatever the centers
+// True when a goal solves every piece but the frame (none only placed, turned or grouped): one cube then reaches each of its targets, whatever the frame
 function solvesAll(goal: Goal, cube: KPattern): boolean {
-  return ["EDGES", "CORNERS"].every((orbit) => cube.patternData[orbit].pieces.every((_, piece) => goal[orbit]?.[piece] === "solve"));
+  return movedOrbits(cube).every((orbit) => cube.patternData[orbit].pieces.every((_, piece) => goal[orbit]?.[piece] === "solve"));
 }
 
-// For a goal that solves every edge and corner: which of a set's algs solve each cube with one of the set's lining-up turns after them, as the cube's
+// For a goal that solves every piece but the frame: which of a set's algs solve each cube with one of the set's lining-up turns after them, as the cube's
 // key (the targets with the alg and the turn undone). Made once per set and targets, so a step with a long set (ZBLL) looks its case up instead of
 // trying every alg
 function solvers(set: AlgSet, targets: KPattern[]): Map<string, number[]> {
@@ -136,7 +144,7 @@ export function algCandidates(scramble: string, pieces: string, options: StepOpt
     // Already there: nothing to recognise
     if (reached(held) !== undefined) return [];
     const text = goalToText(goal);
-    // A goal that solves every edge and corner: the algs that may fit a cube are looked up (and still checked), any other goal tries every alg
+    // A goal that solves every piece but the frame: the algs that may fit a cube are looked up (and still checked), any other goal tries every alg
     const lookup = solvesAll(goal, held) ? solvers(set, targets.map(({ target }) => target)) : undefined;
     const algs = readyAlgs(set);
     for (const { before, cube } of starts) {

@@ -6,8 +6,10 @@
 import { Alg } from "cubing/alg";
 // wasm-bindgen glue's input type for the Rust search crate (built by `npm run build-search`)
 import type { InitInput } from "../../../search/pkg/puzzly_search.js";
-// Engine setup
-import { loadEngine } from "../setup";
+// Engine setup, and a switch to the puzzle a job names
+import { loadEngine, switchPuzzle } from "../setup";
+// The built-in puzzles, by id
+import { puzzleById } from "../puzzle/puzzles";
 // The calls a job may make
 import { solveStep, stepCandidates } from "../step/step";
 import { runMethod } from "../method/run";
@@ -49,12 +51,13 @@ export function runEngineWorker(options: EngineWorkerOptions): void {
   const search = sameThreadSearchWorker({ wasm: options.wasm, ...(options.tableDatabase === undefined ? {} : { tableDatabase: options.tableDatabase }) });
   // An idle stop only lets go of it (its tables stay in this thread, and the next request takes it up again): the page stops the whole engine instead
   const ready = loadEngine({ searchWorker: () => search, scoringWorker: options.scoringWorker, wasm: options.wasm });
-  // Run one job: every call answers, with what it gave or the error it threw (an engine that didn't load fails each call with that error)
-  const run = async ({ id, calls }: EngineRequest): Promise<void> => {
+  // Run one job on its puzzle: every call answers, with what it gave or the error it threw (an engine or puzzle that didn't load fails each call with that error)
+  const run = async ({ id, puzzle, calls }: EngineRequest): Promise<void> => {
     for (const [index, { call, args }] of calls.entries()) {
       let reply: EngineReply;
       try {
         await ready;
+        await switchPuzzle(puzzleById(puzzle));
         reply = { id, index, value: plain(await (CALLS[call] as (...args: unknown[]) => Promise<unknown>)(...args)) };
       } catch (error) {
         reply = { id, index, error: error instanceof Error ? error.message : String(error) };

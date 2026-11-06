@@ -18,6 +18,8 @@ import { CUBE3 } from "../puzzle/cube3";
 
 // Puzzle definition, filled in by loadEngine()
 export let kpuzzle: KPuzzle;
+// The description whose definition is loaded (null before the first load)
+let loaded: PuzzleSpec | null = null;
 // Grip for each frame layout (the frame pieces' numbers in spot order → rotation; on the 3x3x3 "U,L,F,R,B,D" order of center numbers)
 const gripByFrame = new Map<string, string>();
 
@@ -36,15 +38,21 @@ export function solvedAfter(moves: string): KPattern {
 // Make a puzzle the active one and load its definition (the 3x3x3 when none is given); loadEngine awaits this before the engine is used. Every lookup cache
 // is emptied (their entries belong to the old definition); true when another puzzle was active
 export async function loadPuzzle(spec: PuzzleSpec = CUBE3): Promise<boolean> {
-  const loaded = await spec.kpuzzle();
+  const definition = await spec.kpuzzle();
   const changed = usePuzzle(spec);
-  kpuzzle = loaded;
+  kpuzzle = definition;
+  loaded = spec;
   // Cached patterns and lookups belong to the old definition
   clearLookupCaches();
   // Remember where the frame pieces end up for each grip
   gripByFrame.clear();
   for (const grip of grips) gripByFrame.set(centerLayout(kpuzzle.defaultPattern().applyAlg(grip)), grip);
   return changed;
+}
+
+// Load a puzzle unless it's the one loaded already (workers and the server are sent the puzzle with each message); true when another puzzle was active
+export async function loadPuzzleOnce(spec: PuzzleSpec): Promise<boolean> {
+  return spec === loaded ? false : loadPuzzle(spec);
 }
 
 // Frame piece numbers in spot order (the 3x3x3's centers), as a lookup key ("" when the puzzle has no frame)
