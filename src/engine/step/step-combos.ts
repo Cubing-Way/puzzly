@@ -6,8 +6,8 @@ import type { KPattern } from "cubing/kpuzzle";
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
 import { joinMoves, countMoves } from "../core/moves";
-// The active puzzle's default moves
-import { defaultMoves } from "../puzzle/active";
+// The active puzzle (its frame) and its default moves
+import { puzzle, defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -21,7 +21,7 @@ import { goalOnCube } from "../goal/grips";
 // Offsets a goal counts up to
 import { offsetGroups } from "../goal/offsets";
 // A goal's targets
-import { reachableTargets, goalTargets, centersReachable, maskedTarget } from "../goal/targets";
+import { reachableTargets, orientedTargets, centersReachable, maskedTarget } from "../goal/targets";
 // Goals that keep every other piece untouched
 import { reachableChanges, wholeGoal, untouchedWanted, completions, untouchedPieces, relabel } from "../goal/untouched";
 // Error messages
@@ -72,11 +72,11 @@ export function plannedCombos(scramble: string, pieces: string, options: StepOpt
     const seen = new Set<string>();
     return groups.flatMap((group) => {
       // Each offset's targets = solved cube turned by the offset, with the same pieces hidden (offsets are named in the grip, like the goal's spots);
-      // with relative groups, one per placement the allowed moves could reach
+      // with relative groups, one per placement the allowed moves could reach; without a frame, one per orientation the start can end in
       const offsets: string[] = [];
       const targets: KPattern[] = [];
       for (const offset of group) {
-        for (const target of reachableTargets(goalTargets(goal, offset), generatorMoves)) {
+        for (const target of reachableTargets(orientedTargets(goal, offset), generatorMoves, puzzle.frame ? undefined : start)) {
           const key = cellsKey(cellsOf(target));
           if (seen.has(key)) continue;
           seen.add(key);

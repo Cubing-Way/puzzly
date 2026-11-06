@@ -3,13 +3,13 @@
 // Move text helpers
 import { joinMoves } from "../core/moves";
 // Loaded cube definition and held cubes
-import { heldPattern } from "../core/puzzle";
+import { heldPattern, solvedInSomeGrip } from "../core/puzzle";
 // Roles, goal text and goal masks
 import { goalFromText, splitAlternatives, dropFree, maskPattern } from "../goal/goal";
 // Solvable-with moves
 import { solvableIndex } from "../goal/solvable";
 // A goal's targets
-import { goalTargets } from "../goal/targets";
+import { orientedTargets } from "../goal/targets";
 // Goals that keep every other piece untouched
 import { keptOthers } from "../goal/untouched";
 // The active puzzle (its whole-puzzle check)
@@ -27,9 +27,9 @@ export function reachesGoal(
   solvableWith: string[] = [],
   untouched?: { from: string; changed: string },
 ): boolean {
-  // Full goal: the whole puzzle solved, in whatever grip it's held (the 3x3x3: judged by the centers, turned any way)
+  // Full goal: the whole puzzle solved, in whatever grip it's held (the 3x3x3: cubing.js's check, centers turned any way; others: solved in one of the grips)
   if (pieces === null) {
-    return puzzle.isSolved(heldPattern(joinMoves(scramble, done)));
+    return (puzzle.isSolved ?? solvedInSomeGrip)(heldPattern(joinMoves(scramble, done)));
   }
   // Step goal: some alternative's pieces match the solved cube turned by one of the offsets (relative groups anywhere they fit), everything else hidden
   const held = heldPattern(scramble, done);
@@ -37,7 +37,8 @@ export function reachesGoal(
   return splitAlternatives(pieces).some((text) => {
     const goal = dropFree(goalFromText(text));
     const reached = maskPattern(held, goal);
-    const targets = (offsets.length ? offsets : [""]).flatMap((offset) => goalTargets(goal, offset));
+    // Without a frame, every orientation of the whole puzzle counts (orientedTargets)
+    const targets = (offsets.length ? offsets : [""]).flatMap((offset) => orientedTargets(goal, offset));
     // With solvable-with moves, a target those moves can reach from here counts too
     return solvableWith.length ? solvableIndex(reached, targets, solvableWith) >= 0 : targets.some((target) => reached.isIdentical(target));
   });

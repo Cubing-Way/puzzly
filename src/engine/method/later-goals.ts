@@ -8,8 +8,8 @@ import { cellsKey, cellsOf } from "../core/cells";
 import { gripRotations } from "../core/cube";
 // Move text helpers
 import { joinMoves, invertMoves } from "../core/moves";
-// The active puzzle's default moves
-import { defaultMoves } from "../puzzle/active";
+// The active puzzle (its frame) and its default moves
+import { puzzle, defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { netRotation, heldInGrip } from "../core/puzzle";
 // Moves as other grips see them
@@ -23,7 +23,7 @@ import { offsetsFromText, offsetGroups } from "../goal/offsets";
 // Solvable-with moves
 import { solvableFromText, settledGoal } from "../goal/solvable";
 // A goal's targets
-import { reachableTargets, goalTargets, centersReachable } from "../goal/targets";
+import { reachableTargets, goalTargets, orientedTargets, centersReachable } from "../goal/targets";
 // A step's goal in each grip
 import { type GripGoal, gripGoals } from "../step/grip-goals";
 // Engine data shapes
@@ -108,7 +108,9 @@ export function laterGoals(steps: StepConfig[], index: number, earlier: Goal): L
             try {
               targets = offsetGroups(offsets, moves).map((group) => {
                 const seen = new Set<string>();
-                return group.flatMap((offset) => reachableTargets(goalTargets(goal, offset), moves)).filter((target) => {
+                // Without a frame every orientation counts, and which ones the start can end in is only known from the start (measureLater)
+                const offsetTargets = (offset: string) => (puzzle.frame ? reachableTargets(goalTargets(goal, offset), moves) : orientedTargets(goal, offset));
+                return group.flatMap(offsetTargets).filter((target) => {
                   const cells = cellsKey(cellsOf(target));
                   return !seen.has(cells) && Boolean(seen.add(cells));
                 });
@@ -140,8 +142,9 @@ export function laterGoals(steps: StepConfig[], index: number, earlier: Goal): L
 async function measureLater(scramble: string, done: string, later: LaterGoal, onProgress?: (progress: TableProgress) => void): Promise<number> {
   const start = maskPattern(heldInGrip(scramble, done, later.rotation), later.goal);
   const measures = later.targets.map(async (group) => {
-    // Only targets whose centers the moves can bring home (as in stepCombos)
-    const targets = group.filter((target) => centersReachable(start, target, later.moves));
+    // Only targets whose centers the moves can bring home (as in stepCombos), and without a frame only orientations the start can end in
+    const reachable = group.filter((target) => centersReachable(start, target, later.moves));
+    const targets = puzzle.frame ? reachable : reachableTargets(reachable, later.moves, start);
     if (!targets.length) return Infinity;
     try {
       const { bound, exact } = await askWorker({ kind: "measure", start, targets, moves: later.moves, solvableWith: later.solvableWith }, onProgress);

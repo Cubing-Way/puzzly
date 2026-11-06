@@ -1,11 +1,13 @@
-// Targets: the patterns a step aims for (one per offset, and per placement of its relative groups), and which of them the allowed moves can reach
+// Targets: the patterns a step aims for (one per offset, per placement of its relative groups, and without a frame per orientation), and which the allowed moves can reach
 
 // Cube patterns
 import { KPattern } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
-// The active puzzle's grips
-import { grips } from "../puzzle/active";
+// Move text helpers
+import { joinMoves } from "../core/moves";
+// The active puzzle (its frame) and its grips
+import { puzzle, grips } from "../puzzle/active";
 // Loaded cube definition and held cubes
 import { centerLayout, solvedAfter, kpuzzle } from "../core/puzzle";
 // Engine data shapes
@@ -147,13 +149,24 @@ export function goalTargets(goal: Goal, offset = ""): KPattern[] {
   return targets;
 }
 
-// The targets the allowed moves could reach, as the search worker judges it: same as the first target on every spot no allowed move changes, and in a
-// piece type no allowed move twists (edges under U R L) the same twist per piece. The worker refuses target lists that differ there, so goalTargets'
-// other placements (e.g. a relative pair in a slot R U never touch) are dropped
-export function reachableTargets(targets: KPattern[], moves: string[]): KPattern[] {
-  if (targets.length < 2) return targets;
+// A goal's targets in every orientation it counts in, each once: with a frame only as held (the frame says where everything belongs); without one, nothing on
+// the puzzle says how it's held, so the goal counts with the whole puzzle turned any way: its targets turned by every grip too (on a 2x2x2, solved in any of 24 ways)
+export function orientedTargets(goal: Goal, offset = ""): KPattern[] {
+  if (puzzle.frame) return goalTargets(goal, offset);
+  const seen = new Set<string>();
+  return grips.flatMap((grip) => goalTargets(goal, joinMoves(grip, offset))).filter((target) => {
+    const key = cellsKey(cellsOf(target));
+    return !seen.has(key) && Boolean(seen.add(key));
+  });
+}
+
+// The targets the allowed moves could reach, as the search worker judges it: same as `from` (the first target, or the start) on every spot no allowed move
+// changes, and in a piece type no allowed move twists (edges under U R L) the same twist per piece. The worker refuses target lists that differ there, so
+// goalTargets' other placements (e.g. a relative pair in a slot R U never touch) are dropped; judged from the start, so are orientations it can't end in
+export function reachableTargets(targets: KPattern[], moves: string[], from?: KPattern): KPattern[] {
+  if (!from && targets.length < 2) return targets;
   const turns = moves.map((move) => kpuzzle.moveToTransformation(move).transformationData);
-  const first = targets[0].patternData;
+  const first = (from ?? targets[0]).patternData;
   // Per piece type, from the first target: spots no move changes (with what's there), and each piece's twist when no move twists that type
   const checks = kpuzzle.definition.orbits.map(({ orbitName, numPieces, numOrientations }) => {
     const { pieces, orientation, orientationMod } = first[orbitName];

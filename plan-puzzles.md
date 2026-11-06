@@ -11,7 +11,7 @@ Its Part 9 (hand-written tables) is planned in detail in `plan.md` now (tables f
 - [x] Part 1 — Puzzle description: everything 3x3x3-only behind one object (no behaviour change), in two chats since the engine doubled — done 2026-11-06
   - [x] 1a. The check, the `PuzzleSpec`, and the engine core reading it (core, goal, step, method) — done 2026-11-06, see *What Part 1a found and did*
   - [x] 1b. The rest reading it (speed model, alg sets, answer files, scoring workers, batch, server wire), and the puzzle in every table key — done 2026-11-06, see *What Part 1b found and did*
-- [ ] Part 2 — Grips without centers + 2x2x2
+- [x] Part 2 — Grips without centers + 2x2x2 — done 2026-11-06, see *What Part 2 found and did*
 - [ ] Part 3 — Test bench built from the puzzle description + `puzzle` in method files
 - [ ] Part 4 — Pyraminx and Skewb
 - [ ] Part 5 — Megaminx and Kilominx
@@ -122,6 +122,29 @@ Things that would break quietly with a second puzzle (Part 1 fixes them):
 - **Answer files**: `AnswerFileHeader.puzzle` (the id); `answerFileWriter` writes the active puzzle's unless given one (`answer-cut.ts` passes its full file's); `fileFor` matches it, a header without one counting as the 3x3x3's, so the files made before (and the server's) load unchanged.
 - **The wire**: `WireCall` (`remote/wire.ts`) is `{ call, args, puzzle? }`. `remoteEngine` sends `puzzle` only when the active puzzle isn't `DEFAULT_PUZZLE`, so a 3x3x3 call is byte for byte the request it was (cubisz and the deployed server unchanged). The handler answers 400 to an unknown id (also a non-string one) before reserving any budget. **The server deployed on 2026-10-27 ignores `puzzle`**: it's redeployed once every puzzle is in (the last item of *Progress*, with the user's OK), and until then no app should send it another puzzle.
 - **Still the cube's** (cube notation the 2x2x2 shares, so fine until Part 4): the hand model reads `R U F`, `x y z`, `Rw`/`r`, `M E S` (`MOVE`, `ROTATIONS` in `fingering.ts`), the writings' frames are the cube's six sides (`SIDES`, `CYCLES`, `FACE_TURN`), `bound.ts`'s runs before a step parse cube axes, `scoring.ts`'s `FACE_TURN`. `readMethod` doesn't check `wideAxes` / `sliceAxes` against the puzzle's families (a 2x2x2 step given them just gets no wide writings; Part 2 or 3 may refuse them). The page's chip boxes skip a type the puzzle lacks (Part 3 makes them from the puzzle).
+
+### What Part 2 found and did (2026-11-06)
+
+- **Same answers**: `npm run check` prints the baseline again (all 146 lines, `requests all: 11411 8f9de5f14c74b8b2`), after every change below. `npm run build` works; on the page the 3x3x3 is as before (a cross by speed, the same boxes, presets and picks), and the 2x2x2 solves a step by speed, a layer in any grip and the full puzzle, each checked. Rust untouched; the server not redeployed.
+- **The grip rule is `frame`** (no new field: it already says it). With a frame, as before. Without one, `netRotation` (`core/puzzle.ts`) reads only the rotation moves (`gripLayout`: every piece's place and twist after them), in the scramble too, so `R L'` on a 2x2x2 is two turns.
+- **The plan's literal rule pinned "solved" to the hold, and that can't give its own Test.** A 222 scramble moves the DBL corner, and in the hold no corner need be home, so "all corners" with R U F had no answer in any grip ("No solution found!").
+  - So **without a frame a goal counts in any orientation of the whole puzzle**: `orientedTargets` (`goal/targets.ts`) gives a goal's targets turned by every grip. `reachableTargets(targets, moves, start)` keeps the ones that agree with the start on the spots the moves never touch: the worker refuses a list that differs there, and it would build a table before it could tell.
+  - Used by `plannedCombos` (`step/step-combos.ts`), `reachesGoal` (`step/check.ts`) and the later goals of a method search (`method/later-goals.ts`, filtered from each start in `measureLater`). Untouched (BLD) steps and alg sets keep the puzzle as held.
+  - With a frame nothing changes: its targets are only as held, and `reachableTargets` without a start is as before.
+  - Grips still say which pieces a goal names and which faces its moves turn (every bottom face = a layer of any colour), and the twin rule is right again: two grips asking the same pieces with the same turns ask for the same thing. It's also what the big cubes and the Skewb need (Parts 4 and 6: no frame, solved in any orientation).
+- **The whole-puzzle check** without cubing.js: `isSolved` is optional, and without one `solvedInSomeGrip` (`core/puzzle.ts`) checks every piece home as one of the grips holds it. The 3x3x3 keeps cubing.js's (it ignores center twist).
+- **`CUBE2`** (`src/engine/puzzle/cube2.ts`): the 3x3x3's corner names and numbers, `frame: null`, default moves U R F, extra moves D L B, turn families face only, the 3x3x3's 24 grips in the same order, `222` scrambles, `experimentalSolve2x2x2`, no alg sets, viewer `2x2x2`. It's in `PUZZLES`, so the scoring worker, batch engines and the server load it by id. `src/engine` now exports `CUBE2`, `PUZZLES`, `DEFAULT_PUZZLE`, `puzzleById` and `switchPuzzle`.
+- **Small fixes the 2x2x2 needed**:
+  - `readMethod`'s Avoid reads the face turns (`turnFamilies.face`), not the default moves; the same message on the 3x3x3.
+  - The scorer (`step/scoring.ts`) filters wide and slice axes with `puzzleAxes`, as the writing search already did. Without it, by speed, the 2x2x2 got an `R` made as `Lw x` and failed with "Invalid move … Lw2".
+- **The page** (`src/demo/puzzle-picker.ts`): a puzzle picker. `showPuzzle` makes the chips again, sets the viewer, shows only the puzzle's move boxes (its default moves ticked) and hand-turn rows, and only the presets, quick picks and alg sets it can read, then gets a new scramble. A hidden preset never matches the pieces box, and the picker is locked while busy.
+- **The Test** (`bench/cube2.ts`, `node bench/out/cube2.js`, about 25 s): 20 seeded scrambles of all six faces, each as made, rewritten as R U F with rotations, and "homed" (outer turns added that bring DBL home). Four goals (all corners, D layer, D face `:o`, all corners `:o`) × R U F as held, R U F in any grip, six faces as held. Every check passed:
+  - Every answer replays by `reachesGoal`.
+  - "All corners" with R U F as held: at most 10 moves, never longer than cubing.js's answer and shorter on 7 of 20 (`experimentalSolve2x2x2` isn't always optimal).
+  - The method search on "layer, then the rest" finds the optimal 9.
+  - By speed with the page's hand turns, the answers are written without wide turns.
+- **The plan's cross-check couldn't hold as written**: rewriting L D B as R U F with rotations keeps the pieces, but not DBL home in the held frame (after `L D` the held state has a B turn in it), and the 3x3x3 is held by its centers while the 2x2x2 counts any orientation. So the cross-check runs on the homed scrambles: there R U F as held gives the same lengths on both engines (80 of 80), and with the other ways the 3x3x3 is never shorter (longer or no answer 9 times, where another orientation helps the 2x2x2).
+- **Left for Part 3**: the page's three chip boxes, presets and quick picks are still the cube's (only hidden when they don't read), the example methods are the 3x3x3's, and the runs table mixes puzzles. `readMethod` still takes `wideAxes` / `sliceAxes` on a puzzle without such turns; they're dropped when scoring. `bound.ts` still bounds with the asked wide axes, which is looser, never wrong.
 
 ### The 2x2x2 in cubing.js (checked 2026-11-06)
 

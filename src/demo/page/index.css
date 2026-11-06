@@ -269,6 +269,11 @@ button.primary {
   content: attr(data-tag);
 }
 
+/* Anything the picked puzzle doesn't have (move boxes, rows, quick picks) stays hidden, whatever its own display */
+[hidden] {
+  display: none !important;
+}
+
 /* Allowed-move checkboxes */
 .moves {
   display: flex;

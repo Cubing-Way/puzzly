@@ -33,13 +33,15 @@ function goalKey(text: string): string {
   return [...rolesIn(text)].map(([piece, role]) => `${piece}=${role}`).sort().join(" ");
 }
 
-// Make one chip per edge, corner and center; clicking gives it the picked role
+// Make one chip per edge, corner and center of the active puzzle (again after a puzzle switch); clicking gives it the picked role
 export function buildChips(): void {
   for (const [orbit, box] of [
     ["EDGES", $("edge-chips")],
     ["CORNERS", $("corner-chips")],
     ["CENTERS", $("center-chips")],
   ] as const) {
+    // The old puzzle's chips go first
+    box.replaceChildren();
     // The active puzzle's pieces of that type (none: its box stays empty; Part 3 of plan-puzzles.md makes the boxes from the puzzle's types)
     (PIECE_NAMES[orbit] ?? []).forEach((name, index) => {
       const chip = document.createElement("button");
@@ -85,10 +87,10 @@ function togglePiece(orbit: string, index: number, name: string): void {
   onInputChange();
 }
 
-// Preset whose pieces match a goal text (undefined = none)
+// Preset whose pieces match a goal text (undefined = none); presets hidden for the picked puzzle never match (their pieces it can't read would be skipped)
 function presetFor(text: string): HTMLOptionElement | undefined {
   const typed = goalKey(text);
-  return [...presetSelect.options].find((option) => option.value && goalKey(option.value) === typed);
+  return [...presetSelect.options].find((option) => option.value && !option.hidden && goalKey(option.value) === typed);
 }
 
 // Select the preset that matches the caret's goal line, or "Custom"

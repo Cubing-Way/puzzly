@@ -15,8 +15,8 @@ import { rotateGoal } from "../goal/grips";
 import { solvableIndex } from "../goal/solvable";
 // Speed cost of a move sequence, and an answer's cheapest writing with wide and slice turns (with the bounds of its search)
 import { speedCost, speedFloor, writingFloor, writingSearch, strained, cancelSaving, type WritingSearch, type Writing } from "../speed/fingering";
-// Frames rotations hold the cube in, and turns named without a grip's rotations
-import { frameAfter, undoRotations, turnsBefore } from "../speed/writings";
+// Frames rotations hold the cube in, turns named without a grip's rotations, and the axes the active puzzle has wide or slice turns about
+import { frameAfter, undoRotations, turnsBefore, puzzleAxes } from "../speed/writings";
 // What finding a step's pieces costs
 import { LOOK, hiddenShare, lookCost, newPieces, nextGroups, nextLook, pieceCount, inspectionLook } from "../speed/look";
 // Engine data shapes
@@ -316,10 +316,12 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
   const ending = endingOf(options);
   // An answer's speed cost, its grip rotation included, which is free when nothing was turned before the step
   const fresh = !options.done?.trim();
-  // Axes the answer may make wide turns, slice turns and rotations about (slices and rotations follow the wide axes when left out, as before they were apart)
-  const wideAxes = options.wideAxes ?? [];
-  const sliceAxes = options.sliceAxes ?? wideAxes;
-  const rotationAxes = options.rotationAxes ?? wideAxes;
+  // Axes the answer may make wide turns, slice turns and rotations about (slices and rotations follow the wide axes when left out, as before they were apart);
+  // wide and slice axes only where the puzzle has such turns (none on a 2x2x2, so no R made as Lw with an x), the same lists on the 3x3x3
+  const askedWide = options.wideAxes ?? [];
+  const wideAxes = puzzleAxes(askedWide, "wide");
+  const sliceAxes = puzzleAxes(options.sliceAxes ?? askedWide, "slice");
+  const rotationAxes = options.rotationAxes ?? askedWide;
   // A single wide turn needs a rotation about its own axis to make up for it
   const madeUp = wideAxes.filter((axis) => rotationAxes.includes(axis));
   // Whether some writing with wide or slice turns that cancel out (or that start with the cube held another way) may be tried, and the axes they turn about

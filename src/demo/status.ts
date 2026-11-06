@@ -3,7 +3,7 @@
 // Cube engine
 import type { TableProgress } from "../engine";
 // Page elements
-import { statusText, solveButton, randomButton, methodEditor } from "./dom";
+import { statusText, solveButton, randomButton, methodEditor, puzzleSelect } from "./dom";
 
 // True while the solver or scrambler is working
 export let busy = false;
@@ -19,6 +19,8 @@ export function setBusy(on: boolean): void {
   busy = on;
   solveButton.disabled = on;
   randomButton.disabled = on;
+  // Nor can the puzzle
+  puzzleSelect.disabled = on;
   // The method can't change while something runs
   methodEditor.disabled = on;
 }

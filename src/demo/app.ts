@@ -2,8 +2,8 @@
 
 // Cube engine
 import { joinMoves, invertMoves, type EngineOptions, loadEngine, loadAnswerFile } from "../engine";
-// Piece chips and presets
-import { buildChips } from "./chips";
+// The puzzle picker, and the page showing the picked puzzle (its chips among the rest)
+import { wirePuzzlePicker, showPuzzle } from "./puzzle-picker";
 // Page elements
 import {
   form,
@@ -192,14 +192,15 @@ async function loadAnswers(): Promise<void> {
 }
 
 // Start the page: wire its events, load the engine (`engine`: how the page starts its search and scoring workers, and the Rust code for the speed
-// model) and then its answer files, build the chips, show the default goal and the first example method, get a first scramble
+// model) and then its answer files, show the puzzle (its chips among the rest), show the default goal and the first example method, get a first scramble
 export async function startPage(engine: EngineOptions): Promise<void> {
   wireForm();
   wireMethodEditor();
   wireMethodRun();
+  wirePuzzlePicker();
   await loadEngine(engine);
   void loadAnswers();
-  buildChips();
+  showPuzzle();
   piecesInput.value = presetSelect.value;
   showExamples();
   syncViewer();

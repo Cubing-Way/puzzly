@@ -1,5 +1,4 @@
-// The loaded puzzle definition, and the puzzle as it's held after a scramble and some moves (grips are judged by the frame, the 3x3x3's centers); cached,
-// since they come back again and again
+// The loaded puzzle definition, and the puzzle as it's held after a scramble and some moves (grips: by the frame, or by rotation moves alone without one); cached
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
@@ -20,7 +19,7 @@ import { CUBE3 } from "../puzzle/cube3";
 export let kpuzzle: KPuzzle;
 // The description whose definition is loaded (null before the first load)
 let loaded: PuzzleSpec | null = null;
-// Grip for each frame layout (the frame pieces' numbers in spot order → rotation; on the 3x3x3 "U,L,F,R,B,D" order of center numbers)
+// Grip for each layout of the pieces that tell it (see gripLayout: the 3x3x3's centers in "U,L,F,R,B,D" order; every piece on a puzzle without a frame)
 const gripByFrame = new Map<string, string>();
 
 // The solved puzzle after some moves (grips, offsets, a scramble), by move text
@@ -44,9 +43,9 @@ export async function loadPuzzle(spec: PuzzleSpec = CUBE3): Promise<boolean> {
   loaded = spec;
   // Cached patterns and lookups belong to the old definition
   clearLookupCaches();
-  // Remember where the frame pieces end up for each grip
+  // Remember where the pieces that tell the grip end up for each grip
   gripByFrame.clear();
-  for (const grip of grips) gripByFrame.set(centerLayout(kpuzzle.defaultPattern().applyAlg(grip)), grip);
+  for (const grip of grips) gripByFrame.set(gripLayout(kpuzzle.defaultPattern().applyAlg(grip)), grip);
   return changed;
 }
 
@@ -60,13 +59,24 @@ export function centerLayout(pattern: KPattern): string {
   return puzzle.frame ? pattern.patternData[puzzle.frame].pieces.join() : "";
 }
 
-// Whole-puzzle rotation hidden in a move sequence (rotations, slices or wide moves), found from where the frame pieces ended up
-export function netRotation(moves: string): string {
-  return gripByFrame.get(centerLayout(solvedAfter(moves))) ?? "";
+// Where the pieces that tell the grip are, as a lookup key: the frame's, or on a puzzle without a frame every piece's place and twist
+function gripLayout(pattern: KPattern): string {
+  if (puzzle.frame) return centerLayout(pattern);
+  return Object.values(pattern.patternData).map(({ pieces, orientation }) => `${pieces.join()}/${orientation.join()}`).join(";");
 }
 
-// Grip after `scramble` then `done`: the scramble is judged by where its frame pieces ended up,
-// after that only rotations (x, y, z) change the grip (slice and wide moves turn centers, not the hand)
+// The grip rule: with a frame, a move sequence's grip is where its frame pieces end up (slices and wide moves count); without one, only its rotation moves count
+export function netRotation(moves: string): string {
+  return gripByFrame.get(gripLayout(solvedAfter(puzzle.frame ? moves : rotationsIn(moves)))) ?? "";
+}
+
+// The whole puzzle solved in some grip (every piece home and untwisted as one of the grips holds it): the check when a description has no isSolved
+export function solvedInSomeGrip(pattern: KPattern): boolean {
+  return grips.some((grip) => pattern.isIdentical(solvedAfter(grip)));
+}
+
+// Grip after `scramble` then `done`: the scramble by the grip rule (its frame pieces, or without a frame its rotation moves), after that only rotations
+// (x, y, z) change the grip (slice and wide moves turn centers, not the hand; on a 2x2x2 R L' is two turns, though it moves the pieces as x does)
 export function gripAfter(scramble: string, done = ""): string {
   return joinMoves(netRotation(scramble), rotationsIn(done));
 }

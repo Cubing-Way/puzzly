@@ -16,6 +16,12 @@
         <main class="layout">
             <!-- Inputs: start position, goal, allowed moves -->
             <form id="solve-form" class="panel controls">
+                <!-- Puzzle the engine works on (picking another starts a new scramble; the options come from the engine's built-in puzzles) -->
+                <section class="group">
+                    <label for="puzzle-select" class="label">Puzzle</label>
+                    <select id="puzzle-select"></select>
+                </section>
+
                 <!-- Start position -->
                 <section class="group">
                     <label for="scramble-input" class="label">Start position <small>moves from solved</small></label>

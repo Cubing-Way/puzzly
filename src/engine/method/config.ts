@@ -82,9 +82,10 @@ function readStep(data: unknown, index: number): StepConfig {
     // How many of its answers a lookahead judges (0 = as many as a step lists)
     const candidates = Number(step.candidates ?? 0);
     if (!(Number.isInteger(candidates) && candidates >= 0)) throw new Error("Candidates must be a whole number (0 = the most).");
-    // Faces the answer avoids when it can: face letters, written back one space apart
+    // Faces the answer avoids when it can: face letters out of the puzzle's face turns (U R F D L B also on the 2x2x2, whose default moves are only R U F), one space apart
     const avoid = [...new Set(String(step.avoid ?? "").toUpperCase().split(/[\s,]+/).filter(Boolean))];
-    if (!avoid.every((face) => puzzle.defaultMoves.includes(face))) throw new Error(`Avoid must be faces out of ${puzzle.defaultMoves.join(" ")}.`);
+    const faceTurns = puzzle.turnFamilies.face;
+    if (!avoid.every((face) => faceTurns.includes(face))) throw new Error(`Avoid must be faces out of ${faceTurns.join(" ")}.`);
     // Axes its answer may make wide turns, slice turns and rotations about: x, y, z, written back one space apart. A file from before they were apart
     // only has wide axes, which meant all three, so slices and rotations left out follow them
     const wideAxes = axesFromText(step.wideAxes, "Wide axes");

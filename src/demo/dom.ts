@@ -7,6 +7,7 @@ export function $<T extends HTMLElement = HTMLElement>(id: string): T {
 
 // Page elements
 export const form = $<HTMLFormElement>("solve-form");
+export const puzzleSelect = $<HTMLSelectElement>("puzzle-select");
 export const scrambleInput = $<HTMLTextAreaElement>("scramble-input");
 export const scrambleError = $("scramble-error");
 export const doneInput = $<HTMLInputElement>("done-input");

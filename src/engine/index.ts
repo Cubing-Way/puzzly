@@ -2,7 +2,7 @@
 // and the worker's own script calls runSearchWorker from ./worker/search-worker (see the README's "Using the engine")
 
 // Setup: await loadEngine once before anything else
-export { loadEngine, type EngineOptions } from "./setup";
+export { loadEngine, switchPuzzle, type EngineOptions } from "./setup";
 // Data shapes: goals, step options and results, methods and their runs
 export type { Role, Goal, GoalPiece, Rank, StepOptions, NextStep, TableProgress, StepResult, StepConfig, Method, MethodStepResult, MethodResult, MethodOptions } from "./types";
 // The parts of a Worker the engine needs from the app
@@ -12,9 +12,11 @@ export { runBatch, stopEngines, type BatchSettled, type BatchRunOptions } from "
 export type { BatchCall, BatchCalls, BatchResult } from "./worker/protocol";
 // Solve server: the same calls answered by the engine on a server (server/handler.ts), so the page builds no tables and loads no answer files
 export { remoteEngine, RemoteEngineError } from "./remote/client";
-// Puzzles: a puzzle's description (loadEngine's `puzzle`), the 3x3x3's, and the active one (live: it follows loadEngine)
+// Puzzles: a puzzle's description (loadEngine's `puzzle`), the built-in ones (by id too), and the active one (live: it follows loadEngine and switchPuzzle)
 export type { PuzzleSpec, TurnFamilies, ViewerSpec } from "./puzzle/spec";
 export { CUBE3 } from "./puzzle/cube3";
+export { CUBE2 } from "./puzzle/cube2";
+export { PUZZLES, DEFAULT_PUZZLE, puzzleById } from "./puzzle/puzzles";
 export { puzzle as activePuzzle } from "./puzzle/active";
 // Piece names and grips (the active puzzle's, live)
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
