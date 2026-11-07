@@ -15,7 +15,7 @@ Both parts may fit in one chat; split them only if Part 1 runs long.
 
 The 2x2x2's CLL and EG steps are answered the way solvers do them: the case is recognised, and a known alg for it is made. Today they are searched, which gives short R U F sequences that are rarely the algs a solver would use. It should work as OLL and PLL already do on the 3x3x3.
 
-**R U F stays the 2x2x2's move set** (the user asked on 2026-11-07; kept): R U F reach every state, since every orientation counts without a frame, and most 2x2 algs (CLL, EG, Ortega) are written in them. L D B stay as the extra moves.
+**Every face, the speed ranking decides** (the user, 2026-11-07): the 2x2x2's default moves are all six faces, and so are the example methods' steps. R U F alone reach every state, but a D, L or B turn may be faster, and the speed ranking should be the one to say so. Make the algs on all six faces too.
 
 ## What's known (2026-11-07)
 
@@ -43,7 +43,7 @@ The 2x2x2's CLL and EG steps are answered the way solvers do them: the case is r
 
 - **A generator** (new `bench/cube2-algs.ts`, bundled by `bench/build.mjs`):
   - Enumerate the step's states: CLL's 648, EG's 15,552.
-  - For a state that no case covers yet, ask the engine for its fastest R U F answer to "all corners" from a clean start: `solveStep` with rank speed and 2 extra moves, and no `done`, so no credit for cancelling into earlier moves (that credit is what made the searched steps undo the step before, see `plan-puzzles.md`, *What Part 3b found and did*).
+  - For a state that no case covers yet, ask the engine for its fastest answer on all six faces to "all corners" from a clean start: `solveStep` with rank speed and 2 extra moves, and no `done`, so no credit for cancelling into earlier moves (that credit is what made the searched steps undo the step before, see `plan-puzzles.md`, *What Part 3b found and did*).
   - Add that answer as a new case, then mark every state it covers: each lining-up turn before, each top turn after, any orientation. Repeat until every state is covered. Expect about 42 CLL cases and about 3 × 42 for EG.
   - Write `src/engine/algs/cll.ts` and `src/engine/algs/eg.ts` in `pll.ts`'s style, with a header saying they're generated and how to make them again. The EG set holds the CLL cases too (as ZBLL holds the PLLs), or its own, if the generator's covering says so.
 - **Case names**, so the page's "alg" note means something:
@@ -68,7 +68,7 @@ The 2x2x2's CLL and EG steps are answered the way solvers do them: the case is r
 
 - [ ] `src/demo/example-methods-2x2x2.json`: the CLL method's CLL step `"algs": "CLL"`, the EG method's EG step `"algs": "EG"`. The names can say so, e.g. "CLL (any layer, then a CLL alg)".
 - [ ] `src/demo/page/index.html`: the step form's alg select (`step-algs`) gets CLL and EG options. `showPuzzle` already hides a set the picked puzzle doesn't have.
-- [ ] `bench/cube2-methods.ts`: the CLL and EG runs say their case (`row.alg`) on every scramble. Compare means with the searched ones (20 scrambles, 2026-11-07: CLL 12.4, EG 10.5).
+- [ ] `bench/cube2-methods.ts`: the CLL and EG runs say their case (`row.alg`) on every scramble. Compare means with the searched ones (20 scrambles on six faces, 2026-11-07: CLL 13.5 moves at a speed cost of 19.92, EG 10.5 at 15.03).
 - [ ] The page by hand: pick the 2x2x2, run CLL and EG, see the case name in the rows; the 3x3x3's alg select as before.
 - [ ] README:
   - *Alg sets* under *Speed*: the 2x2x2's sets, the lining-up turns, any orientation, the generator;

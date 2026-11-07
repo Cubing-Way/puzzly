@@ -10,7 +10,7 @@ import examples3x3x3 from "../src/demo/example-methods.json";
 
 import { heldPattern } from "../src/engine/core/puzzle.ts";
 
-const { loadEngine, CUBE2, readMethod, runMethod, reachesGoal, solveStep, countMoves, joinMoves, goalFromText } = engine;
+const { loadEngine, CUBE2, readMethod, runMethod, reachesGoal, solveStep, countMoves, joinMoves, goalFromText, speedCost } = engine;
 
 // How many seeded scrambles, and which methods
 const COUNT = Number(process.env.COUNT ?? 10);
@@ -70,6 +70,8 @@ for (const data of examples) {
   if (ONLY && !data.name.includes(ONLY)) continue;
   const method = readMethod(data);
   const lengths: number[] = [];
+  // Each run's speed cost (as the page scores a whole method run: its moves as the hands make them, each step's counts starting over)
+  const speeds: number[] = [];
   const begun = performance.now();
   for (const [at, scrambled] of scrambles.entries()) {
     // Each step as it was found, before steps that cancel are written as one (on R U F they often do): its moves, its answer, and the face the D corners are on after it
@@ -88,9 +90,11 @@ for (const data of examples) {
     if (!reachesGoal(scrambled, run.solution, null)) fail(`${method.name} #${at}: "${run.solution}" isn't the whole puzzle solved`);
     if (run.moves < fewest[at]) fail(`${method.name} #${at}: ${run.moves} moves, fewer than the puzzle's fewest ${fewest[at]}`);
     lengths.push(run.moves);
-    console.log(`${method.name} #${at}: ${run.moves} moves | ${found.join(" | ")}`);
+    speeds.push(speedCost(run.wide ?? run.solution, undefined, true, run.starts));
+    console.log(`${method.name} #${at}: ${run.moves} moves, speed ${speeds.at(-1)} | ${found.join(" | ")}`);
   }
-  console.log(`== ${method.name}: mean ${(lengths.reduce((sum, value) => sum + value, 0) / lengths.length).toFixed(1)} moves, longest ${Math.max(...lengths)}, ${((performance.now() - begun) / 1000).toFixed(1)} s`);
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  console.log(`== ${method.name}: mean ${mean(lengths).toFixed(1)} moves, longest ${Math.max(...lengths)}, speed ${mean(speeds).toFixed(2)}, ${((performance.now() - begun) / 1000).toFixed(1)} s`);
 }
 
 console.log(failures.length ? `${failures.length} checks failed` : "every check passed");

@@ -3,53 +3,53 @@
     "name": "Layer by layer (beginner: corner by corner, orient, permute)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "Two corners", "pieces": "DFR DFL | DFL DBL | DBL DBR | DBR DFR", "keep": false, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "Third corner", "pieces": "DFR | DFL | DBL | DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "Last corner", "pieces": "DFR | DFL | DBL | DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "Orient the top", "pieces": "UFR:o UBR:o UBL:o UFL:o", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "moves", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "Permute the top", "pieces": "UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "moves", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "Two corners", "pieces": "DFR DFL | DFL DBL | DBL DBR | DBR DFR", "keep": false, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "Third corner", "pieces": "DFR | DFL | DBL | DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "Last corner", "pieces": "DFR | DFL | DBL | DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "Orient the top", "pieces": "UFR:o UBR:o UBL:o UFL:o", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "moves", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "Permute the top", "pieces": "UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "moves", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   },
   {
     "name": "Ortega (any face, OLL, PBL)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "Face", "pieces": "DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "OLL", "pieces": "UFR:o2 UBR:o2 UBL:o2 UFL:o2", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "PBL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "Face", "pieces": "DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "OLL", "pieces": "UFR:o2 UBR:o2 UBL:o2 UFL:o2", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "PBL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   },
   {
     "name": "CLL (any layer, then CLL)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "First layer", "pieces": "DFR DFL DBL DBR", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "CLL", "pieces": "UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "First layer", "pieces": "DFR DFL DBL DBR", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "CLL", "pieces": "UFR UBR UBL UFL", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   },
   {
     "name": "EG (any face, then EG)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "Face", "pieces": "DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "EG", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "Face", "pieces": "DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "EG", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   },
   {
     "name": "TCLL (any layer with one corner twisted, then TCLL)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "Layer, one corner twisted", "pieces": "DFR:p DFL DBL DBR | DFR DFL:p DBL DBR | DFR DFL DBL:p DBR | DFR DFL DBL DBR:p", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "TCLL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "Layer, one corner twisted", "pieces": "DFR:p DFL DBL DBR | DFR DFL:p DBL DBR | DFR DFL DBL:p DBR | DFR DFL DBL DBR:p", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "TCLL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   },
   {
     "name": "Guimond (orient on any axis, separate, PBL)",
     "puzzle": "2x2x2",
     "steps": [
-      { "name": "Orient", "pieces": "UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "Separate", "pieces": "UFR:o UBR:o UBL:o UFL:o DFR:o2 DFL:o2 DBL:o2 DBR:o2", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
-      { "name": "PBL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
+      { "name": "Orient", "pieces": "UFR:o UBR:o UBL:o UFL:o DFR:o DFL:o DBL:o DBR:o", "keep": false, "grips": { "bottom": ["D", "U", "F", "B", "R", "L"], "anyFront": true }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 1, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "Separate", "pieces": "UFR:o UBR:o UBL:o UFL:o DFR:o2 DFL:o2 DBL:o2 DBR:o2", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" },
+      { "name": "PBL", "pieces": "UFR UBR UBL UFL DFR DFL DBL DBR", "keep": true, "grips": { "bottom": ["D"], "anyFront": false }, "offsets": "", "solvableWith": "", "moves": ["U", "R", "F", "D", "L", "B"], "maxDepth": null, "firstFound": false, "lookahead": 0, "extraMoves": 0, "rank": "speed", "wideAxes": "", "sliceAxes": "", "rotationAxes": "" }
     ]
   }
 ]

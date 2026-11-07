@@ -1,4 +1,4 @@
-// The 2x2x2's description: the 3x3x3's corners and grips, no frame (nothing on it says how it's held), R U F by default
+// The 2x2x2's description: the 3x3x3's corners and grips, no frame (nothing on it says how it's held), every face turn by default
 
 // Puzzle model
 import { cube2x2x2 } from "cubing/puzzles";
@@ -24,10 +24,10 @@ export const CUBE2: PuzzleSpec = {
   faces: ["U", "D", "F", "B", "R", "L"],
   // Held like a 3x3x3: U and F face the solver, R and L at a slant, B and D not at all
   sight: { U: 1, F: 1, R: 1, L: 1, B: 0, D: 0 },
-  // R U F reach every state with the DBL corner kept home (3,674,160 states), so they're enough
-  defaultMoves: ["U", "R", "F"],
-  // The other three faces, for steps that want them
-  extraMoves: ["D", "L", "B"],
+  // Every face: R U F alone reach every state, but a step ranked by speed should choose when a D, L or B turn is faster
+  defaultMoves: ["U", "R", "F", "D", "L", "B"],
+  // Nothing beyond the faces (no slices on a 2x2x2)
+  extraMoves: [],
   // Face turns only: a 2x2x2 has no slices, and its wide turns are rotations
   turnFamilies: { face: ["U", "R", "F", "D", "L", "B"], slice: [], wide: [] },
   rotations: ["x", "y", "z"],
