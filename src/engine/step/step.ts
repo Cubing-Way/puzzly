@@ -3,7 +3,7 @@
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
 // Move text helpers
-import { countMoves, joinMoves, shortRotations, withoutEndRotations } from "../core/moves";
+import { countMoves, joinMoves, shortRotations, withoutEndRotations, plainHandTurns } from "../core/moves";
 // The active puzzle: its default moves and its full solver
 import { puzzle, defaultMoves } from "../puzzle/active";
 // Loaded cube definition and held cubes
@@ -29,7 +29,7 @@ import { speedBound } from "./bound";
 // One alternative × grip of a step
 import { type Combo, type Answer, knownAnswer, searchCombo, orbitTables } from "./combo";
 // Scoring answers by speed, and what ranking by moves shares with it (order, tiers, offsets reached)
-import { type Listed, byMoves, byTier, leaves, reachedOffset, scoringOptions, setTiers, undoing } from "./scoring";
+import { type Listed, byMoves, byTier, leaves, reachedOffset, scoringOptions, setTiers, undoing, homeTurnOf } from "./scoring";
 // Builds and measures a step's combos
 import { stepCombos } from "./step-combos";
 
@@ -80,7 +80,8 @@ export function stepResult(answer: Answer, searches: number, solvableWith: strin
   const pieces = combo.untouched?.pieces ?? goalToText(combo.goal);
   const settled = solvableWith.length ? goalToText(settledGoal(combo.goal, solvableWith)) : pieces;
   return {
-    solution: new Alg(joinMoves(combo.rotation, moves, undo ? undoing(reached) : "")),
+    // Without a frame it ends with the hand turn that brings its goal home as held, so the next steps hold it there (the first face on the bottom)
+    solution: new Alg(joinMoves(combo.rotation, moves, undo ? undoing(reached) : "", homeTurnOf(answer, solvableWith, undo))),
     rotation: combo.rotation,
     offset,
     pieces,
@@ -335,10 +336,12 @@ export async function stepCandidates(scramble: string, pieces: string, options: 
     // on a method's last step without the rotations after its last turn, as it was scored (the solve is over)
     const { rotation } = entry.answer.combo;
     if (!entry.wide) return result;
-    const solution = shortRotations(joinMoves(rotation, entry.wide.plain));
-    const written = shortRotations(joinMoves(entry.wide.start ?? rotation, entry.wide.wide));
+    // The hand turn the plain answer ends with (none with a frame), in brackets on the solution and as its plain rotation in the hands' writing
+    const home = homeTurnOf(entry.answer, options.solvableWith, undo);
+    const solution = joinMoves(shortRotations(joinMoves(rotation, entry.wide.plain)), home);
+    const written = joinMoves(shortRotations(joinMoves(entry.wide.start ?? rotation, entry.wide.wide)), plainHandTurns(home));
     const wide = options.last ? withoutEndRotations(written) : written;
-    return wide === solution ? { ...result, solution: new Alg(solution) } : { ...result, solution: new Alg(solution), wide };
+    return wide === plainHandTurns(solution) ? { ...result, solution: new Alg(solution) } : { ...result, solution: new Alg(solution), wide };
   });
 }
 

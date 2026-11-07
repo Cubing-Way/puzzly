@@ -118,7 +118,7 @@ export interface TableProgress {
 export interface StepResult {
   solution: Alg; // grip rotation (if any), then the moves (the offset is left in, not undone)
   // The same turns as the hands make them, when some are made as wide or slice turns (Lw' where `solution` says R' x, M where it says R L'): the writing to score and show.
-  // `solution` stays the one to check and to go on from, since the engine tells how the cube is held from x, y, z turns alone
+  // `solution` stays the one to check and to go on from, since the engine tells how the cube is held from x, y, z turns alone (on a puzzle without a frame it may end with a hand turn, "(x2)", that brings its goal home as held)
   wide?: string;
   // With faces to avoid, where the answer stands (a lower tier always comes first). By moves: 0 = it turns none of them; 1 = it turns some where no
   // answer held the same way does without; 2 = it turns some although an answer held the same way doesn't. By speed: 0 = anything but that last kind
@@ -168,6 +168,7 @@ export interface StepConfig {
 // A whole method: steps run in order, each from where the last one left the cube
 export interface Method {
   name: string;
+  puzzle?: string; // the puzzle it's for, by id (see puzzle/puzzles.ts), e.g. "2x2x2"; left out: the 3x3x3
   steps: StepConfig[];
 }
 

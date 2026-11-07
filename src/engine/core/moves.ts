@@ -60,6 +60,11 @@ function shortRun(run: string[]): string[] | null {
   return SHORTEST.get(heldAfter(run))!;
 }
 
+// Some rotations as the fewest that turn the cube the same way ("x2 y2" is "z2"), however short they already were
+export function fewestRotations(rotations: string): string {
+  return SHORTEST.get(heldAfter(rotations.split(/\s+/).filter(Boolean)))!.join(" ");
+}
+
 // Moves with every run of rotations in a row written the short way (see shortRun). The cube ends up turned the same way, so the moves after them are
 // named the same: a grip rotation and the rotation that makes up for a wide turn (z y then z) become one grip
 export function shortRotations(moves: string): string {
@@ -87,19 +92,62 @@ function layerBefore(layer: string, rotations: string[]): string | null {
   if (!rotations.length) return layer;
   let face = layer[0].toUpperCase();
   if (!"UDRLFB".includes(face)) return null;
-  // Rotations undone last first: after a quarter turn, a side holds the face that was on the side before it in the cycle
+  // Rotations undone last first (a hand turn as the rotation it makes): after a quarter turn, a side holds the face that was on the side before it in the cycle
   for (const rotation of [...rotations].reverse()) {
-    const read = TURN.exec(rotation)!;
+    const read = TURN.exec(handTurnRotation(rotation) ?? rotation)!;
     const cycle = CYCLES[read[1]];
     for (let quarter = quartersOf(read); quarter > 0; quarter--) if (cycle.includes(face)) face = cycle[(cycle.indexOf(face) + 3) % 4];
   }
   return layer === layer.toLowerCase() ? face.toLowerCase() : face + layer.slice(1);
 }
 
-// Where the turns of some moves end: the rotations they end with come after
-function turnsEnd(out: string[]): number {
+// A hand turn: one rotation in brackets, "(x2)": the whole puzzle turned as its layers turn (on a 2x2x2 "(x)" is R L'), so without a frame its pieces keep their names
+const HAND_TURN = /^\((\S+)\)$/;
+
+// The rotation a hand turn makes ("x2" for "(x2)"), or null for any other move
+export function handTurnRotation(move: string): string | null {
+  const inner = HAND_TURN.exec(move)?.[1];
+  const read = inner ? TURN.exec(inner) : null;
+  return read && isRotationFamily(read[1]) ? inner! : null;
+}
+
+// A rotation written as hand turns, one per rotation ("x2 y" is "(x2) (y)": a hand turn is one move word, as the joining reads moves)
+export function asHandTurns(rotation: string): string {
+  return rotation.split(/\s+/).filter(Boolean).map((move) => `(${move})`).join(" ");
+}
+
+// A move word in brackets, as it stands in move text (a hand turn when what's inside is a rotation)
+const BRACKETED = /(?<=^|\s)\([^()\s]+\)(?=\s|$)/g;
+
+// Moves with their hand turns written as the plain rotations they make ("R (x2)" is "R x2"), the rest as it was: what the hands do, and what the speed model reads
+export function plainHandTurns(moves: string): string {
+  if (!moves.includes("(")) return moves;
+  return moves.replace(BRACKETED, (move) => handTurnRotation(move) ?? move);
+}
+
+// Moves without their hand turns: what the grip rule reads on a puzzle without a frame, where a hand turn moves the pieces but not their names
+export function withoutHandTurns(moves: string): string {
+  if (!moves.includes("(")) return moves;
+  return moves.split(/\s+/).filter((move) => move && !handTurnRotation(move)).join(" ");
+}
+
+// The face the last turn of some moves turns (before any rotations they end with; "" when it's no face's turn, or there's none)
+export function lastTurnedFace(moves: string): string {
+  const tokens = moves.split(/\s+/).filter(Boolean);
+  const end = turnsEnd(tokens, true);
+  const face = end > 0 ? TURN.exec(tokens[end - 1])?.[1][0].toUpperCase() : undefined;
+  return face && "UDRLFB".includes(face) ? face : "";
+}
+
+// Whether a face keeps its name through a rotation (x2 keeps R and L, y keeps U and D)
+export function keepsFace(face: string, rotation: string): boolean {
+  return layerBefore(face, rotation.split(/\s+/).filter(Boolean)) === face;
+}
+
+// Where the turns of some moves end: the rotations they end with come after (with `hands`, hand turns count as rotations too)
+function turnsEnd(out: string[], hands = false): number {
   let end = out.length;
-  while (end > 0 && isRotation(out[end - 1])) end--;
+  while (end > 0 && (isRotation(out[end - 1]) || (hands && handTurnRotation(out[end - 1]) !== null))) end--;
   return end;
 }
 
@@ -132,6 +180,11 @@ function joinOnto(out: string[], moves: string[], joining?: { open: boolean }): 
   let at = 0;
   if (joining) joining.open = true;
   for (; at < moves.length; at++) {
+    // A hand turn goes after the moves before as it is, never made as one with a rotation (a turn after it is named through it: F (x2) B' is (x2))
+    if (handTurnRotation(moves[at])) {
+      out.push(moves[at]);
+      continue;
+    }
     const next = TURN.exec(moves[at]);
     if (!next) {
       if (joining) joining.open = false;
@@ -155,8 +208,8 @@ function joinOnto(out: string[], moves: string[], joining?: { open: boolean }): 
       }
       continue;
     }
-    // A turn: its layer as named before the rotations the moves before end with, and their last turn on it (none: the joining ends)
-    const end = turnsEnd(out);
+    // A turn: its layer as named before the rotations (and hand turns) the moves before end with, and their last turn on it (none: the joining ends)
+    const end = turnsEnd(out, true);
     const layer = layerBefore(next[1], out.slice(end));
     const meet = layer === null ? -1 : meetAt(out, end, layer);
     if (meet < 0) {
@@ -228,7 +281,8 @@ export function cancelInto(before: string, moves: string): { kept: string; rest:
 // them are told so at once, without copying them. `open`: every one of the moves was made as one with the moves before (see joinOnto)
 export function cancelsInto(before: string): (moves: string) => { kept: string; rest: string; open: boolean } | null {
   const out = before.split(/\s+/).filter(Boolean);
-  const end = turnsEnd(out);
+  // The rotations and hand turns they end with, which a first turn is named through (see joinOnto)
+  const end = turnsEnd(out, true);
   const trailing = out.slice(end);
   return (moves) => {
     const tokens = moves.split(/\s+/).filter(Boolean);

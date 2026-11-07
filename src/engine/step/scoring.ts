@@ -2,7 +2,11 @@
 // against a bar that rises as answers come in, then ranked. The same code runs on the page or in a scoring worker (see worker/scoring-worker.ts)
 
 // Move text helpers
-import { joinMoves, invertMoves, cancelsInto, lookedFrom, shortRotations, withoutEndRotations } from "../core/moves";
+import { joinMoves, invertMoves, cancelsInto, lookedFrom, shortRotations, withoutEndRotations, asHandTurns, plainHandTurns, lastTurnedFace } from "../core/moves";
+// The active puzzle (its frame)
+import { puzzle } from "../puzzle/active";
+// The rotation that brings a goal reached in another orientation home as held
+import { homeTurn } from "../goal/targets";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Moves as other grips see them
@@ -78,6 +82,17 @@ export function reachedOffset({ combo, moves }: Answer, solvableWith: string[] =
 // The moves that undo an offset, a half turn written plainly ("D2", not "D2'")
 export function undoing(offset: string): string {
   return invertMoves(offset).replace(/2'/g, "2");
+}
+
+// The hand turn an answer ends with on a puzzle without a frame, when its goal was reached in another orientation: "(x2)" turns it home as held, names kept (see homeTurn); none for BLD steps and solvable-with moves
+export function homeTurnOf(answer: Answer, solvableWith: string[] = [], undo = false): string {
+  const { combo, moves } = answer;
+  // BLD combos have the cube as it really is (`cube`, all a scoring worker is sent of them)
+  if (puzzle.frame || combo.untouched || combo.cube || solvableWith.length) return "";
+  // Where the answer leaves the goal (with `undo`, after undoing its offset)
+  const reached = reachedOffset(answer, solvableWith);
+  const made = joinMoves(moves, undo ? undoing(reached) : "");
+  return asHandTurns(homeTurn(combo.held.applyAlg(made), combo.goal, undo ? "" : reached, lastTurnedFace(made)));
 }
 
 // What an answer ends with: with undoOffset the moves that undo the offset it reached ("" = it reached none, or the offset is left in)
@@ -452,10 +467,12 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
       const base: Listed = index ? { answer: held, length: raw.length, order: raw.order, key: "", speed: Infinity } : raw;
       const { rotation } = held.combo;
       const tail = ending(held);
+      // The rotation the hands make after it when its goal ends in another orientation (none with a frame): every writing pays for it, so one ending home wins a tie
+      const home = plainHandTurns(homeTurnOf(held, options.solvableWith, Boolean(options.undoOffset)));
       const look = looks[index];
       let own: (Listed & { clean: boolean }) | null = null;
       for (const order of moveOrders(held.moves)) {
-        const result = score(joinMoves(rotation, order, tail), held, look);
+        const result = score(joinMoves(rotation, order, tail, home), held, look);
         if (result && (!own || result.speed < own.speed)) own = { ...base, answer: { combo: held.combo, moves: order }, ...result };
       }
       if (writes || rotationAxes.length) {
@@ -466,7 +483,7 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
         // One turn made as the opposite wide turn, with a rotation about its axis to make up for it (made first, it's one grip with the grip rotation:
         // z y then z is x y2)
         wideForms(all, rotation, madeUp).forEach((wide, place) => {
-          const result = score(shortRotations(joinMoves(rotation, wide.wide)), held, look + flip);
+          const result = score(joinMoves(shortRotations(joinMoves(rotation, wide.wide)), home), held, look + flip);
           if (result) keep({ ...from, form: `wide${place}/`, speed: result.speed, wide }, result.clean);
         });
         // Only worth writing out when no writing at all would be under the bar, nor beat the plain writing, which it has to beat to take its place (the
@@ -477,16 +494,17 @@ export function makeScorer(scramble: string, pieces: string, options: ScoringOpt
         const found = !writable ? null : fresh && helds.length > 1 ? sharedWriting(index, plain, rotation) : writingOf(plain, rotation, bar).found;
         // As the hands make it: the grip rotation (or the rotations a writing that starts held another way makes instead), then the writing
         const hands = found ? joinMoves(found.start ?? rotation, found.text) : "";
-        // Its cost after the moves before the step, as the other writings are scored
-        const joined = found && cut(hands);
-        const written = found && { ...found, cost: joined ? speedCost(joined.rest, undefined, fresh) - joined.saving : found.cost };
+        // Its cost after the moves before the step, as the other writings are scored (with the rotation home after it, when there's one)
+        const homed = joinMoves(hands, home);
+        const joined = found && cut(homed);
+        const written = found && { ...found, cost: joined ? speedCost(joined.rest, undefined, fresh) - joined.saving : home ? speedCost(homed, undefined, fresh) : found.cost };
         // A writing with wide or slice turns pays for the flip; the plain one (given when nothing beats it) doesn't
         const writtenLook = written && (written.text !== plain || written.start !== undefined) ? look + flip : look;
         if (written && (!own || written.cost + writtenLook < own.speed))
           own = { ...from, speed: written.cost + writtenLook, wide: { wide: written.text, plain, ...(written.start === undefined ? {} : { start: written.start }) }, clean: noteClean(hands) };
         // The cube tilted for the answer and tilted back (x rotations only)
         for (const tilt of rotationAxes.includes("x") && !fresh ? tiltForms(all, rotation) : []) {
-          const result = score(shortRotations(joinMoves(rotation, tilt.wide)), held, look);
+          const result = score(joinMoves(shortRotations(joinMoves(rotation, tilt.wide)), home), held, look);
           if (result && (!own || result.speed < own.speed)) own = { ...from, wide: tilt, ...result };
         }
       }

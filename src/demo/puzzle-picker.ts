@@ -8,6 +8,10 @@ import { buildChips } from "./chips";
 import { form, puzzleSelect, presetSelect, piecesInput, algsSelect, bufferInput, parityInput } from "./dom";
 // Reads the step form
 import { showMoves } from "./form";
+// The method editor: its unsaved changes, and the picked puzzle's methods
+import { mayDropMethod, showExamples } from "./method-editor";
+// Each puzzle's runs table
+import { showRunsOf } from "./results";
 // Scramble action
 import { newScramble } from "./solve";
 // Status line and busy state
@@ -25,7 +29,8 @@ function reads(read: () => unknown): boolean {
   }
 }
 
-// Show the active puzzle on the page: its chips and viewer, only its move boxes (its default moves ticked) and hand-turn rows, only the presets, quick picks and alg sets it can read
+// Show the active puzzle on the page: its chips and viewer, only its move boxes (its default moves ticked) and hand-turn rows, only the presets, quick picks and alg sets it can read,
+// and its own runs table
 export function showPuzzle(): void {
   const spec = activePuzzle;
   // Move boxes: a letter box or its half-turn box, for the puzzle's default and extra moves only
@@ -59,14 +64,22 @@ export function showPuzzle(): void {
   buildChips();
   // The viewer draws the puzzle cubing.js knows by that id
   player.puzzle = spec.viewer.puzzle as typeof player.puzzle;
+  // Its solves so far (another puzzle's stay kept for when it's picked again)
+  showRunsOf(spec.id);
 }
 
-// Fill the picker with the built-in puzzles; picking one loads it into the engine, shows it and gets a new scramble
+// Fill the picker with the built-in puzzles; picking one (after asking if the method's unsaved changes would be lost) loads it into the engine, shows it
+// with its example and saved methods, and gets a new scramble
 export function wirePuzzlePicker(): void {
   for (const spec of Object.values(PUZZLES)) puzzleSelect.add(new Option(spec.name, spec.id));
   puzzleSelect.value = activePuzzle.id;
   puzzleSelect.addEventListener("change", async () => {
     const spec = puzzleById(puzzleSelect.value);
+    // The method in the editor is the old puzzle's: it goes, so unsaved changes need an OK
+    if (!mayDropMethod()) {
+      puzzleSelect.value = activePuzzle.id;
+      return;
+    }
     setBusy(true);
     setStatus(`Loading the ${spec.name}…`);
     try {
@@ -79,6 +92,7 @@ export function wirePuzzlePicker(): void {
       setBusy(false);
     }
     showPuzzle();
+    showExamples();
     await newScramble();
   });
 }

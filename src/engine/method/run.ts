@@ -9,7 +9,7 @@ import { gripRotations } from "../core/cube";
 // The active puzzle (its frame)
 import { puzzle } from "../puzzle/active";
 // Move text helpers
-import { countMoves, joinMoves, joinSteps, joinStep, NO_STEPS, invertMoves, lookedFrom, movesAfter, withoutEndRotations, type JoinedSteps } from "../core/moves";
+import { countMoves, joinMoves, joinSteps, joinStep, NO_STEPS, invertMoves, lookedFrom, movesAfter, withoutEndRotations, plainHandTurns, type JoinedSteps } from "../core/moves";
 // Loaded cube definition and held cubes
 import { heldPattern } from "../core/puzzle";
 // Roles, goal text and goal masks
@@ -57,9 +57,9 @@ export function handTurns(step: StepConfig): Pick<StepOptions, "wideAxes" | "sli
   return { wideAxes, sliceAxes: axesList(step.sliceAxes ?? step.wideAxes ?? ""), rotationAxes: axesList(step.rotationAxes ?? step.wideAxes ?? "") };
 }
 
-// A result's moves as the hands make them: its wide writing when it has one
+// A result's moves as the hands make them: its wide writing when it has one, hand turns as the plain rotations they make ("(x2)" is x2 for the hands and the speed model)
 export function handsMoves(result: StepResult): string {
-  return result.wide ?? result.solution.toString();
+  return plainHandTurns(result.wide ?? result.solution.toString());
 }
 
 // A goal's pieces as "orbit piece role" keys, frame pieces (centers) left out (they only say how it's held)
@@ -154,7 +154,7 @@ export function stepLook(scramble: string, method: Method, index: number, from: 
   if (step.untouched || step.buffer || step.style === "efficiency") return 0;
   // An alg from a set is made as solvers learn it, so only a searched answer's writing pays for a flip
   const next = nextStep(method, index);
-  const flip = !result.alg && next && !next.untouched && !next.buffer ? flipLook(handsMoves(result), result.solution.toString()) : 0;
+  const flip = !result.alg && next && !next.untouched && !next.buffer ? flipLook(handsMoves(result), plainHandTurns(result.solution.toString())) : 0;
   if (!countMoves(result.solution.toString())) return flip;
   // A solve's first step is planned in inspection: it only pays for what it plans beyond its smallest alternative (an XCross's pair)
   if (!from.trim()) return flip + inspectionLook(heldPattern(scramble, from), step.pieces, result.alternative, result.rotation);
@@ -501,8 +501,8 @@ function joinRows(first: MethodStepResult, second: MethodStepResult): MethodStep
   const solution = joinSteps(first.solution.toString(), second.solution.toString());
   const hands = joinSteps(handsMoves(first), handsMoves(second));
   const row: MethodStepResult = { ...first, solution: new Alg(solution), wide: hands, moves: countMoves(solution), pieces: second.pieces, settled: second.settled, offset: second.offset, offsets: second.offsets, solvableWith: second.solvableWith, searches: first.searches + second.searches };
-  // A wide writing only where the hands turn differently from the face turns
-  if (hands === solution) delete row.wide;
+  // A wide writing only where the hands turn differently from the face turns (a hand turn's brackets aside)
+  if (hands === plainHandTurns(solution)) delete row.wide;
   // The cases of both, when an alg set answered one of them
   const algs = [first.alg, second.alg].filter(Boolean).join(" + ");
   if (algs) row.alg = algs;
@@ -546,7 +546,7 @@ function moveLoneTurns(method: Method, out: MethodStepResult[]): number[] {
     const moved: MethodStepResult = { ...next, solution: new Alg(solution), rotation: joinSteps(turn, next.rotation) };
     // A wide writing only where the hands turn differently from the face turns
     if (next.wide !== undefined) moved.wide = joinSteps(turn, next.wide);
-    if (moved.wide === solution) delete moved.wide;
+    if (moved.wide === plainHandTurns(solution)) delete moved.wide;
     out[later] = moved;
     for (let index = at; index < later; index++) out[index] = heldBefore(method, out[index], turn);
     for (let index = at; index <= later; index++) changed.push(index);
@@ -592,8 +592,8 @@ export function joinCancelled(scramble: string, method: Method, rows: MethodStep
     const made = withoutEndRotations(out[end].wide!);
     if (made !== out[end].wide) {
       out[end] = { ...out[end], wide: made };
-      // A wide writing only where the hands turn differently from the face turns
-      if (made === out[end].solution.toString()) delete out[end].wide;
+      // A wide writing only where the hands turn differently from the face turns (a hand turn's brackets aside)
+      if (made === plainHandTurns(out[end].solution.toString())) delete out[end].wide;
     }
   }
   if (!changed.size) return out;

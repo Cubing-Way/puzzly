@@ -21,7 +21,7 @@ export { puzzle as activePuzzle } from "./puzzle/active";
 // Piece names and grips (the active puzzle's, live)
 export { PIECE_NAMES, ORBIT_BY_LENGTH, BOTTOM_TURNS, FRONT_TURNS, normalizeName, gripRotations } from "./core/cube";
 // Move text
-export { FACE_MOVES, joinMoves, joinSteps, cancelInto, movesAfter, invertMoves, countMoves } from "./core/moves";
+export { FACE_MOVES, joinMoves, joinSteps, cancelInto, movesAfter, invertMoves, countMoves, plainHandTurns } from "./core/moves";
 // Speed: the hand map (finger tricks per wrist position), a move sequence's cheapest fingering, and an answer's cheapest writing with wide and slice turns
 export { HANDS, WRISTS, trickName, type HandModel, type Trick, type Wrist, type Finger } from "./speed/hands";
 export { fingering, speedCost, speedCostAfter, cancelSaving, speedFloor, cheapestWriting, strained, fingeringText, THUMBS, type Fingering, type FingeringStep, type FingerWay, type Hand } from "./speed/fingering";

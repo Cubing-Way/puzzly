@@ -158,8 +158,10 @@ for (const [name, pieces] of [["layer", GOALS.layer], ["all corners", ALL]]) {
   if (!reachesGoal(first, fast.solution.toString(), fast.pieces) || !reachesGoal(first, parseMoves(written), fast.pieces)) fail(`${name} by speed: "${written}" doesn't reach it`);
   console.log(`${name} by speed #0: ${countMoves(fast.solution.toString())} "${fast.solution}"${fast.wide ? ` written "${fast.wide}"` : ""} speed ${fast.speed?.toFixed(2)}`);
 }
+// Methods for the 2x2x2 say so (readMethod refuses a method for another puzzle, and one without a puzzle is the 3x3x3's)
 const method = readMethod({
   name: "Layer then the rest",
+  puzzle: "2x2x2",
   steps: [
     { name: "Layer", pieces: GOALS.layer, grips: { bottom: ["D", "U", "F", "B", "R", "L"], anyFront: true }, rank: "speed", extraMoves: 1 },
     { name: "Rest", pieces: ALL, keep: true, rank: "speed", extraMoves: 1 },
@@ -171,7 +173,7 @@ for (let at = 0; at < Math.min(3, COUNT); at++) {
   console.log(`method #${at}: ${run.moves} moves ok ${run.ok} [${run.steps.map((row) => `${row.name}:${row.moves}`).join(" ")}] "${run.solution}"`);
 }
 // The method search (its later goals are measured from each start, every orientation the start can end in): a layer then the rest, fewest moves
-const twoSteps = readMethod({ name: "Layer, rest", steps: [{ name: "Layer", pieces: GOALS.layer }, { name: "Rest", pieces: ALL, keep: true }] });
+const twoSteps = readMethod({ name: "Layer, rest", puzzle: "2x2x2", steps: [{ name: "Layer", pieces: GOALS.layer }, { name: "Rest", pieces: ALL, keep: true }] });
 const found = await searchMethod(first, twoSteps, { budgetMs: 120_000 });
 if (!found.best?.ok || !reachesGoal(first, found.best.solution, null)) fail(`method search #0: "${found.best?.solution}" not ok`);
 if (found.best && found.best.moves < countMoves((await solveStep(first, ALL, WAYS.RUF)).solution.toString())) fail(`method search #0: ${found.best.moves} moves, shorter than the whole puzzle's fewest`);

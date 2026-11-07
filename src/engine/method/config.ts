@@ -2,6 +2,8 @@
 
 // The active puzzle: its faces, the rotation that puts each on the bottom, its default moves, its rotations and its alg sets
 import { puzzle } from "../puzzle/active";
+// The built-in puzzles by id (a method file names the puzzle it's for)
+import { DEFAULT_PUZZLE, puzzleById } from "../puzzle/puzzles";
 // Move text helpers
 import { rotationsIn } from "../core/moves";
 // Loaded cube definition and held cubes
@@ -23,11 +25,17 @@ import { UNTOUCHED_MIX } from "../messages";
 // Engine data shapes
 import type { Method, StepConfig } from "../types";
 
-// Read method data (e.g. parsed JSON) into a Method with every field filled in, in a fixed order; throws a clear error on a bad field
+// Read method data (e.g. parsed JSON) into a Method with every field filled in, in a fixed order; throws a clear error on a bad field,
+// or when the method is for another puzzle than the active one (its pieces and moves are read on the active puzzle)
 export function readMethod(data: unknown): Method {
   const method = (data ?? {}) as Partial<Method>;
   if (!Array.isArray(method.steps)) throw new Error("A method needs a list of steps.");
-  return { name: String(method.name ?? "").trim() || "Untitled method", steps: method.steps.map(readStep) };
+  // The puzzle it's for, by id (left out: the 3x3x3, as in every file from before puzzles were data); throws on an id no built-in puzzle has
+  const own = puzzleById(method.puzzle == null ? undefined : String(method.puzzle));
+  if (own.id !== puzzle.id) throw new Error(`This method is for the ${own.name}: pick that puzzle first.`);
+  const name = String(method.name ?? "").trim() || "Untitled method";
+  // The 3x3x3's methods stay written without a puzzle, so they read, save and travel exactly as before
+  return own === DEFAULT_PUZZLE ? { name, steps: method.steps.map(readStep) } : { name, puzzle: own.id, steps: method.steps.map(readStep) };
 }
 
 // Read an axes field (e.g. "x z") into its distinct axes; throws when one isn't one of the active puzzle's rotations (x, y or z)

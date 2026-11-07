@@ -118,7 +118,8 @@ export function scoringSession(scramble: string, pieces: string, options: Scorin
       combos.push(each);
     }
   }
-  // The targets only matter to answers that undo their offset (see endingOf)
+  // The targets only matter to answers that undo their offset (see endingOf), and without a frame to the offset an answer's hand turn is found for (see homeTurnOf)
+  const sendTargets = Boolean(options.undoOffset) || !puzzle.frame;
   const data = combos.map(
     (combo): ComboData => ({
       alternative: combo.alternative,
@@ -128,7 +129,7 @@ export function scoringSession(scramble: string, pieces: string, options: Scorin
       held: combo.held.patternData,
       ...(combo.cube ? { cube: combo.cube.patternData } : {}),
       offsets: combo.offsets,
-      targets: options.undoOffset ? combo.targets.map((target) => target.patternData) : [],
+      targets: sendTargets ? combo.targets.map((target) => target.patternData) : [],
       ...(combo.twins?.length ? { twins: combo.twins.map((twin) => placeOf.get(twin)!) } : {}),
     }),
   );

@@ -16,6 +16,8 @@ import { NOTHING_NEW } from "../messages";
 import { type Combo, type Answer, orbitTables } from "../step/combo";
 // Step solvers
 import { stepResult, searchCombos } from "../step/step";
+// The hand turn an answer ends with on a puzzle without a frame
+import { homeTurnOf } from "../step/scoring";
 // Builds and measures a step's combos
 import { stepCombos } from "../step/step-combos";
 // Engine data shapes
@@ -283,9 +285,11 @@ export async function searchMethod(scramble: string, method: Method, options: Me
     const earlierId = piecesId(nextEarlier);
     const children = await Promise.all(
       page.map(async (moves): Promise<SearchNode | null> => {
-        const nextDone = row ? joinMoves(done, combo.rotation, moves) : done;
+        // Without a frame, an answer whose goal ends in another orientation goes on with the hand turn that brings it home, as its row writes it (see homeTurnOf)
+        const home = row ? homeTurnOf({ combo, moves }, solvableWith) : "";
+        const nextDone = row ? joinMoves(done, combo.rotation, moves, home) : done;
         // The cube there is the combo's held cube (as it really is) plus the answer, which spares replaying every move so far
-        if (row) noteHeld(scramble, nextDone, (combo.cube ?? combo.held).applyAlg(moves));
+        if (row) noteHeld(scramble, nextDone, (combo.cube ?? combo.held).applyAlg(joinMoves(moves, home)));
         // Skip a start reached before with no more moves, else measure its step
         const key = startKey(index, round, earlierId, nextDone);
         if (seenBefore(key, used + length)) return null;

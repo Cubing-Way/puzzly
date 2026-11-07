@@ -9,7 +9,7 @@ import { scrambleInput, doneInput, scrambleError, doneError, piecesInput, maxDep
 // Reads the step form
 import { readMoves, currentMode, readBld, chosenMoves, chosenGrips, chosenRank, chosenAvoid, chosenHandTurns, readOffsets, readSolvable } from "./form";
 // Result panel and runs tables
-import { showResult, type Run, runs } from "./results";
+import { showResult, handsMoves, type Run, runs } from "./results";
 // Status line and busy state
 import { setBusy, setStatus, busy, plural, tableTracker, formatMs } from "./status";
 // Method steps to and from the form
@@ -125,7 +125,7 @@ export async function solve(): Promise<void> {
     const compared = firstFound ? `, first answer at search ${searches}` : searches > 1 ? `, best of ${searches} searches` : "";
     const wonNote = alternatives.length > 1 ? `, alternative ${alternative + 1}: ${goalLabel(alternatives[alternative])}` : "";
     // By speed: the winner's speed cost; and how many other answers are listed under the result
-    const rankNote = (rank === "speed" ? `, fastest to turn: speed ${speedCost(run.turned ?? run.solution, undefined, !done.trim())}` : "") + (run.candidates ? `, ${plural(run.candidates.length - 1, "other answer")} listed` : "");
+    const rankNote = (rank === "speed" ? `, fastest to turn: speed ${speedCost(handsMoves(run), undefined, !done.trim())}` : "") + (run.candidates ? `, ${plural(run.candidates.length - 1, "other answer")} listed` : "");
     const offsetNote =
       (offset ? `, offset ${offset}` : "") + (solvableWith.length ? `, solvable with ${solvableWith.join(" ")}` : "") + (untouched ? `, sent home ${solved || "nothing"}, changed ${untouched.changed || "nothing"}` : "");
     setStatus(

@@ -5,7 +5,7 @@ import { KPattern } from "cubing/kpuzzle";
 // Patterns as numbers per spot
 import { cellsKey, cellsOf } from "../core/cells";
 // Move text helpers
-import { joinMoves } from "../core/moves";
+import { joinMoves, fewestRotations, keepsFace } from "../core/moves";
 // The active puzzle (its frame) and its grips
 import { puzzle, grips } from "../puzzle/active";
 // Loaded cube definition and held cubes
@@ -13,7 +13,7 @@ import { centerLayout, solvedAfter, kpuzzle } from "../core/puzzle";
 // Engine data shapes
 import type { Goal } from "../types";
 // Roles, goal text and goal masks
-import { maskPattern, relativeGroup } from "./goal";
+import { maskPattern, relativeGroup, dropFree } from "./goal";
 
 // True when the allowed moves can bring the start's frame pieces (the 3x3x3's centers) to where the target has them (few layouts, so a quick breadth-first walk)
 export function centersReachable(start: KPattern, target: KPattern, moves: string[]): boolean {
@@ -158,6 +158,25 @@ export function orientedTargets(goal: Goal, offset = ""): KPattern[] {
     const key = cellsKey(cellsOf(target));
     return !seen.has(key) && Boolean(seen.add(key));
   });
+}
+
+// The rotation that brings a goal reached in another orientation home as held, made as a hand turn after it ("" when it's home already, or none does): without a frame. Of several, one that keeps `lastFace` (the answer's last turned face) where it is, so the next step can cancel into it
+export function homeTurn(reached: KPattern, goal: Goal, offset = "", lastFace = ""): string {
+  if (puzzle.frame) return "";
+  const listed = dropFree(goal);
+  // The whole puzzle solved needs no turn: it's solved whichever way it's held
+  if (kpuzzle.definition.orbits.every(({ orbitName, numPieces }) => Object.values(listed[orbitName] ?? {}).filter((role) => role === "solve").length === numPieces)) return "";
+  // The goal's targets as held, and whether a pattern matches one of them
+  const home = goalTargets(listed, offset);
+  const atHome = (pattern: KPattern): boolean => {
+    const masked = maskPattern(pattern, listed);
+    return home.some((target) => masked.isIdentical(target));
+  };
+  if (atHome(reached)) return "";
+  // Every rotation that brings it home as a hand turn (the pieces turn, their names stay), the fewest rotations first (x2 before x2 y)
+  const rotations = grips.map(fewestRotations).sort((a, b) => a.split(" ").filter(Boolean).length - b.split(" ").filter(Boolean).length);
+  const homing = rotations.filter((rotation) => rotation && atHome(reached.applyAlg(rotation)));
+  return (lastFace ? homing.find((rotation) => keepsFace(lastFace, rotation)) : undefined) ?? homing[0] ?? "";
 }
 
 // The targets the allowed moves could reach, as the search worker judges it: same as `from` (the first target, or the start) on every spot no allowed move

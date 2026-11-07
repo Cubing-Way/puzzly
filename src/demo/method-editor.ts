@@ -1,7 +1,7 @@
 // Test bench page: the method editor (its step list, and loading, saving, importing and exporting methods)
 
-// Cube engine
-import type { Method } from "../engine";
+// Cube engine: method data, the puzzle picked now, and the one a method without a puzzle is for
+import { activePuzzle, DEFAULT_PUZZLE, type Method } from "../engine";
 // Page elements
 import {
   stepsEmpty,
@@ -162,9 +162,16 @@ function syncDeleteButton(): void {
   deleteMethodButton.disabled = !savedMethods().some((entry) => entry.name === name);
 }
 
-// Put a method in the editor (a copy, so edits don't change the original) and clear the old results
+// True when the method in the editor may be replaced: nothing unsaved, or the user says to drop it
+export function mayDropMethod(): boolean {
+  return !dirty || confirm("Drop the unsaved changes to this method?");
+}
+
+// Put a method in the editor (a copy, so edits don't change the original), as a method of the picked puzzle, and clear the old results
 function loadMethod(next: Method): void {
-  method = structuredClone(next);
+  const { name, steps } = structuredClone(next);
+  // The 3x3x3's methods stay written without a puzzle; any other puzzle's say theirs, so a new one saves and exports with it too
+  method = activePuzzle.id === DEFAULT_PUZZLE.id ? { name, steps } : { name, puzzle: activePuzzle.id, steps };
   methodNameInput.value = method.name;
   editing = -1;
   stepNameInput.value = "";
@@ -187,11 +194,12 @@ export function currentMethod(): Method {
   return { ...method, name: methodNameInput.value.trim() || "Untitled method" };
 }
 
-// Load the example methods (checked like any method file, so the engine must be loaded), fill the picker and open the first one
+// Load the picked puzzle's example methods (checked like any method file, so the engine must be loaded), fill the picker with them and its saved
+// methods, and open the first one (an empty method when it has none)
 export function showExamples(): void {
   examples = exampleMethods();
   fillMethodSelect();
-  loadMethod(examples[0]);
+  loadMethod(examples[0] ?? { name: "", steps: [] });
 }
 
 // Wire the method editor's buttons, name field, picker and file input
@@ -213,7 +221,7 @@ export function wireMethodEditor(): void {
     const next =
       kind === "new" ? { name: "", steps: [] } : kind === "example" ? examples[Number(key)] : savedMethods().find((entry) => entry.name === key);
     methodSelect.value = "";
-    if (!next || (dirty && !confirm("Drop the unsaved changes to this method?"))) return;
+    if (!next || !mayDropMethod()) return;
     loadMethod(next);
     setStatus(kind === "new" ? "New method: set up a step in the form, then Add form as step." : `Loaded ${next.name}.`);
   });
@@ -262,7 +270,7 @@ export function wireMethodEditor(): void {
 
   // Import a .json method file (after asking if unsaved changes would be lost)
   importMethodButton.addEventListener("click", () => {
-    if (dirty && !confirm("Drop the unsaved changes to this method?")) return;
+    if (!mayDropMethod()) return;
     methodFileInput.click();
   });
   methodFileInput.addEventListener("change", async () => {

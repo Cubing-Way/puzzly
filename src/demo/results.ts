@@ -1,7 +1,7 @@
 // Test bench page: finished solves (runs), the result panel (with the solution's fingering and the answers it was compared with), the runs table and the method results table
 
 // Cube engine
-import { type MethodStepResult, type Rank, type Fingering, stickeringMask, joinMoves, invertMoves, offsetsToText, fingering, speedCost, THUMBS } from "../engine";
+import { type MethodStepResult, type Rank, type Fingering, stickeringMask, joinMoves, invertMoves, offsetsToText, fingering, speedCost, plainHandTurns, THUMBS } from "../engine";
 // Page elements
 import {
   solutionText,
@@ -62,10 +62,23 @@ export interface Run {
   candidates?: Run[]; // step solves: the answers the step compared, best first (this run is one of them); each is a run of its own, so it can be shown
 }
 
-// Every solve so far, newest first
-export const runs: Run[] = [];
+// Every solve so far on the picked puzzle, newest first
+export let runs: Run[] = [];
+// The puzzle `runs` is for ("" before the first is shown), and every other puzzle's solves, kept while it isn't picked
+let runsPuzzle = "";
+const otherRuns = new Map<string, Run[]>();
 // Solve shown in the result panel
 export let shown: Run | null = null;
+
+// Show a puzzle's own solves in the runs table (kept from when it was picked last), with the result panel and the method results cleared
+export function showRunsOf(id: string): void {
+  if (id === runsPuzzle) return;
+  if (runsPuzzle) otherRuns.set(runsPuzzle, runs);
+  runs = otherRuns.get(id) ?? [];
+  runsPuzzle = id;
+  methodRows = [];
+  showResult(null);
+}
 
 // Rows of the last method run: one per step, then the total
 export let methodRows: { label: string; run: Run }[] = [];
@@ -75,9 +88,9 @@ export function setMethodRows(rows: { label: string; run: Run }[]): void {
   methodRows = rows;
 }
 
-// A run's moves as the hands make them: its wide-turn writing when it has one, otherwise its solution
+// A run's moves as the hands make them: its wide-turn writing when it has one, otherwise its solution, hand turns as plain rotations ("(x2)" is x2)
 export function handsMoves(run: Run): string {
-  return run.turned ?? run.solution;
+  return plainHandTurns(run.turned ?? run.solution);
 }
 
 // Each run's speed cost, worked out once (the tables are redrawn often)

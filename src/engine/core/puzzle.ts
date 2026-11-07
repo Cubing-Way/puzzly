@@ -1,4 +1,4 @@
-// The loaded puzzle definition, and the puzzle as it's held after a scramble and some moves (grips: by the frame, or by rotation moves alone without one); cached
+// The loaded puzzle definition, and the puzzle as it's held after a scramble and some moves (grips: by the frame, or by rotation moves alone without one, hand turns aside); cached
 
 // Parses alg text into moves
 import { Alg } from "cubing/alg";
@@ -7,7 +7,7 @@ import type { KPuzzle, KPattern } from "cubing/kpuzzle";
 // Lookup caches
 import { lookupCache, remember, clearLookupCaches } from "./cache";
 // Move text helpers
-import { joinMoves, rotationsIn, invertMoves } from "./moves";
+import { joinMoves, rotationsIn, invertMoves, withoutHandTurns } from "./moves";
 // The active puzzle and its grips
 import { puzzle, grips, usePuzzle } from "../puzzle/active";
 // A puzzle's description
@@ -65,9 +65,14 @@ function gripLayout(pattern: KPattern): string {
   return Object.values(pattern.patternData).map(({ pieces, orientation }) => `${pieces.join()}/${orientation.join()}`).join(";");
 }
 
-// The grip rule: with a frame, a move sequence's grip is where its frame pieces end up (slices and wide moves count); without one, only its rotation moves count
+// The rotations of some moves that change the grip: all with a frame; without one, all but hand turns ("(x2)" keeps the names, as R L' does on a 2x2x2; see homeTurn)
+function gripTurnsIn(moves: string): string {
+  return rotationsIn(puzzle.frame ? moves : withoutHandTurns(moves));
+}
+
+// The grip rule: with a frame, a move sequence's grip is where its frame pieces end up (slices and wide moves count); without one, only its rotation moves count, hand turns left out
 export function netRotation(moves: string): string {
-  return gripByFrame.get(gripLayout(solvedAfter(puzzle.frame ? moves : rotationsIn(moves)))) ?? "";
+  return gripByFrame.get(gripLayout(solvedAfter(puzzle.frame ? moves : gripTurnsIn(moves)))) ?? "";
 }
 
 // The whole puzzle solved in some grip (every piece home and untwisted as one of the grips holds it): the check when a description has no isSolved
@@ -75,10 +80,9 @@ export function solvedInSomeGrip(pattern: KPattern): boolean {
   return grips.some((grip) => pattern.isIdentical(solvedAfter(grip)));
 }
 
-// Grip after `scramble` then `done`: the scramble by the grip rule (its frame pieces, or without a frame its rotation moves), after that only rotations
-// (x, y, z) change the grip (slice and wide moves turn centers, not the hand; on a 2x2x2 R L' is two turns, though it moves the pieces as x does)
+// Grip after `scramble` then `done`: the scramble by the grip rule, then only rotations change it (slice and wide moves turn centers, not the hand; on a 2x2x2 R L' and "(x)" move the pieces as x does but keep the grip)
 export function gripAfter(scramble: string, done = ""): string {
-  return joinMoves(netRotation(scramble), rotationsIn(done));
+  return joinMoves(netRotation(scramble), gripTurnsIn(done));
 }
 
 // The puzzle after `scramble` then `done`, renumbered so piece numbers mean "home spot in the grip it's held in now"
